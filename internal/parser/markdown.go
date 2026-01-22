@@ -85,9 +85,9 @@ var (
 type ReusablePatterns struct {
 	patterns       []*regexp.Regexp
 	extensions     []string
-	hugoRoot       string            // Hugo project root (contains layouts/, data/)
-	reusablesDir   string            // Legacy: direct reusables directory
-	filePaths      map[string]string // Cache: name -> file path
+	hugoRoot       string              // Hugo project root (contains layouts/, data/)
+	reusablesDir   string              // Legacy: direct reusables directory
+	filePaths      map[string]string   // Cache: name -> file path
 	shortcodeCache map[string][]string // Cache: shortcode name -> data file paths
 	cacheBuilt     bool
 }

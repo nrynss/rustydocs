@@ -13,19 +13,19 @@ import (
 
 // JSONReport is the top-level structure for JSON output.
 type JSONReport struct {
-	Version     string       `json:"version"`
-	GeneratedAt string       `json:"generated_at"`
-	Config      JSONConfig   `json:"config"`
-	Summary     JSONSummary  `json:"summary"`
-	Files       []JSONFile   `json:"files"`
+	Version     string         `json:"version"`
+	GeneratedAt string         `json:"generated_at"`
+	Config      JSONConfig     `json:"config"`
+	Summary     JSONSummary    `json:"summary"`
+	Files       []JSONFile     `json:"files"`
 	Reusables   []JSONReusable `json:"reusables,omitempty"`
 }
 
 // JSONConfig contains the configuration used for this run.
 type JSONConfig struct {
-	ThresholdDays   int             `json:"threshold_days"`
-	ContentDir      string          `json:"content_dir"`
-	StalenessLevels JSONStaleness   `json:"staleness_levels"`
+	ThresholdDays   int           `json:"threshold_days"`
+	ContentDir      string        `json:"content_dir"`
+	StalenessLevels JSONStaleness `json:"staleness_levels"`
 }
 
 // JSONStaleness contains staleness threshold configuration.
@@ -37,24 +37,24 @@ type JSONStaleness struct {
 
 // JSONSummary contains aggregate statistics.
 type JSONSummary struct {
-	TotalFiles      int     `json:"total_files"`
-	StaleFiles      int     `json:"stale_files"`
-	StaleFilesPct   float64 `json:"stale_files_pct"`
-	TotalSections   int     `json:"total_sections"`
-	StaleSections   int     `json:"stale_sections"`
+	TotalFiles       int     `json:"total_files"`
+	StaleFiles       int     `json:"stale_files"`
+	StaleFilesPct    float64 `json:"stale_files_pct"`
+	TotalSections    int     `json:"total_sections"`
+	StaleSections    int     `json:"stale_sections"`
 	StaleSectionsPct float64 `json:"stale_sections_pct"`
-	OldestFile      string  `json:"oldest_file,omitempty"`
-	OldestDays      int     `json:"oldest_days,omitempty"`
+	OldestFile       string  `json:"oldest_file,omitempty"`
+	OldestDays       int     `json:"oldest_days,omitempty"`
 }
 
 // JSONFile contains analysis results for a single file.
 type JSONFile struct {
-	Path            string        `json:"path"`
-	LastUpdated     string        `json:"last_updated,omitempty"`
-	DaysStale       int           `json:"days_stale"`
-	TotalSections   int           `json:"total_sections"`
-	StaleSections   int           `json:"stale_sections"`
-	Sections        []JSONSection `json:"sections,omitempty"`
+	Path          string        `json:"path"`
+	LastUpdated   string        `json:"last_updated,omitempty"`
+	DaysStale     int           `json:"days_stale"`
+	TotalSections int           `json:"total_sections"`
+	StaleSections int           `json:"stale_sections"`
+	Sections      []JSONSection `json:"sections,omitempty"`
 }
 
 // JSONSection contains analysis results for a single section.
