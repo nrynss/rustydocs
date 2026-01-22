@@ -4,11 +4,12 @@
 *.dll
 *.so
 *.dylib
-rustydocs
+
+# Built binary (root only)
+/rustydocs
 
 # Test binary, built with `go test -c`
 *.test
-CLAUDE.md
 
 # Output of the go coverage tool
 *.out
@@ -33,6 +34,9 @@ config.json
 # Build artifacts
 bin/
 dist/
+
+# Output reports
+reports/
 
 # Tool directories
 .claude/
