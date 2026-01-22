@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stale Documentation Report</title>
+    <style>
+        :root {
+            --fresh-bg: #e8f5e9;
+            --warning-bg: #fffde7;
+            --caution-bg: #fff3cd;
+            --critical-bg: #ffcccc;
+            --fresh-border: #4caf50;
+            --warning-border: #ffc107;
+            --caution-border: #ff9800;
+            --critical-border: #f44336;
+            --needs-update-bg: #ffebee;
+            --needs-update-border: #f44336;
+            --no-update-bg: #e8f5e9;
+            --no-update-border: #4caf50;
+            --pending-bg: #fff8e1;
+            --pending-border: #ffc107;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            min-height: 100vh;
+            background: #f5f5f5;
+        }
+
+        nav {
+            width: 320px;
+            background: #fff;
+            border-right: 1px solid #ddd;
+            padding: 20px;
+            overflow-y: auto;
+            position: fixed;
+            height: 100vh;
+        }
+
+        nav h2 {
+            margin-top: 0;
+            font-size: 14px;
+            text-transform: uppercase;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        nav h2 .count {
+            background: #e0e0e0;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+
+        .nav-section {
+            margin-bottom: 20px;
+        }
+
+        .nav-item {
+            display: block;
+            padding: 8px 12px;
+            margin: 4px 0;
+            text-decoration: none;
+            color: #333;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            word-break: break-all;
+            border-left: 3px solid transparent;
+            line-height: 1.4;
+        }
+
+        .nav-item:hover {
+            background: #f0f0f0;
+        }
+
+        .nav-item.warning { border-left-color: var(--warning-border); }
+        .nav-item.caution { border-left-color: var(--caution-border); }
+        .nav-item.critical { border-left-color: var(--critical-border); }
+
+        .nav-item .days {
+            display: inline-block;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 5px;
+            font-family: sans-serif;
+        }
+
+        .nav-item.warning .days { background: var(--warning-bg); color: #856404; }
+        .nav-item.caution .days { background: var(--caution-bg); color: #856404; }
+        .nav-item.critical .days { background: var(--critical-bg); color: #721c24; }
+
+        main {
+            flex: 1;
+            margin-left: 320px;
+            padding: 40px;
+            max-width: 1200px;
+        }
+
+        h1 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        .meta {
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .summary {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .summary h2 {
+            margin-top: 0;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .stat {
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: #666;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin: 20px 0;
+            border-bottom: 2px solid #ddd;
+            background: #fff;
+            border-radius: 8px 8px 0 0;
+            overflow: hidden;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 16px 24px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .tab-btn:hover {
+            color: #333;
+            background: #f9f9f9;
+        }
+
+        .tab-btn.active {
+            color: #1976d2;
+            border-bottom-color: #1976d2;
+            background: #e3f2fd;
+        }
+
+        .tab-btn .tab-count {
+            background: #e0e0e0;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+
+        .tab-btn.active .tab-count {
+            background: #1976d2;
+            color: #fff;
+        }
+
+        .tab-btn.needs-update-tab.active {
+            color: #d32f2f;
+            border-bottom-color: #d32f2f;
+            background: #ffebee;
+        }
+        .tab-btn.needs-update-tab.active .tab-count {
+            background: #d32f2f;
+        }
+
+        .tab-btn.no-update-tab.active {
+            color: #388e3c;
+            border-bottom-color: #388e3c;
+            background: #e8f5e9;
+        }
+        .tab-btn.no-update-tab.active .tab-count {
+            background: #388e3c;
+        }
+
+        .tab-content {
+            display: none;
+            background: #fff;
+            border-radius: 0 0 8px 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .file-details {
+            background: #fff;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border: 1px solid #e0e0e0;
+        }
+
+        .file-details summary {
+            padding: 15px 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        }
+
+        .file-details summary:hover {
+            background: #f9f9f9;
+        }
+
+        .file-details.warning summary { border-left: 4px solid var(--warning-border); }
+        .file-details.caution summary { border-left: 4px solid var(--caution-border); }
+        .file-details.critical summary { border-left: 4px solid var(--critical-border); }
+
+        .file-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .file-path {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .file-meta {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .days-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .days-badge.warning { background: var(--warning-bg); color: #856404; }
+        .days-badge.caution { background: var(--caution-bg); color: #856404; }
+        .days-badge.critical { background: var(--critical-bg); color: #721c24; }
+
+        .date {
+            color: #666;
+            font-size: 13px;
+        }
+
+        .file-content {
+            padding: 20px;
+            border-top: 1px solid #eee;
+        }
+
+        .sections-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        .sections-table th,
+        .sections-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        .sections-table th {
+            background: #f9f9f9;
+            font-weight: 500;
+            color: #666;
+        }
+
+        .sections-table tr.warning { background: var(--warning-bg); }
+        .sections-table tr.caution { background: var(--caution-bg); }
+        .sections-table tr.critical { background: var(--critical-bg); }
+
+        .sections-table .line-num {
+            font-family: monospace;
+            font-size: 12px;
+            color: #666;
+            white-space: nowrap;
+        }
+
+        .no-stale {
+            text-align: center;
+            padding: 40px;
+            color: #4caf50;
+            font-size: 18px;
+        }
+
+        .empty-section {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+            font-style: italic;
+        }
+
+        /* Three-way toggle */
+        .status-toggle {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .toggle-btn {
+            width: 32px;
+            height: 32px;
+            border: 2px solid #ccc;
+            border-radius: 6px;
+            background: #fff;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+
+        .toggle-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .toggle-btn.needs-update {
+            border-color: #f44336;
+            color: #f44336;
+        }
+
+        .toggle-btn.needs-update:hover {
+            background: #ffebee;
+        }
+
+        .toggle-btn.needs-update.active {
+            background: #f44336;
+            color: #fff;
+        }
+
+        .toggle-btn.no-update {
+            border-color: #4caf50;
+            color: #4caf50;
+        }
+
+        .toggle-btn.no-update:hover {
+            background: #e8f5e9;
+        }
+
+        .toggle-btn.no-update.active {
+            background: #4caf50;
+            color: #fff;
+        }
+
+        .toggle-divider {
+            width: 1px;
+            height: 20px;
+            background: #ddd;
+            margin: 0 4px;
+        }
+
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin: 20px 0;
+            padding: 15px;
+            background: #fff;
+            border-radius: 8px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        .legend-color.warning { background: var(--warning-bg); border: 1px solid var(--warning-border); }
+        .legend-color.caution { background: var(--caution-bg); border: 1px solid var(--caution-border); }
+        .legend-color.critical { background: var(--critical-bg); border: 1px solid var(--critical-border); }
+
+        @media (max-width: 900px) {
+            nav {
+                display: none;
+            }
+            main {
+                margin-left: 0;
+                padding: 20px;
+            }
+            .tabs {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="nav-section" id="nav-pending-section">
+            <h2>⏳ Needs Verification <span class="count" id="nav-pending-count">{{.StaleFiles}}</span></h2>
+            <div id="nav-pending-items">
+            {{range .Files}}
+            <a href="#{{.Anchor}}" class="nav-item {{.StalenessClass}}" data-anchor="{{.Anchor}}" title="{{.Path}} - {{.DaysStale}} days stale">
+                {{.SidebarPath}}<span class="days">{{.DaysStale}}d</span>
+            </a>
+            {{end}}
+            </div>
+        </div>
+        <div class="nav-section" id="nav-needs-update-section">
+            <h2>❌ Update Required <span class="count" id="nav-needs-update-count">0</span></h2>
+            <div id="nav-needs-update-items"></div>
+        </div>
+        <div class="nav-section" id="nav-no-update-section">
+            <h2>✓ No Update Needed <span class="count" id="nav-no-update-count">0</span></h2>
+            <div id="nav-no-update-items"></div>
+        </div>
+    </nav>
+
+    <main>
+        <h1>Stale Documentation Report</h1>
+        <p class="meta">Generated: {{.GeneratedDate}} | Threshold: {{.ThresholdDays}} days</p>
+
+        <section class="summary">
+            <h2>Summary</h2>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">{{.OldestDays}}d</div>
+                    <div class="stat-label">Oldest stale ({{.OldestFile}})</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{.TotalFiles}}</div>
+                    <div class="stat-label">Files scanned</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{.StaleFiles}} <small>({{.StaleFilesPct}}%)</small></div>
+                    <div class="stat-label">Files with stale content</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{.TotalSections}}</div>
+                    <div class="stat-label">Sections analyzed</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{.StaleSections}} <small>({{.StaleSectionsPct}}%)</small></div>
+                    <div class="stat-label">Stale sections</div>
+                </div>
+            </div>
+        </section>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color warning"></div>
+                <span>Warning ({{.WarningThreshold}}+ days)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color caution"></div>
+                <span>Caution ({{.CautionThreshold}}+ days)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color critical"></div>
+                <span>Critical ({{.CriticalThreshold}}+ days)</span>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="pending">
+                ⏳ Needs Verification
+                <span class="tab-count" id="tab-pending-count">{{.StaleFiles}}</span>
+            </button>
+            <button class="tab-btn needs-update-tab" data-tab="needs-update">
+                ❌ Update Required
+                <span class="tab-count" id="tab-needs-update-count">0</span>
+            </button>
+            <button class="tab-btn no-update-tab" data-tab="no-update">
+                ✓ No Update Needed
+                <span class="tab-count" id="tab-no-update-count">0</span>
+            </button>
+        </div>
+
+        <section class="tab-content active" id="tab-pending">
+            <div id="pending-files">
+            {{if .Files}}
+            {{range .Files}}
+            <details class="file-details {{.StalenessClass}}" id="{{.Anchor}}" data-anchor="{{.Anchor}}" data-staleness="{{.StalenessClass}}">
+                <summary>
+                    <span class="file-header">
+                        <span class="status-toggle">
+                            <button class="toggle-btn needs-update" onclick="event.stopPropagation(); setStatus('{{.Anchor}}', 'needs-update')" title="Mark as Update Required">
+                                ✗
+                            </button>
+                            <span class="toggle-divider"></span>
+                            <button class="toggle-btn no-update" onclick="event.stopPropagation(); setStatus('{{.Anchor}}', 'no-update')" title="Mark as No Update Needed">
+                                ✓
+                            </button>
+                        </span>
+                        <span class="file-path">{{.Path}}</span>
+                    </span>
+                    <span class="file-meta">
+                        <span class="date">Last updated {{.DateStr}}</span>
+                        <span class="days-badge {{.StalenessClass}}">{{.OldestDays}} days stale</span>
+                    </span>
+                </summary>
+                <div class="file-content">
+                    {{if .Sections}}
+                    <table class="sections-table">
+                        <thead>
+                            <tr>
+                                <th>Line</th>
+                                <th>Section</th>
+                                <th>Last Updated</th>
+                                <th>Days Stale</th>
+                                <th>Author</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .Sections}}
+                            <tr class="{{.StalenessClass}}">
+                                <td class="line-num">L{{.StartLine}}</td>
+                                <td>{{.Title}}</td>
+                                <td>{{.DateStr}}</td>
+                                <td>{{.DaysStale}}</td>
+                                <td>{{.Author}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+            {{else}}
+            <p class="no-stale">No stale documentation found!</p>
+            {{end}}
+            </div>
+            <p class="empty-section" id="pending-empty" style="display: none;">All files have been reviewed!</p>
+        </section>
+
+        <section class="tab-content" id="tab-needs-update">
+            <div id="needs-update-files"></div>
+            <p class="empty-section" id="needs-update-empty">No files marked as needing update yet.</p>
+        </section>
+
+        <section class="tab-content" id="tab-no-update">
+            <div id="no-update-files"></div>
+            <p class="empty-section" id="no-update-empty">No files marked as no update needed yet.</p>
+        </section>
+    </main>
+
+    <script>
+        // State: { anchor: 'pending' | 'needs-update' | 'no-update' }
+        const fileStates = JSON.parse(localStorage.getItem('rustydocs-states') || '{}');
+
+        function saveState() {
+            localStorage.setItem('rustydocs-states', JSON.stringify(fileStates));
+        }
+
+        function setStatus(anchor, status) {
+            const currentStatus = fileStates[anchor] || 'pending';
+            
+            // Toggle: if clicking same status, go back to pending
+            if (currentStatus === status) {
+                delete fileStates[anchor];
+            } else {
+                fileStates[anchor] = status;
+            }
+            
+            saveState();
+            updateUI();
+        }
+
+        function updateUI() {
+            const pendingContainer = document.getElementById('pending-files');
+            const needsUpdateContainer = document.getElementById('needs-update-files');
+            const noUpdateContainer = document.getElementById('no-update-files');
+            
+            const allDetails = document.querySelectorAll('.file-details');
+            
+            let pendingCount = 0;
+            let needsUpdateCount = 0;
+            let noUpdateCount = 0;
+
+            allDetails.forEach(detail => {
+                const anchor = detail.dataset.anchor;
+                const status = fileStates[anchor] || 'pending';
+                const needsUpdateBtn = detail.querySelector('.toggle-btn.needs-update');
+                const noUpdateBtn = detail.querySelector('.toggle-btn.no-update');
+                const navItem = document.querySelector(`.nav-item[data-anchor="${anchor}"]`);
+
+                // Reset button states
+                needsUpdateBtn.classList.remove('active');
+                noUpdateBtn.classList.remove('active');
+
+                // Move to appropriate container and update button state
+                if (status === 'needs-update') {
+                    needsUpdateContainer.appendChild(detail);
+                    needsUpdateBtn.classList.add('active');
+                    if (navItem) {
+                        document.getElementById('nav-needs-update-items').appendChild(navItem);
+                    }
+                    needsUpdateCount++;
+                } else if (status === 'no-update') {
+                    noUpdateContainer.appendChild(detail);
+                    noUpdateBtn.classList.add('active');
+                    if (navItem) {
+                        document.getElementById('nav-no-update-items').appendChild(navItem);
+                    }
+                    noUpdateCount++;
+                } else {
+                    pendingContainer.appendChild(detail);
+                    if (navItem) {
+                        document.getElementById('nav-pending-items').appendChild(navItem);
+                    }
+                    pendingCount++;
+                }
+            });
+
+            // Update counts
+            document.getElementById('tab-pending-count').textContent = pendingCount;
+            document.getElementById('tab-needs-update-count').textContent = needsUpdateCount;
+            document.getElementById('tab-no-update-count').textContent = noUpdateCount;
+            document.getElementById('nav-pending-count').textContent = pendingCount;
+            document.getElementById('nav-needs-update-count').textContent = needsUpdateCount;
+            document.getElementById('nav-no-update-count').textContent = noUpdateCount;
+
+            // Show/hide empty messages
+            document.getElementById('pending-empty').style.display = pendingCount === 0 ? 'block' : 'none';
+            document.getElementById('needs-update-empty').style.display = needsUpdateCount === 0 ? 'block' : 'none';
+            document.getElementById('no-update-empty').style.display = noUpdateCount === 0 ? 'block' : 'none';
+        }
+
+        // Tab switching
+        function switchToTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
+            document.getElementById('tab-' + tabName).classList.add('active');
+        }
+
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => switchToTab(btn.dataset.tab));
+        });
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', updateUI);
+
+        // Sort tables by clicking headers
+        document.querySelectorAll('.sections-table th').forEach((th, index) => {
+            th.style.cursor = 'pointer';
+            th.addEventListener('click', () => {
+                const table = th.closest('table');
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+
+                const isNumeric = index >= 2;
+                rows.sort((a, b) => {
+                    const aVal = a.cells[index].textContent;
+                    const bVal = b.cells[index].textContent;
+                    if (isNumeric) {
+                        return parseInt(bVal) - parseInt(aVal);
+                    }
+                    return aVal.localeCompare(bVal);
+                });
+
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        });
+
+        // Expand/collapse all with Ctrl+E
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'e' && e.ctrlKey) {
+                const details = document.querySelectorAll('details');
+                const allOpen = Array.from(details).every(d => d.open);
+                details.forEach(d => d.open = !allOpen);
+            }
+        });
+
+        // Highlight nav item when scrolling
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                const id = entry.target.id;
+                const navItem = document.querySelector(`nav a[href="#${id}"]`);
+                if (navItem) {
+                    if (entry.isIntersecting) {
+                        navItem.style.background = '#e3f2fd';
+                    } else {
+                        navItem.style.background = '';
+                    }
+                }
+            });
+        }, { threshold: 0.5 });
+
+        document.querySelectorAll('.file-details').forEach(el => observer.observe(el));
+    </script>
+</body>
+</html>

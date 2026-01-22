@@ -1,0 +1,23 @@
+{
+  "threshold_days": 90,
+  "content_dir": "src/hugo/docsy/content/en",
+  "hugo_root": "src/hugo/docsy",
+  "output_dir": "./reports",
+  "reusables": {
+    "dir": "src/hugo/docsy/data/reusables",
+    "patterns": [
+      "\\{\\{[<%]\\s*([a-zA-Z][\\w/-]*)\\s*[^%>]*[%>]\\}\\}",
+      "<([A-Z][a-zA-Z0-9]*)\\s*[^>]*/?>"
+    ],
+    "extensions": [".md", ".mdx", ".html"]
+  },
+  "exclude_dirs": [
+    "images",
+    "releasenotes"
+  ],
+  "staleness_levels": {
+    "warning": 90,
+    "caution": 180,
+    "critical": 365
+  }
+}
