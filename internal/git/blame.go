@@ -4,6 +4,7 @@ package git
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -69,7 +70,10 @@ func GetFileLastModified(filePath string) (*FileInfo, error) {
 	// Parse date like "2024-01-15 10:30:45 -0800"
 	timestamp, err := time.Parse("2006-01-02 15:04:05 -0700", lines[2])
 	if err != nil {
-		// Try without timezone
+		// Try without timezone, but ensure string is long enough
+		if len(lines[2]) < 19 {
+			return nil, fmt.Errorf("invalid timestamp format: %q", lines[2])
+		}
 		timestamp, err = time.Parse("2006-01-02 15:04:05", lines[2][:19])
 		if err != nil {
 			return nil, err
@@ -85,16 +89,82 @@ func GetFileLastModified(filePath string) (*FileInfo, error) {
 }
 
 // GetBlameInfo returns per-line blame information for a file.
+// Uses streaming to handle large files without loading entire output into memory.
 func GetBlameInfo(filePath string) ([]LineInfo, error) {
 	cmd := exec.Command("git", "blame", "--line-porcelain", filePath)
 	cmd.Dir = filepath.Dir(filePath)
 
-	output, err := cmd.Output()
+	// Capture stderr for better error messages
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
-	return parseBlameOutput(output)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start git blame: %w", err)
+	}
+
+	// Parse output as it streams
+	linesInfo, parseErr := parseBlameFromReader(stdout)
+
+	// Wait for command to complete
+	if err := cmd.Wait(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg != "" {
+			return nil, fmt.Errorf("git blame failed: %s", errMsg)
+		}
+		return nil, fmt.Errorf("git blame failed: %w", err)
+	}
+
+	return linesInfo, parseErr
+}
+
+// parseBlameFromReader parses git blame output from an io.Reader (streaming).
+func parseBlameFromReader(r interface{ Read([]byte) (int, error) }) ([]LineInfo, error) {
+	var linesInfo []LineInfo
+	scanner := bufio.NewScanner(r)
+
+	currentLine := make(map[string]string)
+	lineNumber := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "\t") {
+			// This is the actual content line
+			content := line[1:] // Remove leading tab
+			lineNumber++
+
+			if authorTime, ok := currentLine["author-time"]; ok {
+				ts, err := strconv.ParseInt(authorTime, 10, 64)
+				if err == nil {
+					linesInfo = append(linesInfo, LineInfo{
+						LineNumber:  lineNumber,
+						Author:      currentLine["author"],
+						AuthorEmail: currentLine["author-mail"],
+						Timestamp:   time.Unix(ts, 0),
+						CommitHash:  currentLine["commit"],
+						Content:     content,
+					})
+				}
+			}
+			currentLine = make(map[string]string)
+		} else if line != "" {
+			// Parse blame header lines
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) == 2 {
+				currentLine[parts[0]] = parts[1]
+			} else if len(line) == 40 {
+				// This is a commit hash line
+				currentLine["commit"] = line
+			}
+		}
+	}
+
+	return linesInfo, scanner.Err()
 }
 
 func parseBlameOutput(output []byte) ([]LineInfo, error) {

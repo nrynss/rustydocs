@@ -93,7 +93,8 @@ type ReusablePatterns struct {
 }
 
 // NewReusablePatterns creates a new ReusablePatterns from config patterns.
-func NewReusablePatterns(patterns []string, extensions []string, reusablesDir string, hugoRoot string) *ReusablePatterns {
+// Returns an error if any pattern fails to compile.
+func NewReusablePatterns(patterns []string, extensions []string, reusablesDir string, hugoRoot string) (*ReusablePatterns, error) {
 	rp := &ReusablePatterns{
 		extensions:     extensions,
 		reusablesDir:   reusablesDir,
@@ -102,16 +103,19 @@ func NewReusablePatterns(patterns []string, extensions []string, reusablesDir st
 		shortcodeCache: make(map[string][]string),
 	}
 	for _, p := range patterns {
-		if re, err := regexp.Compile(p); err == nil {
-			rp.patterns = append(rp.patterns, re)
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reusable pattern %q: %w", p, err)
 		}
+		rp.patterns = append(rp.patterns, re)
 	}
-	return rp
+	return rp, nil
 }
 
 // DefaultReusablePatterns returns default patterns for Hugo shortcodes and MDX components.
 func DefaultReusablePatterns() *ReusablePatterns {
-	return NewReusablePatterns(
+	// These patterns are hardcoded and should always compile successfully
+	rp, err := NewReusablePatterns(
 		[]string{
 			// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
 			`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
@@ -122,6 +126,11 @@ func DefaultReusablePatterns() *ReusablePatterns {
 		"",
 		"",
 	)
+	if err != nil {
+		// This should never happen with hardcoded patterns
+		panic(fmt.Sprintf("default reusable patterns failed to compile: %v", err))
+	}
+	return rp
 }
 
 // ParseSections parses markdown content into chunks based on headers and paragraphs.

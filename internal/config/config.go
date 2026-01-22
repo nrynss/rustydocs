@@ -3,8 +3,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // StalenessLevels defines threshold levels for staleness classification.
@@ -97,7 +99,45 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Reusables.Extensions = []string{".md", ".mdx", ".html"}
 	}
 
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// Validate checks the configuration for errors.
+func (c *Config) Validate() error {
+	// Validate ThresholdDays
+	if c.ThresholdDays < 0 {
+		return fmt.Errorf("threshold_days must be non-negative, got %d", c.ThresholdDays)
+	}
+
+	// Validate StalenessLevels
+	if c.StalenessLevels.Warning < 0 {
+		return fmt.Errorf("staleness_levels.warning must be non-negative, got %d", c.StalenessLevels.Warning)
+	}
+	if c.StalenessLevels.Caution < 0 {
+		return fmt.Errorf("staleness_levels.caution must be non-negative, got %d", c.StalenessLevels.Caution)
+	}
+	if c.StalenessLevels.Critical < 0 {
+		return fmt.Errorf("staleness_levels.critical must be non-negative, got %d", c.StalenessLevels.Critical)
+	}
+
+	// Validate Workers
+	if c.Workers < 0 {
+		return fmt.Errorf("workers must be non-negative, got %d", c.Workers)
+	}
+
+	// Validate regex patterns
+	for i, pattern := range c.Reusables.Patterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("invalid reusable pattern at index %d (%q): %w", i, pattern, err)
+		}
+	}
+
+	return nil
 }
 
 // DetectHugoRoot finds the Hugo project root by walking up from contentDir

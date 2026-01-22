@@ -158,12 +158,14 @@ func shouldExclude(path string, cfg *config.Config, baseDir string) bool {
 	}
 
 	// Check exclude directories
+	// Normalize path separators for cross-platform compatibility
+	normalizedRelative := filepath.ToSlash(relative)
 	for _, dir := range cfg.ExcludeDirs {
-		if strings.HasPrefix(relative, dir+"/") || relative == dir {
+		if strings.HasPrefix(normalizedRelative, dir+"/") || normalizedRelative == dir {
 			return true
 		}
 		// Also match directory anywhere in path
-		if strings.Contains(relative, "/"+dir+"/") {
+		if strings.Contains(normalizedRelative, "/"+dir+"/") {
 			return true
 		}
 	}
@@ -196,8 +198,10 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		reusablesDir = cfg.ReusablesDir // backward compatibility
 	}
 	if reusablesDir != "" && !filepath.IsAbs(reusablesDir) {
-		cwd, _ := os.Getwd()
-		reusablesDir = filepath.Join(cwd, reusablesDir)
+		if cwd, err := os.Getwd(); err == nil {
+			reusablesDir = filepath.Join(cwd, reusablesDir)
+		}
+		// If Getwd fails, leave reusablesDir as relative (will likely fail later but won't crash)
 	}
 
 	// Determine Hugo root (for shortcode tracing)
@@ -206,17 +210,29 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		hugoRoot = config.DetectHugoRoot(baseDir)
 	}
 	if hugoRoot != "" && !filepath.IsAbs(hugoRoot) {
-		cwd, _ := os.Getwd()
-		hugoRoot = filepath.Join(cwd, hugoRoot)
+		if cwd, err := os.Getwd(); err == nil {
+			hugoRoot = filepath.Join(cwd, hugoRoot)
+		}
+		// If Getwd fails, leave hugoRoot as relative
 	}
 
-	rp := parser.NewReusablePatterns(cfg.Reusables.Patterns, cfg.Reusables.Extensions, reusablesDir, hugoRoot)
+	rp, err := parser.NewReusablePatterns(cfg.Reusables.Patterns, cfg.Reusables.Extensions, reusablesDir, hugoRoot)
+	if err != nil {
+		// Invalid pattern in config - fall back to default patterns
+		rp = parser.DefaultReusablePatterns()
+	}
 
 	var sections []parser.Section
 	var linesInfo []git.LineInfo
 
 	if !cfg.FileLevelOnly {
-		linesInfo, _ = git.GetBlameInfo(filePath)
+		var blameErr error
+		linesInfo, blameErr = git.GetBlameInfo(filePath)
+		if blameErr != nil {
+			// Git blame failed - file may not be tracked, or git error occurred
+			// Continue with empty linesInfo, sections will have no line-level timestamps
+			linesInfo = nil
+		}
 		if cfg.ParagraphLevel {
 			sections = parser.ParseChunks(string(content), linesInfo, true, rp)
 		} else {
