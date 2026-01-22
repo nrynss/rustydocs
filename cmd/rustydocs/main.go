@@ -14,7 +14,12 @@ import (
 	"github.com/nrynss/rustydocs/internal/report"
 )
 
-const version = "0.1.0"
+// Version info - set via ldflags at build time
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -49,6 +54,12 @@ func run() error {
 
 	if *showVersion {
 		fmt.Printf("rustydocs %s\n", version)
+		if commit != "none" {
+			fmt.Printf("  commit: %s\n", commit)
+		}
+		if date != "unknown" {
+			fmt.Printf("  built:  %s\n", date)
+		}
 		return nil
 	}
 

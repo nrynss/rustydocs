@@ -16,11 +16,14 @@ Find stale documentation using git history. Analyzes your documentation at the s
 ## Installation
 
 ```bash
-# Build from source
-go build -o rustydocs ./cmd/rustydocs
+# Build from source (includes version info)
+make build
 
 # Or install directly
 go install github.com/nrynss/rustydocs/cmd/rustydocs@latest
+
+# Check version
+./rustydocs --version
 ```
 
 ## Quick Start
