@@ -186,11 +186,14 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		return FileAnalysis{Path: filePath}
 	}
 
-	// Get relative path for display
+	// Get relative path for display. Normalize to forward slashes so reports
+	// (HTML anchors, JSON/Markdown paths) are consistent and portable across
+	// platforms — filepath.Rel returns OS separators (backslashes on Windows).
 	relativePath, err := filepath.Rel(baseDir, filePath)
 	if err != nil {
 		relativePath = filePath
 	}
+	relativePath = filepath.ToSlash(relativePath)
 
 	// Create reusable patterns from config
 	reusablesDir := cfg.Reusables.Dir
