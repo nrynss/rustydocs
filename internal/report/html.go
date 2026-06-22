@@ -132,10 +132,7 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 
 		var sections []SectionData
 		for _, s := range f.StaleSections {
-			title := s.Title
-			if len(title) > 50 {
-				title = title[:47] + "..."
-			}
+			title := truncateRunes(s.Title, 50)
 
 			var sDateStr string
 			var sDays int

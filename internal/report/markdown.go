@@ -66,10 +66,7 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 				sb.WriteString("|------|---------|--------------|------------|--------|\n")
 
 				for _, section := range fileAnalysis.StaleSections {
-					title := section.Title
-					if len(title) > 35 {
-						title = title[:32] + "..."
-					}
+					title := truncateRunes(section.Title, 35)
 
 					var dateStr string
 					var days int
@@ -87,7 +84,7 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 					}
 
 					sb.WriteString(fmt.Sprintf("| L%d | %s | %s | %d | %s |\n",
-						section.StartLine, title, dateStr, days, author))
+						section.StartLine, escapeMDCell(title), dateStr, days, escapeMDCell(author)))
 				}
 				sb.WriteString("\n")
 			}
@@ -146,4 +143,26 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 	}
 
 	return os.WriteFile(filepath.Clean(outputPath), []byte(sb.String()), 0600)
+}
+
+// escapeMDCell makes a value safe inside a Markdown table cell: an unescaped
+// pipe would start a new column and a newline would break the row.
+func escapeMDCell(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return s
+}
+
+// truncateRunes shortens s to at most maxRunes runes (rune-safe), appending an
+// ellipsis when truncated. Shared by the Markdown and HTML reports.
+func truncateRunes(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	if maxRunes <= 3 {
+		return string(r[:maxRunes])
+	}
+	return string(r[:maxRunes-3]) + "..."
 }
