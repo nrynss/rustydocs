@@ -30,26 +30,28 @@ type ReusablesConfig struct {
 
 // Config holds the configuration for rustydocs analysis.
 type Config struct {
-	ThresholdDays   int             `json:"threshold_days"`
-	ContentDir      string          `json:"content_dir"`
-	HugoRoot        string          `json:"hugo_root"`     // Hugo project root (auto-detected if not set)
-	ReusablesDir    string          `json:"reusables_dir"` // Deprecated: use Reusables.Dir
-	Reusables       ReusablesConfig `json:"reusables"`
-	OutputDir       string          `json:"output_dir"`
-	ExcludePatterns []string        `json:"exclude_patterns"`
-	ExcludeDirs     []string        `json:"exclude_dirs"`
-	StalenessLevels StalenessLevels `json:"staleness_levels"`
-	FileLevelOnly   bool            `json:"file_level_only"`
-	ParagraphLevel  bool            `json:"paragraph_level"`
-	Workers         int             `json:"workers"`
-	ShowReusables   bool            `json:"show_reusables"` // Show reusables in report (default false)
+	ThresholdDays     int             `json:"threshold_days"`
+	ContentDir        string          `json:"content_dir"`
+	ContentExtensions []string        `json:"content_extensions"` // File extensions to analyze (default: .md, .markdown, .mdx)
+	HugoRoot          string          `json:"hugo_root"`          // Hugo project root (auto-detected if not set)
+	ReusablesDir      string          `json:"reusables_dir"`      // Deprecated: use Reusables.Dir
+	Reusables         ReusablesConfig `json:"reusables"`
+	OutputDir         string          `json:"output_dir"`
+	ExcludePatterns   []string        `json:"exclude_patterns"`
+	ExcludeDirs       []string        `json:"exclude_dirs"`
+	StalenessLevels   StalenessLevels `json:"staleness_levels"`
+	FileLevelOnly     bool            `json:"file_level_only"`
+	ParagraphLevel    bool            `json:"paragraph_level"`
+	Workers           int             `json:"workers"`
+	ShowReusables     bool            `json:"show_reusables"` // Show reusables in report (default false)
 }
 
 // DefaultConfig returns a new Config with default values.
 func DefaultConfig() *Config {
 	return &Config{
-		ThresholdDays: 90,
-		OutputDir:     "./reports",
+		ThresholdDays:     90,
+		ContentExtensions: []string{".md", ".markdown", ".mdx"},
+		OutputDir:         "./reports",
 		Reusables: ReusablesConfig{
 			// Default patterns for Hugo shortcodes, MDX/JSX components
 			Patterns: []string{
@@ -97,6 +99,11 @@ func LoadConfig(path string) (*Config, error) {
 	// Ensure default reusable extensions if none specified
 	if len(cfg.Reusables.Extensions) == 0 {
 		cfg.Reusables.Extensions = []string{".md", ".mdx", ".html"}
+	}
+
+	// Ensure default content extensions if none specified
+	if len(cfg.ContentExtensions) == 0 {
+		cfg.ContentExtensions = []string{".md", ".markdown", ".mdx"}
 	}
 
 	// Validate configuration

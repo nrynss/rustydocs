@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -18,27 +19,34 @@ import (
 	"github.com/nrynss/rustydocs/internal/parser"
 )
 
-// binaryExtensions contains file extensions to skip (images, media, archives, etc.)
-var binaryExtensions = map[string]struct{}{
-	// Images
-	".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".svg": {}, ".ico": {}, ".webp": {}, ".bmp": {}, ".tiff": {},
-	// Media
-	".mp3": {}, ".mp4": {}, ".wav": {}, ".avi": {}, ".mov": {}, ".webm": {}, ".ogg": {},
-	// Archives
-	".zip": {}, ".tar": {}, ".gz": {}, ".bz2": {}, ".7z": {}, ".rar": {},
-	// Documents (non-text)
-	".pdf": {}, ".doc": {}, ".docx": {}, ".xls": {}, ".xlsx": {}, ".ppt": {}, ".pptx": {},
-	// Fonts
-	".woff": {}, ".woff2": {}, ".ttf": {}, ".otf": {}, ".eot": {},
-	// Other binary
-	".exe": {}, ".dll": {}, ".so": {}, ".dylib": {}, ".bin": {}, ".dat": {},
+// contentExtensionSet builds a lowercase, dot-prefixed set of allowed
+// documentation extensions, falling back to sensible defaults if empty.
+func contentExtensionSet(exts []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(exts))
+	for _, e := range exts {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		set[e] = struct{}{}
+	}
+	if len(set) == 0 {
+		for _, e := range []string{".md", ".markdown", ".mdx"} {
+			set[e] = struct{}{}
+		}
+	}
+	return set
 }
 
-// isBinaryFile returns true if the file should be skipped based on extension.
-func isBinaryFile(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	_, isBinary := binaryExtensions[ext]
-	return isBinary
+// isContentFile reports whether path has one of the allowed documentation
+// extensions (case-insensitive).
+func isContentFile(filePath string, exts map[string]struct{}) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	_, ok := exts[ext]
+	return ok
 }
 
 // ReusableInfo contains information about a reusable component.
@@ -139,33 +147,45 @@ func (r *Results) OldestFile() *FileAnalysis {
 	return oldest
 }
 
-func shouldExclude(path string, cfg *config.Config, baseDir string) bool {
-	relative, err := filepath.Rel(baseDir, path)
+func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
+	relative, err := filepath.Rel(baseDir, filePath)
 	if err != nil {
-		relative = path
+		relative = filePath
 	}
+	// Match on forward-slash paths so behavior is identical across platforms.
+	relative = filepath.ToSlash(relative)
+	base := path.Base(relative)
 
-	// Check exclude patterns
+	// Glob patterns (path.Match uses "/" and does not let "*" cross separators).
 	for _, pattern := range cfg.ExcludePatterns {
-		matched, err := filepath.Match(pattern, relative)
-		if err == nil && matched {
+		pattern = filepath.ToSlash(pattern)
+		if ok, _ := path.Match(pattern, relative); ok {
 			return true
 		}
-		// Also check if pattern matches any part of the path
-		if strings.Contains(relative, strings.TrimSuffix(pattern, "/*")) {
+		if ok, _ := path.Match(pattern, base); ok {
 			return true
+		}
+		// Treat "dir", "dir/", "dir/*" and "dir/**" as "everything under dir",
+		// matched on a segment boundary so "docs" does not match "mydocs/...".
+		prefix := strings.TrimSuffix(pattern, "/**")
+		prefix = strings.TrimSuffix(prefix, "/*")
+		prefix = strings.TrimSuffix(prefix, "/")
+		if prefix != "" {
+			if relative == prefix || strings.HasPrefix(relative, prefix+"/") {
+				return true
+			}
 		}
 	}
 
-	// Check exclude directories
-	// Normalize path separators for cross-platform compatibility
-	normalizedRelative := filepath.ToSlash(relative)
+	// Excluded directory names, matched on segment boundaries.
 	for _, dir := range cfg.ExcludeDirs {
-		if strings.HasPrefix(normalizedRelative, dir+"/") || normalizedRelative == dir {
-			return true
+		dir = strings.Trim(filepath.ToSlash(dir), "/")
+		if dir == "" {
+			continue
 		}
-		// Also match directory anywhere in path
-		if strings.Contains(normalizedRelative, "/"+dir+"/") {
+		if relative == dir ||
+			strings.HasPrefix(relative, dir+"/") ||
+			strings.Contains(relative, "/"+dir+"/") {
 			return true
 		}
 	}
@@ -376,15 +396,18 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		baseDir = filepath.Join(cwd, baseDir)
 	}
 
-	// Find all content files, skipping binary/non-text files
+	// Build the allowed documentation-extension set once.
+	extSet := contentExtensionSet(cfg.ContentExtensions)
+
+	// Find all documentation files matching the allowed extensions.
 	var mdFiles []string
-	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(baseDir, func(filePath string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
-			if !isBinaryFile(path) && !shouldExclude(path, cfg, baseDir) {
-				mdFiles = append(mdFiles, path)
+			if isContentFile(filePath, extSet) && !shouldExclude(filePath, cfg, baseDir) {
+				mdFiles = append(mdFiles, filePath)
 			}
 		}
 		return nil

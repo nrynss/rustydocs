@@ -39,6 +39,7 @@ func run() error {
 		fileLevelOnly  = flag.Bool("file-level-only", false, "Skip section-level analysis (faster)")
 		paragraphLevel = flag.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
 		excludeDirs    = flag.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
+		extensions     = flag.String("extensions", "", "Comma-separated documentation extensions to analyze (default: .md,.markdown,.mdx)")
 		workers        = flag.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
 		showVersion    = flag.Bool("version", false, "Show version and exit")
 	)
@@ -101,6 +102,17 @@ func run() error {
 			if d != "" {
 				cfg.ExcludeDirs = append(cfg.ExcludeDirs, d)
 			}
+		}
+	}
+	if *extensions != "" {
+		var exts []string
+		for _, e := range strings.Split(*extensions, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				exts = append(exts, e)
+			}
+		}
+		if len(exts) > 0 {
+			cfg.ContentExtensions = exts
 		}
 	}
 	if *workers > 0 {
