@@ -126,6 +126,10 @@ func GetBlameInfo(filePath string) ([]LineInfo, error) {
 func parseBlameFromReader(r interface{ Read([]byte) (int, error) }) ([]LineInfo, error) {
 	var linesInfo []LineInfo
 	scanner := bufio.NewScanner(r)
+	// Raise the token limit above bufio's 64KB default so a single long line
+	// (data URIs, long tables, minified blobs) doesn't make Scan() stop early
+	// with bufio.ErrTooLong and drop the entire file's blame.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	currentLine := make(map[string]string)
 	lineNumber := 0
@@ -153,13 +157,14 @@ func parseBlameFromReader(r interface{ Read([]byte) (int, error) }) ([]LineInfo,
 			}
 			currentLine = make(map[string]string)
 		} else if line != "" {
-			// Parse blame header lines
+			// A blame entry's header line is "<sha> <orig> <final> [group]";
+			// its first field is the commit hash. Every other porcelain line is
+			// a "key value" pair (author, author-time, summary, filename, ...).
 			parts := strings.SplitN(line, " ", 2)
-			if len(parts) == 2 {
+			if isCommitHash(parts[0]) {
+				currentLine["commit"] = parts[0]
+			} else if len(parts) == 2 {
 				currentLine[parts[0]] = parts[1]
-			} else if len(line) == 40 {
-				// This is a commit hash line
-				currentLine["commit"] = line
 			}
 		}
 	}
@@ -170,6 +175,7 @@ func parseBlameFromReader(r interface{ Read([]byte) (int, error) }) ([]LineInfo,
 func parseBlameOutput(output []byte) ([]LineInfo, error) {
 	var linesInfo []LineInfo
 	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	currentLine := make(map[string]string)
 	lineNumber := 0
@@ -197,18 +203,35 @@ func parseBlameOutput(output []byte) ([]LineInfo, error) {
 			}
 			currentLine = make(map[string]string)
 		} else if line != "" {
-			// Parse blame header lines
+			// A blame entry's header line is "<sha> <orig> <final> [group]";
+			// its first field is the commit hash. Every other porcelain line is
+			// a "key value" pair (author, author-time, summary, filename, ...).
 			parts := strings.SplitN(line, " ", 2)
-			if len(parts) == 2 {
+			if isCommitHash(parts[0]) {
+				currentLine["commit"] = parts[0]
+			} else if len(parts) == 2 {
 				currentLine[parts[0]] = parts[1]
-			} else if len(line) == 40 {
-				// This is a commit hash line
-				currentLine["commit"] = line
 			}
 		}
 	}
 
 	return linesInfo, scanner.Err()
+}
+
+// isCommitHash reports whether s is a git object name (40-hex SHA-1 or 64-hex
+// SHA-256). Used to recognize the header line of a blame porcelain entry, whose
+// first field is the commit hash followed by line numbers.
+func isCommitHash(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetGitRoot returns the root directory of the git repository (cached).
