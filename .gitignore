@@ -42,6 +42,4 @@ reports/
 .claude/
 .cursor/
 .grepai/
-
-# Claude Code instructions (machine-specific)
-CLAUDE.md
+.gcourer/

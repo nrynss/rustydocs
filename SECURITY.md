@@ -1,0 +1,41 @@
+# Security Policy
+
+## Supported versions
+
+rustydocs is pre-1.0 and ships fixes only against the latest release. Security
+fixes land on `main` and go out in the next version.
+
+| Version | Supported |
+| ------- | --------- |
+| latest release (`0.2.x`) | ✅ |
+| older releases | ❌ |
+
+## Reporting a vulnerability
+
+Please report security issues **privately** — do not open a public issue for a
+suspected vulnerability.
+
+Use GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability):
+go to the repository's **Security** tab → **Report a vulnerability**. This opens
+a private advisory visible only to the maintainers.
+
+When reporting, please include:
+
+- the version (`rustydocs --version`) and platform,
+- a description of the issue and its impact,
+- a minimal repository or input that reproduces it, if applicable,
+- any suggested remediation.
+
+You can expect an initial acknowledgement within a few days. Because rustydocs is
+a small, single-maintainer project, please allow reasonable time for a fix before
+any public disclosure.
+
+## Scope notes
+
+rustydocs reads files from a content tree, invokes `git` (`blame`, `log`) on the
+repository, and writes Markdown/HTML/JSON reports. The most relevant classes of
+issue are input-handling problems triggered by a malicious or malformed
+repository — for example: excessive resource use on crafted files, panics,
+path traversal in resolved includes or output paths, or HTML report output that
+injects markup from untrusted document content. Reports that demonstrate such
+behavior from a crafted input are in scope.
