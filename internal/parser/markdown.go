@@ -143,6 +143,10 @@ func ParseSections(content string, linesInfo []git.LineInfo, rp *ReusablePattern
 // ParseChunks parses markdown content into chunks.
 // If paragraphLevel is true, it also splits by paragraphs within sections.
 func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, rp *ReusablePatterns) []Chunk {
+	// Normalize CRLF so Windows line endings don't leave a trailing \r in
+	// section titles or content. Line counts are unchanged (split is still on
+	// "\n"), so git-blame line-number alignment is preserved.
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	contentLines := strings.Split(content, "\n")
 
 	// Find all headers and their positions
