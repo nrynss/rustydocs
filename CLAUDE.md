@@ -10,7 +10,7 @@ rustydocs is a Go CLI that finds **stale documentation** by analyzing git histor
 
 ```bash
 go build -o rustydocs ./cmd/rustydocs              # build
-go test ./...                                       # tests (only internal/git has them today)
+go test ./...                                       # tests
 go vet ./...                                        # vet
 gofmt -l .                                          # formatting check (must be empty)
 make build                                          # build with version ldflags
@@ -21,14 +21,14 @@ make build                                          # build with version ldflags
 go install github.com/nrynss/rustydocs/cmd/rustydocs@latest
 ```
 
-CI (`.github/workflows/ci.yml`) runs `go build`, `go test`, `go vet`, and a `gofmt` check. The release workflow (`.github/workflows/release.yml`) fires on a `v*` tag and cross-builds linux/darwin/windows × amd64/arm64 with SHA256 checksums.
+CI (`.github/workflows/ci.yml`) runs `go build`, `go test`, and `go vet` on Linux, Windows, and macOS, plus a `gofmt` check. The release workflow (`.github/workflows/release.yml`) fires on a `v*` tag and cross-builds linux/darwin/windows × amd64/arm64 with SHA256 checksums. All actions are pinned to commit SHAs.
 
 ## Architecture
 
 Pipeline in `cmd/rustydocs/main.go`: flags → `config` → `analyzer.AnalyzeWithProgress` → `report.Generate{Markdown,HTML,JSON}`.
 
 - `internal/config` — JSON config + CLI defaults, `Validate`, staleness tiers, `DetectHugoRoot` (walks up for a `layouts/` dir).
-- `internal/analyzer` — `filepath.WalkDir` over the content dir, a worker pool (`runtime.NumCPU()`, channel-fed) that analyzes each file, and the staleness math (section vs threshold, oldest/most-recent dates, reusable freshness folding).
+- `internal/analyzer` — `filepath.WalkDir` over the content dir filtered by the `content_extensions` allowlist, a worker pool (`runtime.NumCPU()`, channel-fed) that analyzes each file, and the staleness math (section vs threshold, oldest/most-recent dates, reusable freshness folding).
 - `internal/git` — wrappers around `git blame --line-porcelain` (streaming parser) and `git log`; per-directory git-root cache so multiple repos work.
 - `internal/parser` — section/paragraph chunking by header regex, reusable-reference detection (regex), and resolution (Hugo shortcode → `layouts/shortcodes/…` + traced data files, or a reusables dir).
 - `internal/report` — Markdown (string builder), HTML (`html/template`, embedded via `go:embed`), JSON.
@@ -37,11 +37,10 @@ Pipeline in `cmd/rustydocs/main.go`: flags → `config` → `analyzer.AnalyzeWit
 
 ## Gotchas
 
-- **The embedded HTML template is `internal/report/templates/report.html`** (the `go:embed` path is relative to the report package). The root `templates/report.html` is a stale, divergent duplicate — don't edit it (issue #6).
-- **`internal/git` tests use synthetic blame input.** Real `git blame --line-porcelain` headers are `<40-hex-sha> <orig> <final> <group>` — the tests omit the line numbers, which masks a parsing bug (#21). Test against realistic porcelain output.
-- **The walker currently analyzes every non-binary file, not just docs** (#1) — there's no extension allowlist yet, only a binary blocklist.
-- **`RelativePath` keeps OS separators**, so reports emit backslashes on Windows and HTML anchors break (#22). Normalize with `filepath.ToSlash` at the source.
-- **Requires `git` on PATH and full history.** Blame needs an unshallowed clone — CI must use `fetch-depth: 0`.
+- **Requires `git` on PATH and full history.** Blame needs an unshallowed clone — CI and any container must use `fetch-depth: 0`.
+- **Only files matching `content_extensions` are analyzed** (default `.md`/`.markdown`/`.mdx`; override via config or `--extensions`).
+- **The embedded HTML template is `internal/report/templates/report.html`** — the `go:embed` path is relative to the report package.
+- **Section detection is a per-line header regex**, so a `#` line inside a fenced code block can be misread as a heading; replacing it with goldmark is tracked in #27.
 
 ## Direction (see GitHub issues / epics)
 
