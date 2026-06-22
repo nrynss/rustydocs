@@ -1,153 +1,81 @@
 # Contributing to rustydocs
 
-Thank you for your interest in contributing to rustydocs! This document provides guidelines and instructions for contributing.
+Thanks for your interest in improving rustydocs! Bug reports, feature ideas, and
+pull requests are all welcome. This is a small project, so the process is light.
 
-## Code of Conduct
+By participating you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Be respectful and constructive in all interactions. We welcome contributors of all experience levels.
+## Getting started
 
-## Getting Started
-
-### Prerequisites
-
-- Go 1.21 or later
-- Git
-
-### Development Setup
-
-1. Fork the repository on GitHub
-2. Clone your fork:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/rustydocs.git
-   cd rustydocs
-   ```
-3. Add the upstream remote:
-   ```bash
-   git remote add upstream https://github.com/nrynss/rustydocs.git
-   ```
-4. Build the project:
-   ```bash
-   go build -o rustydocs ./cmd/rustydocs
-   ```
-
-## Making Changes
-
-### Branch Workflow
-
-1. Sync your fork with upstream:
-   ```bash
-   git fetch upstream
-   git checkout main
-   git merge upstream/main
-   ```
-2. Create a feature branch:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. Make your changes
-4. Commit with clear, descriptive messages
-
-### Code Style
-
-This project follows standard Go conventions:
-
-- Run `gofmt -w .` before committing (CI will fail otherwise)
-- Run `go vet ./...` to catch common issues
-- Keep functions focused and reasonably sized
-- Add comments for non-obvious logic
-
-### Testing
-
-Run tests before submitting:
+rustydocs is a standard Go (1.21+) CLI with **no external dependencies** — the
+standard library only. You need a Go toolchain and `git`.
 
 ```bash
-go test -v ./...
-```
-
-### Building
-
-```bash
-# Standard build
+git clone https://github.com/nrynss/rustydocs.git
+cd rustydocs
 go build -o rustydocs ./cmd/rustydocs
-
-# Build with version info
-make build
+./rustydocs --content-dir ./docs --threshold-days 90
 ```
 
-## Submitting Changes
+## Development loop
 
-### Pull Request Process
+Before opening a pull request, run the same checks CI enforces:
 
-1. Push your branch to your fork:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-2. Open a Pull Request against `main`
-3. Fill out the PR template with:
-   - Summary of changes
-   - Test plan describing how you verified the changes
-4. Wait for CI checks to pass
-5. Address any review feedback
+```bash
+gofmt -l .        # formatting — must print nothing (run `gofmt -w .` to fix)
+go vet ./...      # vet
+go test ./...     # tests
+```
 
-### PR Requirements
+## Conventions worth knowing
 
-- All CI checks must pass (build, test, lint)
-- At least one approving review is required
-- Keep PRs focused on a single change
+- **Zero external dependencies is a hard rule.** The core is standard-library
+  only and cross-compiles to a single static binary with a trivial
+  `GOOS`/`GOARCH` matrix. Don't add a module dependency (and never CGO) without
+  discussing it first. The one sanctioned exception under review is goldmark
+  (pure Go) for Markdown parsing — see #27.
+- **rustydocs shells out to `git`.** It needs `git` on `PATH` and the repo's
+  **full history** (no shallow clone). Anything reading blame/log lives in
+  `internal/git`.
+- **The embedded HTML template is `internal/report/templates/report.html`.** The
+  root `templates/report.html` is a stale duplicate; don't edit it (#6).
+- **Be careful with paths on Windows.** Use `filepath` helpers and normalize
+  display/anchor paths with `filepath.ToSlash` (#22).
+- **Keep the CLI/output honest** — don't add a flag or report field that only
+  half-works.
 
-## Reporting Issues
+## Pull requests
 
-### Bug Reports
+- Keep changes focused; one logical change per PR is easiest to review.
+- Add or update tests for behavior changes (`go test ./...`).
+- Update the `## [Unreleased]` section of [`CHANGELOG.md`](CHANGELOG.md) for any
+  user-facing change (the project follows
+  [Keep a Changelog](https://keepachangelog.com/) and
+  [Semantic Versioning](https://semver.org/)).
+- Reference the issue you're addressing (e.g. "Closes #12").
+- All CI checks (build, test, vet, gofmt) must pass.
 
-Include:
-- Go version (`go version`)
-- Operating system
-- Steps to reproduce
-- Expected vs actual behavior
-- Relevant error messages or logs
-
-### Feature Requests
-
-Include:
-- Use case description
-- Proposed solution (if any)
-- Alternatives considered
-
-## Project Structure
+## Project structure
 
 ```
-cmd/rustydocs/          CLI entry point
+cmd/rustydocs/          CLI entry point (main.go)
 internal/
-  analyzer/             Core orchestration, parallel file analysis
-  config/               Configuration loading and validation
-  git/                  Git blame/log integration
-  parser/               Markdown parsing, section extraction
-  report/               Report generators (Markdown, HTML, JSON)
-templates/              HTML report template (embedded)
+  analyzer/             Orchestration — WalkDir, worker pool, staleness math
+  config/               Config loading/validation, staleness tiers
+  git/                  git blame / git log wrappers, root cache
+  parser/               Section/paragraph chunking, reusable detection
+  report/               Markdown / HTML (embedded template) / JSON output
 ```
 
-## Labels
+## Reporting bugs / requesting features
 
-When opening issues, maintainers will add relevant labels:
+Open an issue using the templates. For **security** issues, follow
+[`SECURITY.md`](SECURITY.md) — please don't file a public issue. For general
+questions, use [Discussions](https://github.com/nrynss/rustydocs/discussions).
 
-| Label | Description |
-|-------|-------------|
-| `bug` | Something isn't working |
-| `enhancement` | New feature or improvement |
-| `good first issue` | Good for newcomers |
-| `help wanted` | Extra attention needed |
-| `git-integration` | Related to git blame/log |
-| `parser` | Markdown parsing |
-| `report` | Report generation |
-| `config` | Configuration/CLI options |
-| `performance` | Performance improvements |
-| `windows` | Windows-specific issues |
+When opening issues, maintainers add labels such as `bug`, `enhancement`,
+`good first issue`, `git-integration`, `parser`, `report`, `config`,
+`performance`, and `windows`.
 
-## Questions?
-
-- Open a [Discussion](https://github.com/nrynss/rustydocs/discussions) for general questions
-- Check existing issues before opening a new one
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the Apache 2.0 License.
+By contributing, you agree that your contributions are licensed under the
+project's [Apache-2.0 license](LICENSE).
