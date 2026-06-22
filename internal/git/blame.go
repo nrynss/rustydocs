@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	cachedGitRoot string
-	gitRootOnce   sync.Once
+	cachedGitRoot    string
+	cachedGitRootErr error
+	gitRootOnce      sync.Once
 )
 
 // LineInfo contains information about a single line from git blame.
@@ -172,50 +173,10 @@ func parseBlameFromReader(r interface{ Read([]byte) (int, error) }) ([]LineInfo,
 	return linesInfo, scanner.Err()
 }
 
+// parseBlameOutput parses a complete git blame output buffer. Thin wrapper over
+// the streaming parser so the parsing logic lives in exactly one place.
 func parseBlameOutput(output []byte) ([]LineInfo, error) {
-	var linesInfo []LineInfo
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
-	currentLine := make(map[string]string)
-	lineNumber := 0
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "\t") {
-			// This is the actual content line
-			content := line[1:] // Remove leading tab
-			lineNumber++
-
-			if authorTime, ok := currentLine["author-time"]; ok {
-				ts, err := strconv.ParseInt(authorTime, 10, 64)
-				if err == nil {
-					linesInfo = append(linesInfo, LineInfo{
-						LineNumber:  lineNumber,
-						Author:      currentLine["author"],
-						AuthorEmail: currentLine["author-mail"],
-						Timestamp:   time.Unix(ts, 0),
-						CommitHash:  currentLine["commit"],
-						Content:     content,
-					})
-				}
-			}
-			currentLine = make(map[string]string)
-		} else if line != "" {
-			// A blame entry's header line is "<sha> <orig> <final> [group]";
-			// its first field is the commit hash. Every other porcelain line is
-			// a "key value" pair (author, author-time, summary, filename, ...).
-			parts := strings.SplitN(line, " ", 2)
-			if isCommitHash(parts[0]) {
-				currentLine["commit"] = parts[0]
-			} else if len(parts) == 2 {
-				currentLine[parts[0]] = parts[1]
-			}
-		}
-	}
-
-	return linesInfo, scanner.Err()
+	return parseBlameFromReader(bytes.NewReader(output))
 }
 
 // isCommitHash reports whether s is a git object name (40-hex SHA-1 or 64-hex
@@ -238,20 +199,16 @@ func isCommitHash(s string) bool {
 // Note: This uses the current working directory, which may not be correct
 // for files in different repositories. Use GetGitRootForPath for files.
 func GetGitRoot() (string, error) {
-	var initErr error
 	gitRootOnce.Do(func() {
 		cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 		output, err := cmd.Output()
 		if err != nil {
-			initErr = err
+			cachedGitRootErr = err
 			return
 		}
 		cachedGitRoot = strings.TrimSpace(string(output))
 	})
-	if cachedGitRoot == "" && initErr != nil {
-		return "", initErr
-	}
-	return cachedGitRoot, nil
+	return cachedGitRoot, cachedGitRootErr
 }
 
 // gitRootCache caches git roots per directory to avoid repeated git calls.

@@ -579,18 +579,6 @@ func normalizeReusableName(name string) string {
 	return name
 }
 
-func trimKnownExt(name string, exts []string) string {
-	for _, ext := range exts {
-		if strings.HasSuffix(name, ext) {
-			return strings.TrimSuffix(name, ext)
-		}
-	}
-	if strings.HasSuffix(name, ".html") {
-		return strings.TrimSuffix(name, ".html")
-	}
-	return name
-}
-
 // CalculateSectionStaleness calculates the effective staleness date for a chunk.
 // Takes into account both the chunk's own lines and any reusable components.
 func CalculateSectionStaleness(section *Chunk, rp *ReusablePatterns) *time.Time {
