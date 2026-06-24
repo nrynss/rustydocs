@@ -9,20 +9,6 @@ import (
 	"github.com/nrynss/rustydocs/internal/testutil"
 )
 
-// realDir returns the symlink-resolved repo root. On macOS t.TempDir() lives
-// under /var/folders/... which is a symlink to /private/var/folders/...;
-// "git rev-parse --show-toplevel" reports the resolved path, so we must build
-// absolute paths from the resolved root for filepath.Rel (and thus git log)
-// to line up.
-func realDir(t *testing.T, repo *testutil.Repo) string {
-	t.Helper()
-	resolved, err := filepath.EvalSymlinks(repo.Dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks(%q): %v", repo.Dir, err)
-	}
-	return resolved
-}
-
 // defaultPatternStrings mirrors the hardcoded patterns used by
 // DefaultReusablePatterns, so resolution tests can build a ReusablePatterns
 // with custom roots while keeping the same matching behavior.
@@ -300,7 +286,7 @@ func TestGetReusableInfo_HugoShortcode(t *testing.T) {
 		"layouts/shortcodes/note.html": testutil.ReadFixture(t, "hugo-site/layouts/shortcodes/note.html"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", realDir(t, repo))
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", repo.Dir)
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
@@ -330,7 +316,7 @@ func TestGetReusableInfo_HugoShortcode_DataDepNewer(t *testing.T) {
 		"data/x.txt": testutil.ReadFixture(t, "hugo-site/data/x.txt"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", realDir(t, repo))
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", repo.Dir)
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
@@ -354,7 +340,7 @@ func TestGetReusableInfo_ReusablesDir(t *testing.T) {
 		"shared/foo.md": testutil.ReadFixture(t, "hugo-site/shared/foo.md"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(repo.Dir, "shared"), "")
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
@@ -379,7 +365,7 @@ func TestGetReusableInfo_ReusablesDir_IndexConvention(t *testing.T) {
 		"shared/bar/index.md": testutil.ReadFixture(t, "hugo-site/shared/bar/index.md"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(repo.Dir, "shared"), "")
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
@@ -404,7 +390,7 @@ func TestGetReusableInfo_Unresolvable(t *testing.T) {
 	repo.Commit(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), "init", map[string]string{
 		"data/x.txt": "x\n",
 	})
-	root := realDir(t, repo)
+	root := repo.Dir
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, filepath.Join(root, "shared"), root)
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
@@ -424,7 +410,7 @@ func TestCalculateSectionStaleness_MostRecent(t *testing.T) {
 		"shared/widget.md": testutil.ReadFixture(t, "hugo-site/shared/widget.md"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(repo.Dir, "shared"), "")
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
@@ -457,7 +443,7 @@ func TestCalculateSectionStaleness_LinesDrive(t *testing.T) {
 		"shared/widget.md": testutil.ReadFixture(t, "hugo-site/shared/widget.md"),
 	})
 
-	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(repo.Dir, "shared"), "")
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
