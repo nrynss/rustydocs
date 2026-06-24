@@ -1,0 +1,38 @@
+# golangci-lint configuration. Pinned to the v2 schema; CI installs the matching
+# binary version (see .github/workflows/ci.yml).
+version: "2"
+
+linters:
+  # Start from nothing and enable an explicit, stable set rather than tracking
+  # whatever "standard" happens to include.
+  default: none
+  enable:
+    - errcheck # unchecked errors — the policy this config exists for
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      # Best-effort writes to the console are ignored throughout the codebase by
+      # convention; checking each one is noise, not safety. errcheck still flags
+      # unchecked errors from real sources (file/OS/git operations).
+      exclude-functions:
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    staticcheck:
+      # Keep the bug-finding (SA) and simplification (S) checks; drop the QF
+      # "quickfix" opinions. QF1001 in particular (De Morgan's law) would make
+      # internal/git/blame.go:isCommitHash strictly less readable.
+      checks:
+        - all
+        - -QF1001
+        - -QF1012
+
+formatters:
+  enable:
+    - gofmt

@@ -56,9 +56,7 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	)
 
 	fs.Usage = func() {
-		// Usage output is best-effort; deliberately ignore stderr write errors
-		// (as the flag package itself does) so errcheck stays quiet.
-		_, _ = fmt.Fprint(stderr, "rustydocs - Find stale documentation using git history\n\n"+
+		fmt.Fprint(stderr, "rustydocs - Find stale documentation using git history\n\n"+
 			"Usage: rustydocs [OPTIONS]\n\nOptions:\n")
 		fs.PrintDefaults()
 	}

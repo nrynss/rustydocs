@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   site (Markdown/MDX docs, a shortcode with a traced `readFile` data dependency,
   and reusables) that the parser and analyzer tests load via the `testutil`
   helpers (`ReadFixture`, `CommitTree`).
+- `.golangci.yml` (golangci-lint v2) with an **errcheck** policy plus `govet`,
+  `ineffassign`, `staticcheck`, and `unused`. errcheck excludes best-effort
+  console writes (`fmt.Print*`/`fmt.Fprint*`); the `QF1001`/`QF1012` quickfix
+  opinions are disabled. Run with `golangci-lint run ./...`.
 - Reports surface a `files_missing_history` count (JSON summary, Markdown, and a
   highlighted note in HTML), and the CLI prints a stderr warning when files
   cannot be assessed.
