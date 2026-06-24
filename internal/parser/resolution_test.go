@@ -293,11 +293,11 @@ func TestGetReusableInfo_HugoShortcode(t *testing.T) {
 
 	// Commit the data dependency first (older).
 	repo.Commit(dataDate, "add data", map[string]string{
-		"data/x.txt": "some data\n",
+		"data/x.txt": testutil.ReadFixture(t, "hugo-site/data/x.txt"),
 	})
 	// Then commit the shortcode template (newer) that traces the data file.
 	repo.Commit(tmplDate, "add shortcode", map[string]string{
-		"layouts/shortcodes/note.html": "{{ readFile \"data/x.txt\" }}\n",
+		"layouts/shortcodes/note.html": testutil.ReadFixture(t, "hugo-site/layouts/shortcodes/note.html"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", realDir(t, repo))
@@ -324,10 +324,10 @@ func TestGetReusableInfo_HugoShortcode_DataDepNewer(t *testing.T) {
 	dataDate := time.Date(2024, 11, 20, 12, 0, 0, 0, time.UTC)
 
 	repo.Commit(tmplDate, "add shortcode", map[string]string{
-		"layouts/shortcodes/note.html": "{{ readFile \"data/x.txt\" }}\n",
+		"layouts/shortcodes/note.html": testutil.ReadFixture(t, "hugo-site/layouts/shortcodes/note.html"),
 	})
 	repo.Commit(dataDate, "update data", map[string]string{
-		"data/x.txt": "newer data\n",
+		"data/x.txt": testutil.ReadFixture(t, "hugo-site/data/x.txt"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", realDir(t, repo))
@@ -351,7 +351,7 @@ func TestGetReusableInfo_ReusablesDir(t *testing.T) {
 
 	fooDate := time.Date(2024, 5, 5, 9, 0, 0, 0, time.UTC)
 	repo.Commit(fooDate, "add shared foo", map[string]string{
-		"shared/foo.md": "# Foo\nshared content\n",
+		"shared/foo.md": testutil.ReadFixture(t, "hugo-site/shared/foo.md"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
@@ -376,7 +376,7 @@ func TestGetReusableInfo_ReusablesDir_IndexConvention(t *testing.T) {
 
 	barDate := time.Date(2024, 7, 7, 9, 0, 0, 0, time.UTC)
 	repo.Commit(barDate, "add shared bar index", map[string]string{
-		"shared/bar/index.md": "# Bar\nindexed content\n",
+		"shared/bar/index.md": testutil.ReadFixture(t, "hugo-site/shared/bar/index.md"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
@@ -421,7 +421,7 @@ func TestCalculateSectionStaleness_MostRecent(t *testing.T) {
 
 	reusableDate := time.Date(2024, 12, 1, 12, 0, 0, 0, time.UTC)
 	repo.Commit(reusableDate, "add shared", map[string]string{
-		"shared/widget.md": "# Widget\n",
+		"shared/widget.md": testutil.ReadFixture(t, "hugo-site/shared/widget.md"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")
@@ -454,7 +454,7 @@ func TestCalculateSectionStaleness_LinesDrive(t *testing.T) {
 
 	reusableDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	repo.Commit(reusableDate, "add shared", map[string]string{
-		"shared/widget.md": "# Widget\n",
+		"shared/widget.md": testutil.ReadFixture(t, "hugo-site/shared/widget.md"),
 	})
 
 	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, filepath.Join(realDir(t, repo), "shared"), "")

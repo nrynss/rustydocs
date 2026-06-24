@@ -1,0 +1,3 @@
+# Widget
+
+Reusable widget snippet.

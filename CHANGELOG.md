@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `internal/testutil` test helper: builds a temporary git repository and commits
   files with controlled author/committer dates, so blame/log timestamps and
   staleness results are deterministic in tests.
+- Committed test fixtures under `internal/testutil/testdata/` — a sample Hugo
+  site (Markdown/MDX docs, a shortcode with a traced `readFile` data dependency,
+  and reusables) that the parser and analyzer tests load via the `testutil`
+  helpers (`ReadFixture`, `CommitTree`).
 - Reports surface a `files_missing_history` count (JSON summary, Markdown, and a
   highlighted note in HTML), and the CLI prints a stderr warning when files
   cannot be assessed.
@@ -38,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The progress-reporter goroutine in `AnalyzeWithProgress` is now joined before
   the function returns, so its output can no longer race a caller writing to the
   same stream (caught by `go test -race`).
+- `git.GetFileLastModified` resolves symlinks before computing the path relative
+  to the git root, so a tracked file reached through a symlinked working tree
+  (e.g. macOS `/var` → `/private/var`, or a symlinked checkout) is no longer
+  reported as having no history.
 
 ### Changed
 

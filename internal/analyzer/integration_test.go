@@ -64,6 +64,49 @@ func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	}
 }
 
+// TestAnalyze_HugoSiteFixture runs the full analyzer over the committed
+// testdata/hugo-site fixture: it exercises Hugo-root auto-detection and Hugo
+// shortcode resolution (including the traced readFile data dependency) end to
+// end, not just in isolation.
+func TestAnalyze_HugoSiteFixture(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.CommitTree(now.AddDate(0, 0, -300), "import hugo site", "hugo-site", ".")
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("content/docs") // layouts/ lives at the repo root
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	// _index.md, install.md, guide.mdx
+	if res.TotalFiles() != 3 {
+		t.Fatalf("TotalFiles = %d, want 3 (%v)", res.TotalFiles(), res.Files)
+	}
+	// Everything was committed 300 days ago (> 90-day threshold).
+	if res.StaleFiles() != 3 {
+		t.Errorf("StaleFiles = %d, want 3", res.StaleFiles())
+	}
+	// The {{< note >}} shortcode must be detected and resolved to a date via the
+	// auto-detected layouts/ root.
+	var note *ReusableInfo
+	for i := range res.AllReusables {
+		if res.AllReusables[i].Name == "note" {
+			note = &res.AllReusables[i]
+		}
+	}
+	if note == nil {
+		t.Fatalf("expected 'note' reusable, got %+v", res.AllReusables)
+	}
+	if note.LastUpdated == nil {
+		t.Error("'note' shortcode was not resolved to a date (Hugo root / readFile tracing)")
+	}
+}
+
 func TestAnalyze_MissingHistoryNotFresh(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)
