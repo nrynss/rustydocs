@@ -9,13 +9,10 @@ import (
 	"github.com/nrynss/rustydocs/internal/testutil"
 )
 
-// defaultPatternStrings mirrors the hardcoded patterns used by
-// DefaultReusablePatterns, so resolution tests can build a ReusablePatterns
-// with custom roots while keeping the same matching behavior.
-var defaultPatternStrings = []string{
-	`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-	`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
-}
+// defaultPatternStrings reuses the production defaultReusablePatternStrings so
+// resolution tests build a ReusablePatterns with custom roots while keeping the
+// same matching behavior as DefaultReusablePatterns (single source of truth).
+var defaultPatternStrings = defaultReusablePatternStrings
 
 func mkLine(n int, ts time.Time, author string) git.LineInfo {
 	return git.LineInfo{
@@ -96,14 +93,19 @@ func TestChunk_LastAuthor(t *testing.T) {
 }
 
 func TestChunk_DisplayTitle(t *testing.T) {
-	header := &Chunk{Title: "Installation", IsHeader: true}
-	if got := header.DisplayTitle(); got != "Installation" {
-		t.Errorf("DisplayTitle (header) = %q, want %q", got, "Installation")
-	}
-
-	para := &Chunk{Title: "Body (L5)", IsHeader: false}
-	if got := para.DisplayTitle(); got != "Body (L5)" {
-		t.Errorf("DisplayTitle (paragraph) = %q, want %q", got, "Body (L5)")
+	// DisplayTitle is a pass-through: the line marker (e.g. "(L5)") is already
+	// baked into Title by createParagraphChunk, so the title is returned verbatim
+	// regardless of IsHeader.
+	for _, tt := range []struct {
+		name  string
+		chunk Chunk
+	}{
+		{"header", Chunk{Title: "Installation", IsHeader: true}},
+		{"paragraph", Chunk{Title: "Body (L5)", IsHeader: false}},
+	} {
+		if got := tt.chunk.DisplayTitle(); got != tt.chunk.Title {
+			t.Errorf("DisplayTitle (%s) = %q, want %q", tt.name, got, tt.chunk.Title)
+		}
 	}
 }
 

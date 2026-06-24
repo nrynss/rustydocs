@@ -39,7 +39,7 @@ func TestNormalize_KeepsTiersMonotonic(t *testing.T) {
 	}
 	c.Normalize()
 	l := c.StalenessLevels
-	if !(l.Warning <= l.Caution && l.Caution <= l.Critical) {
+	if l.Warning > l.Caution || l.Caution > l.Critical {
 		t.Errorf("tiers not monotonic: %+v", l)
 	}
 	if l.Warning != 10 {
