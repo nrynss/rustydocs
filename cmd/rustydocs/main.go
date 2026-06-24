@@ -4,6 +4,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,38 +29,49 @@ func main() {
 	}
 }
 
+// run wires up the real process I/O and delegates to runArgs.
 func run() error {
-	// Define flags
+	return runArgs(os.Args[1:], os.Stdout, os.Stderr)
+}
+
+// runArgs parses argv and runs the full pipeline, writing normal output to
+// stdout and diagnostics to stderr. It uses its own FlagSet (rather than the
+// global flag.CommandLine) so it is reentrant and can be driven from tests.
+func runArgs(argv []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("rustydocs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
 	var (
-		configPath     = flag.String("config", "", "Path to JSON config file")
-		contentDir     = flag.String("content-dir", "", "Directory containing markdown files")
-		reusablesDir   = flag.String("reusables-dir", "", "Directory containing reusable components")
-		outputDir      = flag.String("output-dir", "", "Output directory for reports")
-		thresholdDays  = flag.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
-		fileLevelOnly  = flag.Bool("file-level-only", false, "Skip section-level analysis (faster)")
-		paragraphLevel = flag.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
-		excludeDirs    = flag.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
-		extensions     = flag.String("extensions", "", "Comma-separated documentation extensions to analyze (default: .md,.markdown,.mdx)")
-		workers        = flag.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
-		showVersion    = flag.Bool("version", false, "Show version and exit")
+		configPath     = fs.String("config", "", "Path to JSON config file")
+		contentDir     = fs.String("content-dir", "", "Directory containing markdown files")
+		reusablesDir   = fs.String("reusables-dir", "", "Directory containing reusable components")
+		outputDir      = fs.String("output-dir", "", "Output directory for reports")
+		thresholdDays  = fs.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
+		fileLevelOnly  = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
+		paragraphLevel = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
+		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
+		extensions     = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: .md,.markdown,.mdx)")
+		workers        = fs.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
+		showVersion    = fs.Bool("version", false, "Show version and exit")
 	)
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "rustydocs - Find stale documentation using git history\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: rustydocs [OPTIONS]\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "rustydocs - Find stale documentation using git history\n\n"+
+			"Usage: rustydocs [OPTIONS]\n\nOptions:\n")
+		fs.PrintDefaults()
 	}
 
-	flag.Parse()
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
 
 	if *showVersion {
-		fmt.Printf("rustydocs %s\n", version)
+		fmt.Fprintf(stdout, "rustydocs %s\n", version)
 		if commit != "none" {
-			fmt.Printf("  commit: %s\n", commit)
+			fmt.Fprintf(stdout, "  commit: %s\n", commit)
 		}
 		if date != "unknown" {
-			fmt.Printf("  built:  %s\n", date)
+			fmt.Fprintf(stdout, "  built:  %s\n", date)
 		}
 		return nil
 	}
@@ -119,6 +131,10 @@ func run() error {
 		cfg.Workers = *workers
 	}
 
+	// Reconcile the reporting threshold with the staleness tiers so a stale
+	// section can never be classified "fresh" (see #54).
+	cfg.Normalize()
+
 	// Validate config
 	if cfg.ContentDir == "" {
 		return fmt.Errorf("--content-dir is required")
@@ -134,10 +150,10 @@ func run() error {
 	if workerCount <= 0 {
 		workerCount = runtime.NumCPU()
 	}
-	fmt.Printf("Analyzing documentation in: %s\n", cfg.ContentDir)
-	fmt.Printf("Threshold: %d days | Workers: %d\n\n", cfg.ThresholdDays, workerCount)
+	fmt.Fprintf(stdout, "Analyzing documentation in: %s\n", cfg.ContentDir)
+	fmt.Fprintf(stdout, "Threshold: %d days | Workers: %d\n\n", cfg.ThresholdDays, workerCount)
 
-	results, err := analyzer.AnalyzeWithProgress(cfg, os.Stdout)
+	results, err := analyzer.AnalyzeWithProgress(cfg, stdout)
 	if err != nil {
 		return fmt.Errorf("unable to analyze: %w", err)
 	}
@@ -164,17 +180,26 @@ func run() error {
 		return fmt.Errorf("unable to generate JSON report: %w", err)
 	}
 
-	fmt.Printf("\nReports generated:\n")
-	fmt.Printf("  Markdown: %s\n", mdPath)
-	fmt.Printf("  HTML:     %s\n", htmlPath)
-	fmt.Printf("  JSON:     %s\n", jsonPath)
+	fmt.Fprintf(stdout, "\nReports generated:\n")
+	fmt.Fprintf(stdout, "  Markdown: %s\n", mdPath)
+	fmt.Fprintf(stdout, "  HTML:     %s\n", htmlPath)
+	fmt.Fprintf(stdout, "  JSON:     %s\n", jsonPath)
 
 	// Print summary
-	fmt.Printf("\nSummary:\n")
-	fmt.Printf("  Files scanned: %d\n", results.TotalFiles())
-	fmt.Printf("  Files with stale content: %d (%.1f%%)\n", results.StaleFiles(), results.StaleFilesPct())
-	fmt.Printf("  Sections analyzed: %d\n", results.TotalSections())
-	fmt.Printf("  Stale sections: %d (%.1f%%)\n", results.StaleSections(), results.StaleSectionsPct())
+	fmt.Fprintf(stdout, "\nSummary:\n")
+	fmt.Fprintf(stdout, "  Files scanned: %d\n", results.TotalFiles())
+	fmt.Fprintf(stdout, "  Files with stale content: %d (%.1f%%)\n", results.StaleFiles(), results.StaleFilesPct())
+	fmt.Fprintf(stdout, "  Sections analyzed: %d\n", results.TotalSections())
+	fmt.Fprintf(stdout, "  Stale sections: %d (%.1f%%)\n", results.StaleSections(), results.StaleSectionsPct())
+
+	// Surface files we could not assess so a misconfigured (shallow or partly
+	// uncommitted) checkout does not silently report as clean. See #55.
+	if missing := results.FilesMissingHistory(); missing > 0 {
+		fmt.Fprintf(stdout, "  Files with no git history (staleness unknown): %d\n", missing)
+		fmt.Fprintf(stderr, "\nWarning: %d file(s) had no git history and could not be assessed "+
+			"(uncommitted files, a shallow clone, or not a git repository); "+
+			"they are reported as unknown, not fresh. Ensure a full clone (fetch-depth: 0).\n", missing)
+	}
 
 	return nil
 }

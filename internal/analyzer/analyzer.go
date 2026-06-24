@@ -19,6 +19,10 @@ import (
 	"github.com/nrynss/rustydocs/internal/parser"
 )
 
+// nowFunc returns the current time. It is a package variable so tests can pin
+// "now" and assert deterministic staleness math.
+var nowFunc = time.Now
+
 // contentExtensionSet builds a lowercase, dot-prefixed set of allowed
 // documentation extensions, falling back to sensible defaults if empty.
 func contentExtensionSet(exts []string) map[string]struct{} {
@@ -69,6 +73,11 @@ type FileAnalysis struct {
 	OldestSectionDate    *time.Time
 	DaysStale            int
 	OldestSectionDays    int
+	// HistoryMissing is true when git produced no timestamps for the file
+	// (neither file-level nor line-level), e.g. an uncommitted file, a shallow
+	// clone, or a content tree that is not a git repository. Such a file cannot
+	// be assessed for staleness and must NOT be treated as fresh. See #55.
+	HistoryMissing bool
 }
 
 // IsStale returns true if the file has any stale content.
@@ -94,6 +103,18 @@ func (r *Results) StaleFiles() int {
 	count := 0
 	for _, f := range r.Files {
 		if f.IsStale() {
+			count++
+		}
+	}
+	return count
+}
+
+// FilesMissingHistory returns the number of files for which git produced no
+// history, so their staleness is unknown rather than fresh. See #55.
+func (r *Results) FilesMissingHistory() int {
+	count := 0
+	for _, f := range r.Files {
+		if f.HistoryMissing {
 			count++
 		}
 	}
@@ -194,7 +215,7 @@ func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 }
 
 func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalysis {
-	now := time.Now()
+	now := nowFunc()
 	thresholdDate := now.Add(-time.Duration(cfg.ThresholdDays) * 24 * time.Hour)
 
 	// Get file-level info
@@ -338,6 +359,11 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		reusables = append(reusables, r)
 	}
 
+	// No git history at all (no file-level commit and no blame timestamps) means
+	// staleness is unknown for this file — record it so it is reported as such
+	// instead of silently passing as fresh. See #55.
+	historyMissing := fileInfo == nil && len(linesInfo) == 0
+
 	return FileAnalysis{
 		Path:                 filePath,
 		RelativePath:         relativePath,
@@ -349,6 +375,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		OldestSectionDate:    oldestSectionDate,
 		DaysStale:            daysStale,
 		OldestSectionDays:    oldestSectionDays,
+		HistoryMissing:       historyMissing,
 	}
 }
 
@@ -429,10 +456,14 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 	var completed int64
 	total := len(mdFiles)
 
-	// Progress reporter
+	// Progress reporter. reporterDone is closed when the goroutine has fully
+	// returned, so callers (and tests) can be sure no further writes to the
+	// progress writer happen after AnalyzeWithProgress returns.
 	done := make(chan struct{})
+	reporterDone := make(chan struct{})
 	if progress != nil {
 		go func() {
+			defer close(reporterDone)
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
 			for {
@@ -446,6 +477,8 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 				}
 			}
 		}()
+	} else {
+		close(reporterDone)
 	}
 
 	// Start workers
@@ -468,10 +501,12 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 
 	wg.Wait()
 
-	// Stop progress reporter
+	// Stop the progress reporter and wait for it to finish, so no progress
+	// output races a caller writing to the same stream afterwards.
 	if progress != nil {
 		close(done)
 	}
+	<-reporterDone
 
 	// Sort by relative path
 	sort.Slice(analyses, func(i, j int) bool {
@@ -502,6 +537,6 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		Files:        analyses,
 		AllReusables: allReusables,
 		Config:       cfg,
-		GeneratedAt:  time.Now(),
+		GeneratedAt:  nowFunc(),
 	}, nil
 }

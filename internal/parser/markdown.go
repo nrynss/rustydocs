@@ -68,11 +68,10 @@ func (c *Chunk) LastAuthor() string {
 	return latest.Author
 }
 
-// DisplayTitle returns a display-friendly title with line number.
+// DisplayTitle returns the chunk's display title. For header chunks this is the
+// heading text; for paragraph chunks Title already carries the "(L<n>)" line
+// marker set in createParagraphChunk, so the value is returned as-is either way.
 func (c *Chunk) DisplayTitle() string {
-	if c.IsHeader {
-		return c.Title
-	}
 	return c.Title
 }
 
@@ -112,16 +111,21 @@ func NewReusablePatterns(patterns []string, extensions []string, reusablesDir st
 	return rp, nil
 }
 
+// defaultReusablePatternStrings are the built-in reusable-reference regexes used
+// by DefaultReusablePatterns. Exposed at package scope so tests can build a
+// ReusablePatterns with custom roots from the same source of truth.
+var defaultReusablePatternStrings = []string{
+	// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
+	`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
+	// MDX/JSX components: <Component>, <Component />, <Component prop="val">
+	`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
+}
+
 // DefaultReusablePatterns returns default patterns for Hugo shortcodes and MDX components.
 func DefaultReusablePatterns() *ReusablePatterns {
 	// These patterns are hardcoded and should always compile successfully
 	rp, err := NewReusablePatterns(
-		[]string{
-			// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
-			`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-			// MDX/JSX components: <Component>, <Component />, <Component prop="val">
-			`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
-		},
+		defaultReusablePatternStrings,
 		[]string{".md", ".mdx", ".html"},
 		"",
 		"",

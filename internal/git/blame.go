@@ -47,10 +47,22 @@ func GetFileLastModified(filePath string) (*FileInfo, error) {
 		gitRoot = filepath.Dir(filePath)
 	}
 
-	// Make path relative to git root if absolute
+	// Make the path relative to the git root for the pathspec. GetGitRootForPath
+	// returns a symlink-resolved root (git rev-parse --show-toplevel), so the
+	// file path must be resolved too — otherwise on a symlinked tree (e.g. macOS
+	// /var -> /private/var, or a symlinked checkout) Rel produces a path that
+	// escapes the repo and `git log` matches nothing, making a tracked file look
+	// like it has no history.
 	relPath := filePath
-	if filepath.IsAbs(filePath) && gitRoot != "" {
-		if rel, err := filepath.Rel(gitRoot, filePath); err == nil {
+	if gitRoot != "" {
+		abs := filePath
+		if a, err := filepath.Abs(filePath); err == nil {
+			abs = a
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
+		if rel, err := filepath.Rel(gitRoot, abs); err == nil {
 			relPath = rel
 		}
 	}

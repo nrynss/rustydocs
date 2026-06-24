@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-24
+
+### Added
+
+- Comprehensive test coverage across every package — analyzer, parser, config,
+  report, and the CLI — raising total statement coverage from ~29% to ~83%
+  (each package now ≥80%), with the staleness/date math fully exercised (#53).
+- `internal/testutil` test helper: builds a temporary git repository and commits
+  files with controlled author/committer dates, so blame/log timestamps and
+  staleness results are deterministic in tests.
+- Committed test fixtures under `internal/testutil/testdata/` — a sample Hugo
+  site (Markdown/MDX docs, a shortcode with a traced `readFile` data dependency,
+  and reusables) that the parser and analyzer tests load via the `testutil`
+  helpers (`ReadFixture`, `CommitTree`).
+- `.golangci.yml` (golangci-lint v2) with an **errcheck** policy plus `govet`,
+  `ineffassign`, `staticcheck`, and `unused`. errcheck excludes best-effort
+  console writes (`fmt.Print*`/`fmt.Fprint*`); the `QF1001`/`QF1012` quickfix
+  opinions are disabled. Run with `golangci-lint run ./...`.
+- Reports surface a `files_missing_history` count (JSON summary, Markdown, and a
+  highlighted note in HTML), and the CLI prints a stderr warning when files
+  cannot be assessed.
+
+### Fixed
+
+- Stale sections are no longer classified `fresh`. `threshold_days` and
+  `staleness_levels` were applied independently, so e.g. `--threshold-days 30`
+  with the default `warning: 90` reported a 45-day-old section as stale **and**
+  labeled it `fresh`. `Config.Normalize` now clamps the warning tier to the
+  threshold (tiers stay monotonic) (#54).
+- Files with no git history (uncommitted, shallow clone, or not a git
+  repository) are reported as **unknown** rather than silently passing as fresh;
+  a stderr warning and a summary count make a misconfigured checkout visible
+  (#55).
+- An unknown section date now renders consistently across formats — `Unknown` /
+  `—` with an `unknown` level — instead of `0` days in Markdown but a fabricated
+  `999` days mislabeled `critical` in HTML (#56).
+- The progress-reporter goroutine in `AnalyzeWithProgress` is now joined before
+  the function returns, so its output can no longer race a caller writing to the
+  same stream (caught by `go test -race`).
+- `git.GetFileLastModified` resolves symlinks before computing the path relative
+  to the git root, so a tracked file reached through a symlinked working tree
+  (e.g. macOS `/var` → `/private/var`, or a symlinked checkout) is no longer
+  reported as having no history.
+
+### Changed
+
+- The CLI entry point is split into a reentrant `runArgs(argv, stdout, stderr)`
+  with its own `FlagSet`, so the full pipeline is testable; behavior is
+  unchanged.
+
 ## [0.3.0] - 2026-06-22
 
 ### Added
@@ -53,6 +103,7 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/nrynss/rustydocs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nrynss/rustydocs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nrynss/rustydocs/releases/tag/v0.2.0

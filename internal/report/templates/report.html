@@ -471,6 +471,7 @@
     <main>
         <h1>Stale Documentation Report</h1>
         <p class="meta">Generated: {{.GeneratedDate}} | Threshold: {{.ThresholdDays}} days</p>
+        {{if .FilesMissingHistory}}<p class="meta" style="color:#b26a00;">⚠ {{.FilesMissingHistory}} file(s) had no git history (uncommitted, shallow clone, or not a git repo) — reported as unknown, not fresh.</p>{{end}}
 
         <section class="summary">
             <h2>Summary</h2>
@@ -569,7 +570,7 @@
                                 <td class="line-num">L{{.StartLine}}</td>
                                 <td>{{.Title}}</td>
                                 <td>{{.DateStr}}</td>
-                                <td>{{.DaysStale}}</td>
+                                <td>{{if .DateKnown}}{{.DaysStale}}{{else}}—{{end}}</td>
                                 <td>{{.Author}}</td>
                             </tr>
                             {{end}}
