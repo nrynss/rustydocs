@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/nrynss/rustydocs/internal/analyzer"
 	"github.com/nrynss/rustydocs/internal/config"
@@ -30,6 +29,10 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 	sb.WriteString(fmt.Sprintf("- **Sections analyzed:** %d\n", results.TotalSections()))
 	sb.WriteString(fmt.Sprintf("- **Stale sections:** %d (%.1f%%)\n",
 		results.StaleSections(), results.StaleSectionsPct()))
+
+	if missing := results.FilesMissingHistory(); missing > 0 {
+		sb.WriteString(fmt.Sprintf("- **Files with no git history (staleness unknown):** %d\n", missing))
+	}
 
 	if oldest := results.OldestFile(); oldest != nil {
 		sb.WriteString(fmt.Sprintf("- **Oldest content:** %s (%d days)\n",
@@ -68,14 +71,13 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 				for _, section := range fileAnalysis.StaleSections {
 					title := truncateRunes(section.Title, 35)
 
-					var dateStr string
-					var days int
+					// No resolvable date renders as "Unknown"/"—" consistently with
+					// the HTML and JSON reports, rather than a fabricated 0. See #56.
+					dateStr := "Unknown"
+					daysStr := "—"
 					if lastUpdated := section.LastUpdated(); lastUpdated != nil {
 						dateStr = lastUpdated.Format("2006-01-02")
-						days = int(time.Since(*lastUpdated).Hours() / 24)
-					} else {
-						dateStr = "Unknown"
-						days = 0
+						daysStr = fmt.Sprintf("%d", int(nowFunc().Sub(*lastUpdated).Hours()/24))
 					}
 
 					author := section.LastAuthor()
@@ -83,8 +85,8 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 						author = "Unknown"
 					}
 
-					sb.WriteString(fmt.Sprintf("| L%d | %s | %s | %d | %s |\n",
-						section.StartLine, escapeMDCell(title), dateStr, days, escapeMDCell(author)))
+					sb.WriteString(fmt.Sprintf("| L%d | %s | %s | %s | %s |\n",
+						section.StartLine, escapeMDCell(title), dateStr, daysStr, escapeMDCell(author)))
 				}
 				sb.WriteString("\n")
 			}

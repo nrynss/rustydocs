@@ -37,14 +37,15 @@ type JSONStaleness struct {
 
 // JSONSummary contains aggregate statistics.
 type JSONSummary struct {
-	TotalFiles       int     `json:"total_files"`
-	StaleFiles       int     `json:"stale_files"`
-	StaleFilesPct    float64 `json:"stale_files_pct"`
-	TotalSections    int     `json:"total_sections"`
-	StaleSections    int     `json:"stale_sections"`
-	StaleSectionsPct float64 `json:"stale_sections_pct"`
-	OldestFile       string  `json:"oldest_file,omitempty"`
-	OldestDays       int     `json:"oldest_days,omitempty"`
+	TotalFiles          int     `json:"total_files"`
+	StaleFiles          int     `json:"stale_files"`
+	StaleFilesPct       float64 `json:"stale_files_pct"`
+	TotalSections       int     `json:"total_sections"`
+	StaleSections       int     `json:"stale_sections"`
+	StaleSectionsPct    float64 `json:"stale_sections_pct"`
+	FilesMissingHistory int     `json:"files_missing_history,omitempty"`
+	OldestFile          string  `json:"oldest_file,omitempty"`
+	OldestDays          int     `json:"oldest_days,omitempty"`
 }
 
 // JSONFile contains analysis results for a single file.
@@ -77,9 +78,13 @@ type JSONReusable struct {
 	Level       string `json:"level"`
 }
 
+// nowFunc returns the current time. It is a package variable so report tests
+// can pin "now" and assert deterministic day-deltas across all formats.
+var nowFunc = time.Now
+
 // GenerateJSON generates a JSON report of stale documentation.
 func GenerateJSON(results *analyzer.Results, cfg *config.Config, outputPath string) error {
-	now := time.Now()
+	now := nowFunc()
 
 	report := JSONReport{
 		Version:     "1.0",
@@ -94,12 +99,13 @@ func GenerateJSON(results *analyzer.Results, cfg *config.Config, outputPath stri
 			},
 		},
 		Summary: JSONSummary{
-			TotalFiles:       results.TotalFiles(),
-			StaleFiles:       results.StaleFiles(),
-			StaleFilesPct:    results.StaleFilesPct(),
-			TotalSections:    results.TotalSections(),
-			StaleSections:    results.StaleSections(),
-			StaleSectionsPct: results.StaleSectionsPct(),
+			TotalFiles:          results.TotalFiles(),
+			StaleFiles:          results.StaleFiles(),
+			StaleFilesPct:       results.StaleFilesPct(),
+			TotalSections:       results.TotalSections(),
+			StaleSections:       results.StaleSections(),
+			StaleSectionsPct:    results.StaleSectionsPct(),
+			FilesMissingHistory: results.FilesMissingHistory(),
 		},
 	}
 
@@ -134,6 +140,10 @@ func GenerateJSON(results *analyzer.Results, cfg *config.Config, outputPath stri
 				js.LastUpdated = lastUpdated.Format(time.RFC3339)
 				js.DaysStale = int(now.Sub(*lastUpdated).Hours() / 24)
 				js.Level = cfg.GetStalenessClass(js.DaysStale)
+			} else {
+				// No resolvable date: render consistently as "unknown" across all
+				// formats rather than fabricating a day count or severity. See #56.
+				js.Level = "unknown"
 			}
 
 			jf.Sections = append(jf.Sections, js)

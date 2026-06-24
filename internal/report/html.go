@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/nrynss/rustydocs/internal/analyzer"
 	"github.com/nrynss/rustydocs/internal/config"
@@ -20,22 +19,23 @@ var templateFS embed.FS
 
 // TemplateData holds data for the HTML template.
 type TemplateData struct {
-	GeneratedDate     string
-	ThresholdDays     int
-	TotalFiles        int
-	StaleFiles        int
-	StaleFilesPct     string
-	TotalSections     int
-	StaleSections     int
-	StaleSectionsPct  string
-	OldestFile        string
-	OldestDays        int
-	Files             []FileData
-	Reusables         []ReusableTemplateData
-	ShowReusables     bool
-	WarningThreshold  int
-	CautionThreshold  int
-	CriticalThreshold int
+	GeneratedDate       string
+	ThresholdDays       int
+	TotalFiles          int
+	StaleFiles          int
+	StaleFilesPct       string
+	TotalSections       int
+	StaleSections       int
+	StaleSectionsPct    string
+	FilesMissingHistory int
+	OldestFile          string
+	OldestDays          int
+	Files               []FileData
+	Reusables           []ReusableTemplateData
+	ShowReusables       bool
+	WarningThreshold    int
+	CautionThreshold    int
+	CriticalThreshold   int
 }
 
 // ReusableTemplateData holds data for a reusable component in the template.
@@ -67,6 +67,7 @@ type SectionData struct {
 	Title          string
 	DateStr        string
 	DaysStale      int
+	DateKnown      bool // false when the date is unknown (render "—", class "unknown")
 	Author         string
 	StalenessClass string
 }
@@ -134,14 +135,17 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 		for _, s := range f.StaleSections {
 			title := truncateRunes(s.Title, 50)
 
-			var sDateStr string
-			var sDays int
+			// No resolvable date renders as "Unknown" with an "unknown" class —
+			// never a fabricated 999 days mislabeled "critical". See #56.
+			sDateStr := "Unknown"
+			sDays := 0
+			dateKnown := false
+			stalenessClass := "unknown"
 			if lastUpdated := s.LastUpdated(); lastUpdated != nil {
 				sDateStr = lastUpdated.Format("2006-01-02")
-				sDays = int(time.Since(*lastUpdated).Hours() / 24)
-			} else {
-				sDateStr = "Unknown"
-				sDays = 999
+				sDays = int(nowFunc().Sub(*lastUpdated).Hours() / 24)
+				dateKnown = true
+				stalenessClass = cfg.GetStalenessClass(sDays)
 			}
 
 			author := s.LastAuthor()
@@ -154,8 +158,9 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 				Title:          title,
 				DateStr:        sDateStr,
 				DaysStale:      sDays,
+				DateKnown:      dateKnown,
 				Author:         author,
-				StalenessClass: cfg.GetStalenessClass(sDays),
+				StalenessClass: stalenessClass,
 			})
 		}
 
@@ -239,22 +244,23 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 	}
 
 	data := TemplateData{
-		GeneratedDate:     results.GeneratedAt.Format("2006-01-02 15:04"),
-		ThresholdDays:     cfg.ThresholdDays,
-		TotalFiles:        results.TotalFiles(),
-		StaleFiles:        results.StaleFiles(),
-		StaleFilesPct:     fmt.Sprintf("%.1f", results.StaleFilesPct()),
-		TotalSections:     results.TotalSections(),
-		StaleSections:     results.StaleSections(),
-		StaleSectionsPct:  fmt.Sprintf("%.1f", results.StaleSectionsPct()),
-		OldestFile:        oldestFile,
-		OldestDays:        oldestDays,
-		Files:             files,
-		Reusables:         reusables,
-		ShowReusables:     cfg.ShowReusables,
-		WarningThreshold:  cfg.StalenessLevels.Warning,
-		CautionThreshold:  cfg.StalenessLevels.Caution,
-		CriticalThreshold: cfg.StalenessLevels.Critical,
+		GeneratedDate:       results.GeneratedAt.Format("2006-01-02 15:04"),
+		ThresholdDays:       cfg.ThresholdDays,
+		TotalFiles:          results.TotalFiles(),
+		StaleFiles:          results.StaleFiles(),
+		StaleFilesPct:       fmt.Sprintf("%.1f", results.StaleFilesPct()),
+		TotalSections:       results.TotalSections(),
+		StaleSections:       results.StaleSections(),
+		StaleSectionsPct:    fmt.Sprintf("%.1f", results.StaleSectionsPct()),
+		FilesMissingHistory: results.FilesMissingHistory(),
+		OldestFile:          oldestFile,
+		OldestDays:          oldestDays,
+		Files:               files,
+		Reusables:           reusables,
+		ShowReusables:       cfg.ShowReusables,
+		WarningThreshold:    cfg.StalenessLevels.Warning,
+		CautionThreshold:    cfg.StalenessLevels.Caution,
+		CriticalThreshold:   cfg.StalenessLevels.Critical,
 	}
 
 	// Ensure output directory exists

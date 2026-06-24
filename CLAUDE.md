@@ -11,6 +11,8 @@ rustydocs is a Go CLI that finds **stale documentation** by analyzing git histor
 ```bash
 go build -o rustydocs ./cmd/rustydocs              # build
 go test ./...                                       # tests
+go test -cover ./...                                # tests with coverage (≥80% per pkg)
+go test -race ./...                                 # race detector
 go vet ./...                                        # vet
 gofmt -l .                                          # formatting check (must be empty)
 make build                                          # build with version ldflags
@@ -27,17 +29,18 @@ CI (`.github/workflows/ci.yml`) runs `go build`, `go test`, and `go vet` on Linu
 
 Pipeline in `cmd/rustydocs/main.go`: flags → `config` → `analyzer.AnalyzeWithProgress` → `report.Generate{Markdown,HTML,JSON}`.
 
-- `internal/config` — JSON config + CLI defaults, `Validate`, staleness tiers, `DetectHugoRoot` (walks up for a `layouts/` dir).
-- `internal/analyzer` — `filepath.WalkDir` over the content dir filtered by the `content_extensions` allowlist, a worker pool (`runtime.NumCPU()`, channel-fed) that analyzes each file, and the staleness math (section vs threshold, oldest/most-recent dates, reusable freshness folding).
+- `internal/config` — JSON config + CLI defaults, `Validate`, staleness tiers, `DetectHugoRoot` (walks up for a `layouts/` dir). `Normalize` reconciles the reporting threshold with the staleness tiers (clamps `warning` ≤ `threshold_days`) so a stale section can't be classed `fresh`; call it after merging file + CLI config.
+- `internal/analyzer` — `filepath.WalkDir` over the content dir filtered by the `content_extensions` allowlist, a worker pool (`runtime.NumCPU()`, channel-fed) that analyzes each file, and the staleness math (section vs threshold, oldest/most-recent dates, reusable freshness folding). A file with no git history sets `FileAnalysis.HistoryMissing` (reported as *unknown*, never *fresh*). `nowFunc` is a package var so tests can pin "now".
 - `internal/git` — wrappers around `git blame --line-porcelain` (streaming parser) and `git log`; per-directory git-root cache so multiple repos work.
 - `internal/parser` — section/paragraph chunking by header regex, reusable-reference detection (regex), and resolution (Hugo shortcode → `layouts/shortcodes/…` + traced data files, or a reusables dir).
-- `internal/report` — Markdown (string builder), HTML (`html/template`, embedded via `go:embed`), JSON.
+- `internal/report` — Markdown (string builder), HTML (`html/template`, embedded via `go:embed`), JSON. Shares a `nowFunc` var for deterministic day-deltas in tests; unknown dates render consistently (`—` / level `unknown`) across all three formats.
+- `internal/testutil` — test-only helper: `NewRepo(t)` builds a temp git repo and `Commit(when, msg, files)` lands commits with controlled author/committer dates, so blame/log timestamps (and staleness) are deterministic. Skips when `git` is absent.
 
 **Zero external dependencies — standard library only. Keep it that way** (goldmark is the one sanctioned exception under consideration, see #27; it's pure-Go). Do not add CGO.
 
 ## Gotchas
 
-- **Requires `git` on PATH and full history.** Blame needs an unshallowed clone — CI and any container must use `fetch-depth: 0`.
+- **Requires `git` on PATH and full history.** Blame needs an unshallowed clone — CI and any container must use `fetch-depth: 0`. Files with no resolvable history (uncommitted, shallow, or not a repo) are reported as *unknown* with a stderr warning and a `files_missing_history` count — not silently treated as fresh.
 - **Only files matching `content_extensions` are analyzed** (default `.md`/`.markdown`/`.mdx`; override via config or `--extensions`).
 - **The embedded HTML template is `internal/report/templates/report.html`** — the `go:embed` path is relative to the report package.
 - **Section detection is a per-line header regex**, so a `#` line inside a fenced code block can be misread as a heading; replacing it with goldmark is tracked in #27.

@@ -147,6 +147,27 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Normalize makes the configuration internally coherent. It must be called
+// after all sources (file + CLI overrides) have been applied.
+//
+// The reporting gate (ThresholdDays) and the lowest staleness tier
+// (StalenessLevels.Warning) are configured independently, so a section could be
+// flagged stale (older than the threshold) yet classified "fresh" (younger than
+// the warning tier) — e.g. --threshold-days 30 with the default warning of 90.
+// Clamp the warning tier so it never exceeds the threshold: anything past the
+// gate is at least "warning". Tiers are then kept monotonic. See #54.
+func (c *Config) Normalize() {
+	if c.ThresholdDays > 0 && c.StalenessLevels.Warning > c.ThresholdDays {
+		c.StalenessLevels.Warning = c.ThresholdDays
+	}
+	if c.StalenessLevels.Caution < c.StalenessLevels.Warning {
+		c.StalenessLevels.Caution = c.StalenessLevels.Warning
+	}
+	if c.StalenessLevels.Critical < c.StalenessLevels.Caution {
+		c.StalenessLevels.Critical = c.StalenessLevels.Caution
+	}
+}
+
 // DetectHugoRoot finds the Hugo project root by walking up from contentDir
 // looking for a layouts/ directory.
 func DetectHugoRoot(contentDir string) string {
