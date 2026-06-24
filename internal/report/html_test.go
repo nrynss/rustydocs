@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -169,11 +170,11 @@ func TestUnknownDateConsistency(t *testing.T) {
 
 	// The unknown-date section row uses the "unknown" class and renders an em
 	// dash for the day count (template: {{if .DateKnown}}{{.DaysStale}}{{else}}—{{end}}).
-	if !strings.Contains(html, `class="unknown"`) {
-		t.Errorf("HTML: unknown-date section row missing class=\"unknown\":\n%s", html)
-	}
-	if !strings.Contains(html, "—") {
-		t.Error("HTML: unknown-date section did not render an em dash for days")
+	// Scope the check to the "Shared Snippet" row so it can't pass off unrelated
+	// HTML (e.g. the missing-history banner also contains an em dash).
+	unknownRow := regexp.MustCompile(`(?s)<tr class="unknown">.*?<td>Shared Snippet</td>.*?<td>Unknown</td>.*?<td>—</td>`)
+	if !unknownRow.MatchString(html) {
+		t.Errorf("HTML: unknown-date section row did not render unknown class + em-dash days:\n%s", html)
 	}
 	// The unknown-date section must never be labeled critical via a fabricated
 	// 999 rendered as a table cell. (A bare "999" also appears as a CSS color

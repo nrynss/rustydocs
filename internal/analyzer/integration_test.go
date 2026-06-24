@@ -214,8 +214,8 @@ func TestPrintProgress(t *testing.T) {
 }
 
 // TestAnalyzeWithProgress_ProgressBranch exercises the progress-reporter goroutine
-// path. It writes to io.Discard rather than a buffer it reads, since the reporter
-// goroutine is not joined before the call returns.
+// path. It writes to io.Discard because the output content is not asserted here;
+// this test only validates that the progress-enabled path runs cleanly.
 func TestAnalyzeWithProgress_ProgressBranch(t *testing.T) {
 	now := time.Now()
 	repo := testutil.NewRepo(t)

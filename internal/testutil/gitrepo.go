@@ -4,6 +4,7 @@
 package testutil
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +46,15 @@ func NewRepo(t *testing.T) *Repo {
 // environment entries (e.g. commit dates) are appended to the inherited env.
 func (r *Repo) run(env []string, args ...string) {
 	r.t.Helper()
-	cmd := exec.Command("git", args...)
+	// Tie git subprocesses to the test deadline so a stalled command is killed
+	// with the test timeout instead of hanging the suite.
+	ctx := context.Background()
+	if dl, ok := r.t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, dl)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = r.Dir
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
