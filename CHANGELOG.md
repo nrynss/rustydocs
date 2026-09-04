@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- pkg.go.dev badge and a note in the README that `go install` builds report the
+  module version via Go build info, with the commit additionally shown for
+  builds made from a local clone without ldflags (#39).
+
+### Fixed
+
+- `--version` no longer prints `rustydocs dev` for binaries installed with
+  `go install github.com/nrynss/rustydocs/cmd/rustydocs@latest`; it reports
+  the module version from `runtime/debug.ReadBuildInfo`. Builds made from a
+  local clone without ldflags (`go build ./cmd/rustydocs`) additionally fall
+  back to the embedded VCS info for the commit (12-char revision, with a
+  `-dirty` suffix for modified trees). The build date is deliberately not
+  taken from build info (`vcs.time` is the HEAD commit time, not the build
+  time) and is still reported only when set via ldflags. Module-proxy installs
+  carry no VCS info, so they show only the version. Release binaries keep the
+  ldflags values, which always take precedence (#39).
+
 ## [0.4.0] - 2026-06-24
 
 ### Added

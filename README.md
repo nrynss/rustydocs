@@ -1,5 +1,7 @@
 # rustydocs
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/nrynss/rustydocs.svg)](https://pkg.go.dev/github.com/nrynss/rustydocs)
+
 Find stale documentation using git history. Analyzes your documentation at the section level to identify content that hasn't been updated recently.
 
 ## Features
@@ -18,13 +20,19 @@ Find stale documentation using git history. Analyzes your documentation at the s
 ```bash
 # Build from source (includes version info)
 make build
-
-# Or install directly
-go install github.com/nrynss/rustydocs/cmd/rustydocs@latest
-
-# Check version
 ./rustydocs --version
+
+# Or install directly (binary lands in $(go env GOPATH)/bin, or $GOBIN if set)
+go install github.com/nrynss/rustydocs/cmd/rustydocs@latest
+rustydocs --version
 ```
+
+Binaries installed with `go install ...@latest` report the module version (for
+example `rustydocs vX.Y.Z` instead of `rustydocs dev`) from the Go build info
+embedded by the toolchain. Builds made from a local clone without ldflags
+(`go build ./cmd/rustydocs`) additionally show the commit from the embedded VCS
+info. The build date is only reported when set via ldflags (`make build`);
+release binaries keep all the values set via ldflags.
 
 ## Quick Start
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/nrynss/rustydocs/internal/analyzer"
@@ -15,12 +16,88 @@ import (
 	"github.com/nrynss/rustydocs/internal/report"
 )
 
-// Version info - set via ldflags at build time
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+// Defaults used to detect that an ldflags value was not supplied.
+const (
+	defaultVersion = "dev"
+	defaultCommit  = "none"
+	defaultDate    = "unknown"
 )
+
+// Version info - set via ldflags at build time (see Makefile / release
+// workflow). Constant-expression initialisers are still overridable by
+// `-ldflags "-X main.version=..."`. When a binary is produced without ldflags,
+// version and commit keep their defaults and resolveBuildInfo fills them in
+// from the Go build info embedded by the toolchain: the module version for
+// `go install github.com/nrynss/rustydocs/cmd/rustydocs@latest` (module-proxy
+// builds carry no VCS settings), plus the commit for builds made from a local
+// git checkout (#39). date is only ever set via ldflags; see resolveBuildInfo
+// for why vcs.time is deliberately not used.
+var (
+	version = defaultVersion
+	commit  = defaultCommit
+	date    = defaultDate
+)
+
+// resolveBuildInfo returns the version and commit to report, preferring the
+// explicit ldflags values (v, c) and falling back to the embedded build info
+// for any that are still at their defaults. It is a pure function so the
+// fallback logic can be unit-tested regardless of how the test binary was
+// built.
+//
+//   - version: info.Main.Version when it is non-empty and not "(devel)".
+//   - commit:  the vcs.revision setting, shortened to 12 characters, with a
+//     "-dirty" suffix when vcs.modified is "true".
+//
+// The build date is intentionally not derived from build info: vcs.time is the
+// timestamp of the HEAD commit, not the time the binary was built, and
+// --version prints the date under a "built:" label. Issue #39 only asks for the
+// module version and VCS revision, so date stays at its ldflags value.
+//
+// ok mirrors the second return value of debug.ReadBuildInfo; when it is false
+// (or info is nil) the inputs are returned unchanged.
+func resolveBuildInfo(v, c string, info *debug.BuildInfo, ok bool) (resolvedVersion, resolvedCommit string) {
+	resolvedVersion, resolvedCommit = v, c
+	if !ok || info == nil {
+		return resolvedVersion, resolvedCommit
+	}
+
+	if resolvedVersion == defaultVersion {
+		if mv := info.Main.Version; mv != "" && mv != "(devel)" {
+			resolvedVersion = mv
+		}
+	}
+
+	var revision, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+
+	if resolvedCommit == defaultCommit && revision != "" {
+		if len(revision) > 12 {
+			revision = revision[:12]
+		}
+		if modified == "true" {
+			revision += "-dirty"
+		}
+		resolvedCommit = revision
+	}
+
+	return resolvedVersion, resolvedCommit
+}
+
+// buildInfo resolves the reportable version, commit and date for this binary:
+// ldflags values win; a version or commit left at its default is filled from
+// debug.ReadBuildInfo. The date is reported exactly as set via ldflags.
+func buildInfo() (string, string, string) {
+	info, ok := debug.ReadBuildInfo()
+	v, c := resolveBuildInfo(version, commit, info, ok)
+	return v, c, date
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -66,12 +143,13 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	}
 
 	if *showVersion {
-		fmt.Fprintf(stdout, "rustydocs %s\n", version)
-		if commit != "none" {
-			fmt.Fprintf(stdout, "  commit: %s\n", commit)
+		v, c, d := buildInfo()
+		fmt.Fprintf(stdout, "rustydocs %s\n", v)
+		if c != defaultCommit {
+			fmt.Fprintf(stdout, "  commit: %s\n", c)
 		}
-		if date != "unknown" {
-			fmt.Fprintf(stdout, "  built:  %s\n", date)
+		if d != defaultDate {
+			fmt.Fprintf(stdout, "  built:  %s\n", d)
 		}
 		return nil
 	}
