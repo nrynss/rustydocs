@@ -21,11 +21,17 @@ type JSONReport struct {
 	Reusables   []JSONReusable `json:"reusables,omitempty"`
 }
 
-// JSONConfig contains the configuration used for this run.
+// JSONConfig contains the configuration used for this run. Profile and
+// ContentExtensions record which profile produced the artifact and which
+// extension allowlist it scanned, so a CI consumer can tell a clean run from
+// one that simply never looked at the files it cared about (#11).
 type JSONConfig struct {
-	ThresholdDays   int           `json:"threshold_days"`
-	ContentDir      string        `json:"content_dir"`
-	StalenessLevels JSONStaleness `json:"staleness_levels"`
+	ThresholdDays     int           `json:"threshold_days"`
+	ContentDir        string        `json:"content_dir"`
+	Profile           string        `json:"profile,omitempty"`
+	ProfileAuto       bool          `json:"profile_auto"`
+	ContentExtensions []string      `json:"content_extensions,omitempty"`
+	StalenessLevels   JSONStaleness `json:"staleness_levels"`
 }
 
 // JSONStaleness contains staleness threshold configuration.
@@ -90,8 +96,11 @@ func GenerateJSON(results *analyzer.Results, cfg *config.Config, outputPath stri
 		Version:     "1.0",
 		GeneratedAt: results.GeneratedAt.Format(time.RFC3339),
 		Config: JSONConfig{
-			ThresholdDays: cfg.ThresholdDays,
-			ContentDir:    cfg.ContentDir,
+			ThresholdDays:     cfg.ThresholdDays,
+			ContentDir:        cfg.ContentDir,
+			Profile:           cfg.ResolvedProfile.Name,
+			ProfileAuto:       cfg.ProfileAuto,
+			ContentExtensions: cfg.ContentExtensions,
 			StalenessLevels: JSONStaleness{
 				Warning:  cfg.StalenessLevels.Warning,
 				Caution:  cfg.StalenessLevels.Caution,

@@ -1,7 +1,9 @@
 package parser
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -9,10 +11,10 @@ import (
 	"github.com/nrynss/rustydocs/internal/testutil"
 )
 
-// defaultPatternStrings reuses the production defaultReusablePatternStrings so
-// resolution tests build a ReusablePatterns with custom roots while keeping the
-// same matching behavior as DefaultReusablePatterns (single source of truth).
-var defaultPatternStrings = defaultReusablePatternStrings
+// defaultPatternStrings reuses the hugo profile's patterns — the same source
+// DefaultReusablePatterns reads — so resolution tests build a ReusablePatterns
+// with custom roots while keeping identical matching behavior.
+var defaultPatternStrings = hugoProfile().ReusablePatterns
 
 func mkLine(n int, ts time.Time, author string) git.LineInfo {
 	return git.LineInfo{
@@ -485,4 +487,167 @@ func TestCalculateSectionStaleness_Nil(t *testing.T) {
 // second precision and may carry a non-UTC zone, so we compare via Unix().
 func sameInstant(a, b time.Time) bool {
 	return a.Unix() == b.Unix()
+}
+
+// TestGetReusableInfo_ThemeShortcode covers a theme-provided shortcode: the
+// site's only layouts live in themes/<theme>/layouts, which is exactly the
+// shape the themes/ root marker detects. Before the theme search existed the
+// shortcode was detected but never resolved, and the section was reported as
+// unknown.
+func TestGetReusableInfo_ThemeShortcode(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	tmplDate := time.Date(2024, 6, 12, 12, 0, 0, 0, time.UTC)
+	repo.Commit(tmplDate, "add theme shortcode", map[string]string{
+		"config/_default/hugo.toml":             "baseURL = 'x'\n",
+		"themes/t/layouts/shortcodes/note.html": "<aside class=\"note\">theme note</aside>\n",
+		"content/docs/a.md":                     "# A\n\n{{< note >}}\n",
+	})
+
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", repo.Dir)
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+
+	info := GetReusableInfo("note", rp)
+	if info == nil {
+		t.Fatal("GetReusableInfo(note) returned nil; theme shortcode was not resolved")
+	}
+	if !sameInstant(info.LastModified, tmplDate) {
+		t.Errorf("LastModified = %v, want %v", info.LastModified, tmplDate)
+	}
+	want := filepath.Join(repo.Dir, "themes", "t", "layouts", "shortcodes", "note.html")
+	if got := rp.shortcodeCache["note"]; len(got) == 0 || got[0] != want {
+		t.Errorf("shortcodeCache[note] = %v, want first entry %q", got, want)
+	}
+	// A second lookup must come from the cache and agree.
+	if again := GetReusableInfo("note", rp); again == nil || !sameInstant(again.LastModified, tmplDate) {
+		t.Errorf("cached lookup = %v, want %v", again, tmplDate)
+	}
+}
+
+// TestGetReusableInfo_ProjectShortcodeBeatsTheme pins Hugo's lookup order: a
+// project layouts/shortcodes template overrides a theme's template of the same
+// name, so the project file's (older) date is the one reported.
+func TestGetReusableInfo_ProjectShortcodeBeatsTheme(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	projectDate := time.Date(2023, 2, 3, 12, 0, 0, 0, time.UTC)
+	themeDate := time.Date(2025, 1, 20, 12, 0, 0, 0, time.UTC)
+
+	repo.Commit(projectDate, "add project shortcode", map[string]string{
+		"layouts/shortcodes/note.html": "<aside>project note</aside>\n",
+	})
+	repo.Commit(themeDate, "add theme shortcode", map[string]string{
+		"themes/t/layouts/shortcodes/note.html": "<aside>theme note</aside>\n",
+	})
+
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", repo.Dir)
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+
+	info := GetReusableInfo("note", rp)
+	if info == nil {
+		t.Fatal("GetReusableInfo(note) returned nil")
+	}
+	if !sameInstant(info.LastModified, projectDate) {
+		t.Errorf("LastModified = %v, want the project template's %v (project layouts win)",
+			info.LastModified, projectDate)
+	}
+}
+
+// TestLayoutRoots covers the themes/ scan itself: no themes dir, a themes dir
+// with a stray regular file, and the ordering of project vs theme layouts.
+func TestLayoutRoots(t *testing.T) {
+	root := t.TempDir()
+	rp, err := NewReusablePatterns(nil, nil, "", root)
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+
+	projectLayouts := filepath.Join(root, "layouts")
+	if got := rp.layoutRoots(); len(got) != 1 || got[0] != projectLayouts {
+		t.Fatalf("layoutRoots() without themes/ = %v, want [%q]", got, projectLayouts)
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "themes", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "themes", "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "themes", "README"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		projectLayouts,
+		filepath.Join(root, "themes", "a", "layouts"),
+		filepath.Join(root, "themes", "b", "layouts"),
+	}
+	if got := rp.layoutRoots(); !reflect.DeepEqual(got, want) {
+		t.Errorf("layoutRoots() = %v, want %v", got, want)
+	}
+
+	// A theme symlinked into themes/ (the standard Hugo local theme-development
+	// workflow) is a directory only after following the link: os.ReadDir reports
+	// the symlink's own type, so filtering on DirEntry.IsDir alone would skip it.
+	realTheme := filepath.Join(root, "vendor", "linked")
+	if err := os.MkdirAll(filepath.Join(realTheme, "layouts", "shortcodes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realTheme, filepath.Join(root, "themes", "c")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	// A dangling symlink must be skipped rather than reported as a layouts root.
+	if err := os.Symlink(filepath.Join(root, "does-not-exist"), filepath.Join(root, "themes", "d")); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink to a regular file is not a theme either.
+	if err := os.Symlink(filepath.Join(root, "themes", "README"), filepath.Join(root, "themes", "e")); err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, filepath.Join(root, "themes", "c", "layouts"))
+	if got := rp.layoutRoots(); !reflect.DeepEqual(got, want) {
+		t.Errorf("layoutRoots() with symlinked themes = %v, want %v", got, want)
+	}
+}
+
+// TestGetReusableInfo_SymlinkedThemeShortcode is the end-to-end form of the
+// symlink case: the site's only alert.html lives in a theme that is symlinked
+// into themes/, which is how Hugo themes are developed locally. Before
+// layoutRoots followed symlinks the shortcode was detected but never resolved,
+// and its section was reported as unknown.
+func TestGetReusableInfo_SymlinkedThemeShortcode(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	tmplDate := time.Date(2024, 3, 8, 12, 0, 0, 0, time.UTC)
+	repo.Commit(tmplDate, "add vendored theme", map[string]string{
+		"hugo.toml": "baseURL = 'x'\n",
+		"vendor/mytheme/layouts/shortcodes/alert.html": "<aside>alert</aside>\n",
+		"content/docs/a.md":                            "# A\n\n{{< alert >}}\n",
+	})
+	if err := os.MkdirAll(repo.Path("themes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "vendor", "mytheme"), repo.Path("themes/mytheme")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	rp, err := NewReusablePatterns(defaultPatternStrings, []string{".md", ".html"}, "", repo.Dir)
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+
+	info := GetReusableInfo("alert", rp)
+	if info == nil {
+		t.Fatal("GetReusableInfo(alert) returned nil; symlinked theme shortcode was not resolved")
+	}
+	if !sameInstant(info.LastModified, tmplDate) {
+		t.Errorf("LastModified = %v, want %v", info.LastModified, tmplDate)
+	}
+	want := filepath.Join(repo.Dir, "themes", "mytheme", "layouts", "shortcodes", "alert.html")
+	if got := rp.shortcodeCache["alert"]; len(got) == 0 || got[0] != want {
+		t.Errorf("shortcodeCache[alert] = %v, want first entry %q", got, want)
+	}
 }

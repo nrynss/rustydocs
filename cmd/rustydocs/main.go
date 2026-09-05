@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/nrynss/rustydocs/internal/analyzer"
@@ -127,7 +128,9 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		fileLevelOnly  = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
 		paragraphLevel = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
 		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
-		extensions     = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: .md,.markdown,.mdx)")
+		extensions     = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: from profile)")
+		profile        = fs.String("profile", "", "Documentation profile: "+strings.Join(config.Profiles(), ", ")+" (default: auto-detect)")
+		listProfiles   = fs.Bool("list-profiles", false, "List built-in profiles and exit")
 		workers        = fs.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
 		showVersion    = fs.Bool("version", false, "Show version and exit")
 	)
@@ -151,6 +154,11 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		if d != defaultDate {
 			fmt.Fprintf(stdout, "  built:  %s\n", d)
 		}
+		return nil
+	}
+
+	if *listProfiles {
+		printProfiles(stdout)
 		return nil
 	}
 
@@ -208,6 +216,16 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	if *workers > 0 {
 		cfg.Workers = *workers
 	}
+	if *profile != "" {
+		cfg.Profile = *profile
+	}
+
+	// Resolve the documentation profile (explicit --profile / "profile", else
+	// auto-detected from the content dir) and fill in the profile-dependent
+	// defaults the user left unset (see #11).
+	if err := cfg.ApplyProfile(); err != nil {
+		return err
+	}
 
 	// Reconcile the reporting threshold with the staleness tiers so a stale
 	// section can never be classified "fresh" (see #54).
@@ -229,6 +247,7 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		workerCount = runtime.NumCPU()
 	}
 	fmt.Fprintf(stdout, "Analyzing documentation in: %s\n", cfg.ContentDir)
+	fmt.Fprintf(stdout, "Profile: %s\n", describeProfile(cfg))
 	fmt.Fprintf(stdout, "Threshold: %d days | Workers: %d\n\n", cfg.ThresholdDays, workerCount)
 
 	results, err := analyzer.AnalyzeWithProgress(cfg, stdout)
@@ -279,5 +298,112 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 			"they are reported as unknown, not fresh. Ensure a full clone (fetch-depth: 0).\n", missing)
 	}
 
+	// Zero files scanned almost always means the extension allowlist did not
+	// match the tree (e.g. an .mdx-only site under the markdown profile) or the
+	// exclusions removed every match, so say which profile and extensions were
+	// in force — or that exclusions did it — instead of reporting a clean run
+	// in silence. The exit code is unchanged (#11).
+	if results.TotalFiles() == 0 {
+		fmt.Fprintf(stderr, "\nWarning: %s\n", describeNoFilesMatched(cfg, results.FilesExcluded()))
+		return nil
+	}
+
+	// Partially-scanned tree: some files are documentation under another
+	// built-in profile but not under this run's allowlist (the classic case is
+	// an .md/.mdx tree with no Hugo marker, which the markdown profile scans
+	// only half of). This is a note, not an error — the exit code is unchanged
+	// (#11). It is deliberately suppressed when nothing was scanned at all:
+	// the zero-files warning above already names the profile, the extensions
+	// in force and the two knobs that widen them, so printing both would be
+	// two overlapping messages about one cause.
+	if skipped := results.FilesSkippedByExtension(); skipped > 0 {
+		fmt.Fprintf(stderr, "\nNote: %s\n",
+			describeSkippedExtensions(cfg, skipped, results.SkippedExtensions()))
+	}
+
 	return nil
+}
+
+// describeActiveExtensions renders the extension allowlist that was in force
+// together with where it came from, plus a note naming the resolved profile
+// when the list is not the profile's own. Both stderr messages below build on
+// it so they stay phrased the same way.
+//
+// Three cases, because the active list and the resolved profile's list can
+// disagree without the user having asked for it:
+//
+//	the "markdown" profile's extensions (.md, .markdown)   — the profile's own
+//	the configured extensions (.rst)      + (profile "markdown")   — an override
+//	the active extensions (.md, .markdown, .mdx) + (profile "markdown")
+//
+// The third case is the legacy reusables-dir flow: ApplyProfile widens the
+// allowlist with the hugo profile's extensions while leaving ExtensionsFromUser
+// false, so the list genuinely belongs to neither the user nor the resolved
+// profile and must not be attributed to either (#11).
+func describeActiveExtensions(cfg *config.Config) (phrase, profileNote string) {
+	active := strings.Join(cfg.ContentExtensions, ", ")
+	switch {
+	case cfg.ExtensionsFromUser:
+		phrase = fmt.Sprintf("the configured extensions (%s)", active)
+	case !slices.Equal(cfg.ContentExtensions, cfg.ResolvedProfile.ContentExtensions):
+		phrase = fmt.Sprintf("the active extensions (%s)", active)
+	default:
+		return fmt.Sprintf("the %q profile's extensions (%s)", cfg.ResolvedProfile.Name, active), ""
+	}
+	return phrase, fmt.Sprintf(" (profile %q)", cfg.ResolvedProfile.Name)
+}
+
+// describeSkippedExtensions builds the partial-scan note: how many files were
+// skipped, which extensions they had, which allowlist skipped them, and how to
+// include them. See the call site for why it never fires alongside the
+// zero-files warning.
+func describeSkippedExtensions(cfg *config.Config, skipped int, exts []string) string {
+	active, profileNote := describeActiveExtensions(cfg)
+	return fmt.Sprintf("%d file(s) with extension(s) %s were not analyzed: only %s are scanned%s. "+
+		"Pass --extensions to widen the allowlist or --profile to pick another profile "+
+		"(see --list-profiles).",
+		skipped, strings.Join(exts, ", "), active, profileNote)
+}
+
+// describeNoFilesMatched builds the zero-files-scanned warning, naming the
+// extensions that were in force and where they came from (see
+// describeActiveExtensions). When excluded > 0 every file that matched those
+// extensions was dropped by exclude_dirs / exclude_patterns, so the warning
+// blames the exclusions; otherwise it points at the two knobs that change the
+// extensions.
+func describeNoFilesMatched(cfg *config.Config, excluded int) string {
+	active, profileNote := describeActiveExtensions(cfg)
+	if excluded > 0 {
+		return fmt.Sprintf("all %d file(s) matching %s under %s%s were skipped by "+
+			"exclude_dirs / exclude_patterns; relax the exclusions to analyze them.",
+			excluded, active, cfg.ContentDir, profileNote)
+	}
+	return fmt.Sprintf("no files matched %s under %s%s; "+
+		"use --extensions to widen the allowlist or --profile to pick another profile (see --list-profiles).",
+		active, cfg.ContentDir, profileNote)
+}
+
+// describeProfile renders the resolved profile for the banner, e.g.
+// "markdown (auto-detected)" or "hugo (auto-detected, root: /site)".
+func describeProfile(cfg *config.Config) string {
+	var notes []string
+	if cfg.ProfileAuto {
+		notes = append(notes, "auto-detected")
+	}
+	if cfg.HugoRoot != "" && len(cfg.ResolvedProfile.RootMarkers) > 0 {
+		notes = append(notes, "root: "+cfg.HugoRoot)
+	}
+	if len(notes) == 0 {
+		return cfg.ResolvedProfile.Name
+	}
+	return fmt.Sprintf("%s (%s)", cfg.ResolvedProfile.Name, strings.Join(notes, ", "))
+}
+
+// printProfiles writes the built-in profiles (name + description) for
+// --list-profiles.
+func printProfiles(w io.Writer) {
+	fmt.Fprintln(w, "Built-in profiles (used with --profile; auto-detected when not set):")
+	for _, p := range config.AllProfiles() {
+		fmt.Fprintf(w, "  %-10s %s\n", p.Name, p.Description)
+	}
 }

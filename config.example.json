@@ -1,5 +1,6 @@
 {
   "threshold_days": 90,
+  "profile": "",
   "content_dir": "src/hugo/docsy/content/en",
   "hugo_root": "src/hugo/docsy",
   "output_dir": "./reports",

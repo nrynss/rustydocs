@@ -23,24 +23,20 @@ import (
 // "now" and assert deterministic staleness math.
 var nowFunc = time.Now
 
-// contentExtensionSet builds a lowercase, dot-prefixed set of allowed
-// documentation extensions, falling back to sensible defaults if empty.
+// contentExtensionSet builds a set of allowed documentation extensions in the
+// canonical (lowercase, dot-prefixed) form isContentFile matches on. Config
+// lists arrive already canonicalised by ApplyProfile; normalising again here
+// keeps the set correct for a Config the caller built by hand, and the fall
+// back to the markdown profile's extensions covers one on which ApplyProfile
+// was never called.
 func contentExtensionSet(exts []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(exts))
-	for _, e := range exts {
-		e = strings.ToLower(strings.TrimSpace(e))
-		if e == "" {
-			continue
-		}
-		if !strings.HasPrefix(e, ".") {
-			e = "." + e
-		}
-		set[e] = struct{}{}
+	canonical := config.NormalizeExtensions(exts)
+	if len(canonical) == 0 {
+		canonical = config.DefaultProfile().ContentExtensions
 	}
-	if len(set) == 0 {
-		for _, e := range []string{".md", ".markdown", ".mdx"} {
-			set[e] = struct{}{}
-		}
+	set := make(map[string]struct{}, len(canonical))
+	for _, e := range canonical {
+		set[e] = struct{}{}
 	}
 	return set
 }
@@ -91,6 +87,19 @@ type Results struct {
 	AllReusables []ReusableInfo
 	Config       *config.Config
 	GeneratedAt  time.Time
+
+	// filesExcluded counts files whose extension matched the content allowlist
+	// but which exclude_dirs / exclude_patterns dropped from the walk. It is
+	// diagnostic only (see FilesExcluded) and is not part of any report.
+	filesExcluded int
+
+	// filesSkippedExt counts files that are documentation under some built-in
+	// profile (config.KnownContentExtensions) but whose extension is not in
+	// the active allowlist, and which the exclusions did not drop anyway;
+	// skippedExts holds their distinct extensions. Diagnostic only (see
+	// FilesSkippedByExtension / SkippedExtensions), not part of any report.
+	filesSkippedExt int
+	skippedExts     map[string]struct{}
 }
 
 // TotalFiles returns the total number of files analyzed.
@@ -119,6 +128,37 @@ func (r *Results) FilesMissingHistory() int {
 		}
 	}
 	return count
+}
+
+// FilesExcluded returns the number of files that matched the content
+// extensions but were skipped by exclude_dirs / exclude_patterns. It lets the
+// zero-files warning distinguish "nothing matched the extensions" from
+// "everything that matched was excluded" (#11).
+func (r *Results) FilesExcluded() int {
+	return r.filesExcluded
+}
+
+// FilesSkippedByExtension returns the number of files that rustydocs would
+// analyze under some other built-in profile but that the active extension
+// allowlist excluded — e.g. the .mdx files of a Docusaurus/Mintlify tree run
+// under the markdown profile. Files that are not documentation under any
+// profile (images, .txt, .json, .yaml) are deliberately not counted, and
+// neither are files the exclusions would have dropped regardless. It lets the
+// CLI warn about a partially-scanned tree, not only a wholly unmatched one
+// (#11).
+func (r *Results) FilesSkippedByExtension() int {
+	return r.filesSkippedExt
+}
+
+// SkippedExtensions returns the distinct extensions counted by
+// FilesSkippedByExtension, lowercase, dot-prefixed and sorted.
+func (r *Results) SkippedExtensions() []string {
+	out := make([]string, 0, len(r.skippedExts))
+	for ext := range r.skippedExts {
+		out = append(out, ext)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // StaleFilesPct returns the percentage of files with stale content.
@@ -214,7 +254,10 @@ func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 	return false
 }
 
-func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalysis {
+// analyzeFile analyzes one documentation file. It returns an error only when
+// the configured reusable patterns cannot be compiled; git failures and
+// unreadable files degrade to an analysis with no history, never to an error.
+func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnalysis, error) {
 	now := nowFunc()
 	thresholdDate := now.Add(-time.Duration(cfg.ThresholdDays) * 24 * time.Hour)
 
@@ -224,7 +267,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 	// Read file content
 	content, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
-		return FileAnalysis{Path: filePath}
+		return FileAnalysis{Path: filePath}, nil
 	}
 
 	// Get relative path for display. Normalize to forward slashes so reports
@@ -248,11 +291,9 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		// If Getwd fails, leave reusablesDir as relative (will likely fail later but won't crash)
 	}
 
-	// Determine Hugo root (for shortcode tracing)
+	// Hugo root (for shortcode tracing) is filled by cfg.ApplyProfile: the
+	// user's hugo_root, else the root detected for the hugo profile, else "".
 	hugoRoot := cfg.HugoRoot
-	if hugoRoot == "" {
-		hugoRoot = config.DetectHugoRoot(baseDir)
-	}
 	if hugoRoot != "" && !filepath.IsAbs(hugoRoot) {
 		if cwd, err := os.Getwd(); err == nil {
 			hugoRoot = filepath.Join(cwd, hugoRoot)
@@ -260,10 +301,13 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		// If Getwd fails, leave hugoRoot as relative
 	}
 
+	// Patterns are validated once in AnalyzeWithProgress before any worker
+	// starts, so this only fails for a Config handed to analyzeFile directly.
+	// Never fall back to another profile's patterns: that would silently turn
+	// Hugo detection on for a markdown/Mintlify run. See #11.
 	rp, err := parser.NewReusablePatterns(cfg.Reusables.Patterns, cfg.Reusables.Extensions, reusablesDir, hugoRoot)
 	if err != nil {
-		// Invalid pattern in config - fall back to default patterns
-		rp = parser.DefaultReusablePatterns()
+		return FileAnalysis{Path: filePath, RelativePath: relativePath}, fmt.Errorf("%s: %w", relativePath, err)
 	}
 
 	var sections []parser.Section
@@ -376,7 +420,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) FileAnalys
 		DaysStale:            daysStale,
 		OldestSectionDays:    oldestSectionDays,
 		HistoryMissing:       historyMissing,
-	}
+	}, nil
 }
 
 // ProgressWriter is used to report analysis progress.
@@ -414,6 +458,22 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		return nil, os.ErrInvalid
 	}
 
+	// Callers that build a Config directly (rather than via the CLI) may not
+	// have resolved a profile; do it here so extensions, reusable patterns and
+	// the Hugo root get their profile defaults.
+	if cfg.ResolvedProfile.Name == "" {
+		if err := cfg.ApplyProfile(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Fail fast on an uncompilable reusable pattern, before any worker starts.
+	// analyzeFile never substitutes another profile's patterns (see #11), so an
+	// invalid pattern is a configuration error, not something to paper over.
+	if _, err := parser.NewReusablePatterns(cfg.Reusables.Patterns, cfg.Reusables.Extensions, "", ""); err != nil {
+		return nil, fmt.Errorf("invalid reusables configuration: %w", err)
+	}
+
 	baseDir := cfg.ContentDir
 	if !filepath.IsAbs(baseDir) {
 		cwd, err := os.Getwd()
@@ -423,19 +483,45 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		baseDir = filepath.Join(cwd, baseDir)
 	}
 
-	// Build the allowed documentation-extension set once.
+	// Build the allowed documentation-extension set once, plus the union of
+	// every built-in profile's extensions: a file in the union but not in the
+	// allowlist is documentation this run is not analyzing (an .mdx tree under
+	// the markdown profile), and worth a note — unlike an image or a .json,
+	// which is simply not documentation.
 	extSet := contentExtensionSet(cfg.ContentExtensions)
+	knownSet := contentExtensionSet(config.KnownContentExtensions())
 
-	// Find all documentation files matching the allowed extensions.
-	var mdFiles []string
+	// Find all documentation files matching the allowed extensions, counting
+	// the matches the exclusion rules drop so a zero-file run can say why, and
+	// the documentation files the allowlist itself dropped (#11).
+	var (
+		mdFiles     []string
+		excluded    int
+		skippedExt  int
+		skippedExts = make(map[string]struct{})
+	)
 	err := filepath.WalkDir(baseDir, func(filePath string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() {
-			if isContentFile(filePath, extSet) && !shouldExclude(filePath, cfg, baseDir) {
+		if d.IsDir() {
+			return nil
+		}
+		if isContentFile(filePath, extSet) {
+			if shouldExclude(filePath, cfg, baseDir) {
+				excluded++
+			} else {
 				mdFiles = append(mdFiles, filePath)
 			}
+			return nil
+		}
+		// Not analyzable under the active allowlist. Count it only if another
+		// built-in profile would treat it as documentation and the exclusions
+		// would not have dropped it anyway (no point suggesting --extensions
+		// for a file exclude_dirs removes).
+		if isContentFile(filePath, knownSet) && !shouldExclude(filePath, cfg, baseDir) {
+			skippedExt++
+			skippedExts[strings.ToLower(filepath.Ext(filePath))] = struct{}{}
 		}
 		return nil
 	})
@@ -481,13 +567,26 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		close(reporterDone)
 	}
 
-	// Start workers
+	// Start workers. The first per-file error is kept and returned after the
+	// pool drains; remaining files still run so the progress bar completes.
+	var (
+		firstErr  error
+		firstErrM sync.Mutex
+	)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for idx := range fileChan {
-				analyses[idx] = analyzeFile(mdFiles[idx], cfg, baseDir)
+				fa, ferr := analyzeFile(mdFiles[idx], cfg, baseDir)
+				if ferr != nil {
+					firstErrM.Lock()
+					if firstErr == nil {
+						firstErr = ferr
+					}
+					firstErrM.Unlock()
+				}
+				analyses[idx] = fa
 				atomic.AddInt64(&completed, 1)
 			}
 		}()
@@ -507,6 +606,10 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		close(done)
 	}
 	<-reporterDone
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
 
 	// Sort by relative path
 	sort.Slice(analyses, func(i, j int) bool {
@@ -534,9 +637,12 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 	})
 
 	return &Results{
-		Files:        analyses,
-		AllReusables: allReusables,
-		Config:       cfg,
-		GeneratedAt:  nowFunc(),
+		Files:           analyses,
+		AllReusables:    allReusables,
+		Config:          cfg,
+		GeneratedAt:     nowFunc(),
+		filesExcluded:   excluded,
+		filesSkippedExt: skippedExt,
+		skippedExts:     skippedExts,
 	}, nil
 }

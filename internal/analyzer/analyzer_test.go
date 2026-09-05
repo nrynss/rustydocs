@@ -26,11 +26,16 @@ func TestIsContentFile(t *testing.T) {
 }
 
 func TestContentExtensionSet_NormalizationAndDefaults(t *testing.T) {
+	// An empty list (ApplyProfile never called) falls back to the markdown
+	// profile's extensions, not to nothing.
 	def := contentExtensionSet(nil)
-	for _, e := range []string{".md", ".markdown", ".mdx"} {
+	for _, e := range []string{".md", ".markdown"} {
 		if _, ok := def[e]; !ok {
 			t.Errorf("default set missing %q", e)
 		}
+	}
+	if _, ok := def[".mdx"]; ok {
+		t.Error("default (markdown profile) set should not include .mdx")
 	}
 
 	// Bare and mixed-case extensions are normalized to ".ext" lowercase.

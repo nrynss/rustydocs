@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // StalenessLevels defines threshold levels for staleness classification.
@@ -30,38 +31,54 @@ type ReusablesConfig struct {
 
 // Config holds the configuration for rustydocs analysis.
 type Config struct {
-	ThresholdDays     int             `json:"threshold_days"`
-	ContentDir        string          `json:"content_dir"`
-	ContentExtensions []string        `json:"content_extensions"` // File extensions to analyze (default: .md, .markdown, .mdx)
-	HugoRoot          string          `json:"hugo_root"`          // Hugo project root (auto-detected if not set)
-	ReusablesDir      string          `json:"reusables_dir"`      // Deprecated: use Reusables.Dir
-	Reusables         ReusablesConfig `json:"reusables"`
-	OutputDir         string          `json:"output_dir"`
-	ExcludePatterns   []string        `json:"exclude_patterns"`
-	ExcludeDirs       []string        `json:"exclude_dirs"`
-	StalenessLevels   StalenessLevels `json:"staleness_levels"`
-	FileLevelOnly     bool            `json:"file_level_only"`
-	ParagraphLevel    bool            `json:"paragraph_level"`
-	Workers           int             `json:"workers"`
-	ShowReusables     bool            `json:"show_reusables"` // Show reusables in report (default false)
+	ThresholdDays int    `json:"threshold_days"`
+	ContentDir    string `json:"content_dir"`
+	// Profile selects a built-in documentation-tool profile by name (see
+	// Profiles). Empty = auto-detect from content_dir (hugo when a layouts/ or
+	// themes/ directory, a hugo.{toml,yaml,json} file, or a config/_default/
+	// Hugo config is found at or above it, otherwise markdown).
+	Profile string `json:"profile"`
+	// ResolvedProfile is the profile ApplyProfile selected; ProfileAuto is
+	// true when it was auto-detected rather than named explicitly.
+	ResolvedProfile Profile `json:"-"`
+	ProfileAuto     bool    `json:"-"`
+	// ExtensionsFromUser is true when ContentExtensions was already set when
+	// ApplyProfile ran, i.e. the allowlist in force came from config or
+	// --extensions rather than from a profile default. ApplyProfile also
+	// widens the extensions itself under the legacy reusables-dir flow, so the
+	// resolved list differing from the profile's is not evidence of a user
+	// override; consult this field instead.
+	ExtensionsFromUser bool `json:"-"`
+	// ContentExtensions is the file-extension allowlist for the walk (empty:
+	// from profile). ApplyProfile canonicalises it in place with
+	// NormalizeExtensions, so after that call it holds exactly the lowercase,
+	// dot-prefixed set the analyzer matches on — which is what the banner, the
+	// stderr warnings and the JSON report's content_extensions echo.
+	ContentExtensions []string `json:"content_extensions"`
+	// HugoRoot is the Hugo project root. When empty, ApplyProfile fills it
+	// only if the resolved profile has RootMarkers (today: the hugo profile),
+	// using the nearest marker found walking up from ContentDir. Setting it
+	// explicitly also forces the hugo profile during auto-detection.
+	HugoRoot        string          `json:"hugo_root"`
+	ReusablesDir    string          `json:"reusables_dir"` // Deprecated: use Reusables.Dir
+	Reusables       ReusablesConfig `json:"reusables"`
+	OutputDir       string          `json:"output_dir"`
+	ExcludePatterns []string        `json:"exclude_patterns"`
+	ExcludeDirs     []string        `json:"exclude_dirs"`
+	StalenessLevels StalenessLevels `json:"staleness_levels"`
+	FileLevelOnly   bool            `json:"file_level_only"`
+	ParagraphLevel  bool            `json:"paragraph_level"`
+	Workers         int             `json:"workers"`
+	ShowReusables   bool            `json:"show_reusables"` // Show reusables in report (default false)
 }
 
-// DefaultConfig returns a new Config with default values.
+// DefaultConfig returns a new Config with default values. Profile-dependent
+// settings (ContentExtensions, Reusables.Patterns, Reusables.Extensions,
+// HugoRoot) are left empty here and filled by ApplyProfile.
 func DefaultConfig() *Config {
 	return &Config{
-		ThresholdDays:     90,
-		ContentExtensions: []string{".md", ".markdown", ".mdx"},
-		OutputDir:         "./reports",
-		Reusables: ReusablesConfig{
-			// Default patterns for Hugo shortcodes, MDX/JSX components
-			Patterns: []string{
-				// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
-				`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-				// MDX/JSX components: <Component>, <Component />, <Component prop="val">
-				`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
-			},
-			Extensions: []string{".md", ".mdx", ".html"},
-		},
+		ThresholdDays: 90,
+		OutputDir:     "./reports",
 		StalenessLevels: StalenessLevels{
 			Warning:  90,
 			Caution:  180,
@@ -88,23 +105,9 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Reusables.Dir = cfg.ReusablesDir
 	}
 
-	// Ensure default patterns if none specified
-	if len(cfg.Reusables.Patterns) == 0 {
-		cfg.Reusables.Patterns = []string{
-			`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-			`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
-		}
-	}
-
-	// Ensure default reusable extensions if none specified
-	if len(cfg.Reusables.Extensions) == 0 {
-		cfg.Reusables.Extensions = []string{".md", ".mdx", ".html"}
-	}
-
-	// Ensure default content extensions if none specified
-	if len(cfg.ContentExtensions) == 0 {
-		cfg.ContentExtensions = []string{".md", ".markdown", ".mdx"}
-	}
+	// Content extensions, reusable patterns and reusable extensions left
+	// unset are filled from the resolved profile by ApplyProfile, which the
+	// caller runs after merging CLI overrides.
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -137,6 +140,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("workers must be non-negative, got %d", c.Workers)
 	}
 
+	// Validate profile name (empty = auto-detect)
+	if c.Profile != "" {
+		if _, ok := LookupProfile(c.Profile); !ok {
+			return fmt.Errorf("unknown profile %q (valid profiles: %s)", c.Profile, strings.Join(Profiles(), ", "))
+		}
+	}
+
 	// Validate regex patterns
 	for i, pattern := range c.Reusables.Patterns {
 		if _, err := regexp.Compile(pattern); err != nil {
@@ -165,26 +175,6 @@ func (c *Config) Normalize() {
 	}
 	if c.StalenessLevels.Critical < c.StalenessLevels.Caution {
 		c.StalenessLevels.Critical = c.StalenessLevels.Caution
-	}
-}
-
-// DetectHugoRoot finds the Hugo project root by walking up from contentDir
-// looking for a layouts/ directory.
-func DetectHugoRoot(contentDir string) string {
-	dir := filepath.Clean(contentDir)
-	for {
-		// Check if layouts/ exists at this level
-		layoutsPath := filepath.Join(dir, "layouts")
-		if info, err := os.Stat(layoutsPath); err == nil && info.IsDir() {
-			return dir
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			// Reached filesystem root
-			return ""
-		}
-		dir = parent
 	}
 }
 

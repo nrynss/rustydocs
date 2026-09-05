@@ -3,6 +3,8 @@ package analyzer
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +106,129 @@ func TestAnalyze_HugoSiteFixture(t *testing.T) {
 	}
 	if note.LastUpdated == nil {
 		t.Error("'note' shortcode was not resolved to a date (Hugo root / readFile tracing)")
+	}
+}
+
+// TestAnalyze_ProfilesControlReusableDetection pins #11: a plain Markdown
+// repo (no layouts/ above it) auto-selects the markdown profile, under which
+// Hugo shortcodes and MDX components in the text are NOT treated as reusables.
+// Selecting the hugo profile explicitly turns detection back on.
+func TestAnalyze_ProfilesControlReusableDetection(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/page.md":   "# Intro\n\nSee <Foo /> and {{< bar >}} here.\n",
+		"docs/other.mdx": "# MDX\n\nonly analyzed under hugo\n",
+	})
+
+	countReusables := func(res *Results) int {
+		n := 0
+		for _, f := range res.Files {
+			for _, s := range f.Sections {
+				n += len(s.Reusables)
+			}
+		}
+		return n
+	}
+
+	// Auto: markdown profile.
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(auto): %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMarkdown || !cfg.ProfileAuto {
+		t.Errorf("resolved %q auto=%v, want markdown auto-detected", cfg.ResolvedProfile.Name, cfg.ProfileAuto)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("markdown profile should analyze only page.md, got %d files", res.TotalFiles())
+	}
+	if n := countReusables(res); n != 0 || len(res.AllReusables) != 0 {
+		t.Errorf("markdown profile must not detect reusables; sections=%d all=%v", n, res.AllReusables)
+	}
+
+	// Explicit hugo profile.
+	hugoCfg := config.DefaultConfig()
+	hugoCfg.ContentDir = repo.Path("docs")
+	hugoCfg.Profile = config.ProfileHugo
+	res, err = Analyze(hugoCfg)
+	if err != nil {
+		t.Fatalf("Analyze(hugo): %v", err)
+	}
+	if hugoCfg.ResolvedProfile.Name != config.ProfileHugo || hugoCfg.ProfileAuto {
+		t.Errorf("resolved %q auto=%v, want explicit hugo", hugoCfg.ResolvedProfile.Name, hugoCfg.ProfileAuto)
+	}
+	if res.TotalFiles() != 2 {
+		t.Errorf("hugo profile should analyze .md and .mdx, got %d files", res.TotalFiles())
+	}
+	names := map[string]bool{}
+	for _, r := range res.AllReusables {
+		names[r.Name] = true
+	}
+	if !names["Foo"] || !names["bar"] {
+		t.Errorf("hugo profile should detect Foo and bar, got %v", res.AllReusables)
+	}
+}
+
+// TestAnalyze_FilesExcluded pins the diagnostic count behind the zero-files
+// warning (#11): files whose extension matched the allowlist but which
+// exclude_dirs / exclude_patterns dropped are counted in FilesExcluded, while
+// files of other extensions are not (they never matched to begin with).
+func TestAnalyze_FilesExcluded(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/keep.md":            "# Keep\n\nbody\n",
+		"docs/drafts/a.md":        "# A\n\nbody\n",
+		"docs/drafts/b.markdown":  "# B\n\nbody\n",
+		"docs/drafts/notes.txt":   "not content\n",
+		"docs/CHANGELOG.md":       "# Changes\n\nbody\n",
+		"docs/other/skipped.json": "{}",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludeDirs = []string{"drafts"}
+	cfg.ExcludePatterns = []string{"CHANGELOG.md"}
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (keep.md)", res.TotalFiles())
+	}
+	if got := res.FilesExcluded(); got != 3 {
+		t.Errorf("FilesExcluded = %d, want 3 (drafts/a.md, drafts/b.markdown, CHANGELOG.md)", got)
+	}
+
+	// Everything excluded (dir rule plus a glob on the rest): zero analyzed,
+	// every extension match counted.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludeDirs = []string{"drafts"}
+	cfg.ExcludePatterns = []string{"*.md"}
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(all excluded): %v", err)
+	}
+	if res.TotalFiles() != 0 || res.FilesExcluded() != 4 {
+		t.Errorf("all excluded: TotalFiles=%d FilesExcluded=%d, want 0 and 4", res.TotalFiles(), res.FilesExcluded())
+	}
+
+	// No exclusions: nothing is counted as excluded.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(no exclusions): %v", err)
+	}
+	if res.TotalFiles() != 4 || res.FilesExcluded() != 0 {
+		t.Errorf("no exclusions: TotalFiles=%d FilesExcluded=%d, want 4 and 0", res.TotalFiles(), res.FilesExcluded())
 	}
 }
 
@@ -281,5 +406,118 @@ func TestResults_Accessors(t *testing.T) {
 	}
 	if empty.OldestFile() != nil {
 		t.Error("empty Results OldestFile should be nil")
+	}
+}
+
+// TestAnalyze_InvalidPatternIsAnError guards against the old behaviour of
+// silently swapping in the Hugo profile's patterns when a configured reusable
+// pattern fails to compile (#11). An invalid pattern must surface as an error
+// that names the pattern, before any file is analyzed, regardless of profile.
+func TestAnalyze_InvalidPatternIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\n\n{{< alert >}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const bad = `(unclosed`
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = dir
+	cfg.Profile = config.ProfileMarkdown
+	cfg.Reusables.Patterns = []string{bad}
+
+	res, err := Analyze(cfg)
+	if err == nil {
+		t.Fatal("Analyze with an uncompilable reusable pattern must return an error")
+	}
+	if res != nil {
+		t.Errorf("Analyze must not return results alongside the error, got %d files", res.TotalFiles())
+	}
+	if !strings.Contains(err.Error(), bad) {
+		t.Errorf("error should name the offending pattern %q, got: %v", bad, err)
+	}
+	// The configured patterns must be left as the user wrote them: no Hugo
+	// fallback was substituted.
+	if len(cfg.Reusables.Patterns) != 1 || cfg.Reusables.Patterns[0] != bad {
+		t.Errorf("Reusables.Patterns were rewritten to %v; the invalid pattern must not be replaced", cfg.Reusables.Patterns)
+	}
+
+	// The per-file path is equally strict: analyzeFile returns the compile
+	// error rather than switching to the Hugo pattern set.
+	fa, ferr := analyzeFile(filepath.Join(dir, "a.md"), cfg, dir)
+	if ferr == nil {
+		t.Fatal("analyzeFile with an uncompilable reusable pattern must return an error")
+	}
+	if !strings.Contains(ferr.Error(), bad) {
+		t.Errorf("analyzeFile error should name the pattern %q, got: %v", bad, ferr)
+	}
+	if len(fa.Sections) != 0 || len(fa.Reusables) != 0 {
+		t.Errorf("analyzeFile must not have detected anything (sections=%d reusables=%d)", len(fa.Sections), len(fa.Reusables))
+	}
+}
+
+// TestAnalyze_FilesSkippedByExtension pins the partial-scan diagnostic (#11):
+// files that are documentation under another built-in profile but not under
+// the active allowlist are counted, while files that are not documentation
+// under any profile (.txt, .png) are not, and neither are files the
+// exclusions would have dropped anyway.
+func TestAnalyze_FilesSkippedByExtension(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/a.md":        "# A\n\nbody\n",
+		"docs/guide.mdx":   "# Guide\n\nbody\n",
+		"docs/notes.txt":   "not content\n",
+		"docs/diagram.png": "not really a png\n",
+	})
+
+	// markdown profile: .mdx is documentation elsewhere, so it is counted;
+	// .txt and .png are not documentation anywhere and are ignored.
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (a.md)", res.TotalFiles())
+	}
+	if got := res.FilesSkippedByExtension(); got != 1 {
+		t.Errorf("FilesSkippedByExtension = %d, want 1 (guide.mdx)", got)
+	}
+	if got := res.SkippedExtensions(); len(got) != 1 || got[0] != ".mdx" {
+		t.Errorf("SkippedExtensions = %v, want [.mdx]", got)
+	}
+
+	// hugo profile: .mdx is in the allowlist, so nothing is skipped.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.Profile = config.ProfileHugo
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(hugo): %v", err)
+	}
+	if res.TotalFiles() != 2 {
+		t.Errorf("hugo: TotalFiles = %d, want 2", res.TotalFiles())
+	}
+	if got := res.FilesSkippedByExtension(); got != 0 {
+		t.Errorf("hugo: FilesSkippedByExtension = %d, want 0", got)
+	}
+	if got := res.SkippedExtensions(); len(got) != 0 {
+		t.Errorf("hugo: SkippedExtensions = %v, want empty", got)
+	}
+
+	// An .mdx the exclusions would drop anyway is not counted: widening the
+	// allowlist would not analyze it.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludePatterns = []string{"guide.mdx"}
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(excluded mdx): %v", err)
+	}
+	if got := res.FilesSkippedByExtension(); got != 0 {
+		t.Errorf("excluded mdx: FilesSkippedByExtension = %d, want 0", got)
 	}
 }

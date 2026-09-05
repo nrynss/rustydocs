@@ -3,12 +3,14 @@ package parser
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/nrynss/rustydocs/internal/config"
 	"github.com/nrynss/rustydocs/internal/git"
 )
 
@@ -111,22 +113,24 @@ func NewReusablePatterns(patterns []string, extensions []string, reusablesDir st
 	return rp, nil
 }
 
-// defaultReusablePatternStrings are the built-in reusable-reference regexes used
-// by DefaultReusablePatterns. Exposed at package scope so tests can build a
-// ReusablePatterns with custom roots from the same source of truth.
-var defaultReusablePatternStrings = []string{
-	// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
-	`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-	// MDX/JSX components: <Component>, <Component />, <Component prop="val">
-	`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
+// hugoProfile returns the built-in Hugo profile, the single source of truth for
+// the default reusable-reference regexes and extensions.
+func hugoProfile() config.Profile {
+	p, ok := config.LookupProfile(config.ProfileHugo)
+	if !ok {
+		panic("parser: hugo profile missing from config registry")
+	}
+	return p
 }
 
-// DefaultReusablePatterns returns default patterns for Hugo shortcodes and MDX components.
+// DefaultReusablePatterns returns the Hugo profile's default patterns (Hugo
+// shortcodes and MDX components) with no resolution roots.
 func DefaultReusablePatterns() *ReusablePatterns {
 	// These patterns are hardcoded and should always compile successfully
+	hp := hugoProfile()
 	rp, err := NewReusablePatterns(
-		defaultReusablePatternStrings,
-		[]string{".md", ".mdx", ".html"},
+		hp.ReusablePatterns,
+		hp.ReusableExtensions,
 		"",
 		"",
 	)
@@ -366,8 +370,64 @@ func GetReusableInfo(reusableName string, rp *ReusablePatterns) *git.FileInfo {
 	return nil
 }
 
+// layoutRoots returns the layouts directories searched for shortcode
+// templates, in Hugo's own lookup order: the project's own layouts/ first, then
+// the layouts/ of each theme under themes/ (sorted by theme directory name, as
+// os.ReadDir returns them). A project template therefore always wins over a
+// theme one. A missing or unreadable themes/ directory simply yields the
+// project layouts.
+func (rp *ReusablePatterns) layoutRoots() []string {
+	roots := []string{filepath.Join(rp.hugoRoot, "layouts")}
+	themesDir := filepath.Join(rp.hugoRoot, "themes")
+	entries, err := os.ReadDir(themesDir)
+	if err != nil {
+		return roots
+	}
+	for _, e := range entries {
+		if entryIsDir(themesDir, e) {
+			roots = append(roots, filepath.Join(themesDir, e.Name(), "layouts"))
+		}
+	}
+	return roots
+}
+
+// entryIsDir reports whether a directory entry names a directory, following
+// symlinks. os.ReadDir reports the entry's own type as recorded by readdir, so
+// a symlink is never IsDir() even when it points at a directory — and
+// symlinking a checkout into themes/<name> is the standard Hugo local
+// theme-development workflow. Only symlink entries are stat'ed, so the common
+// case costs nothing extra; a broken symlink stats with an error and is
+// skipped.
+func entryIsDir(parent string, e fs.DirEntry) bool {
+	if e.IsDir() {
+		return true
+	}
+	if e.Type()&fs.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(parent, e.Name()))
+	return err == nil && info.IsDir()
+}
+
+// shortcodeCandidates returns the template paths tried for a shortcode name
+// under one layouts directory, in the order they are tried.
+func shortcodeCandidates(layoutsDir, name string) []string {
+	shortcodesDir := filepath.Join(layoutsDir, "shortcodes")
+	return []string{
+		// shortcodes/{name}.html
+		filepath.Join(shortcodesDir, name+".html"),
+		// shortcodes/{name}/index.html (for shortcodes in subdirs)
+		filepath.Join(shortcodesDir, name, "index.html"),
+		// nested path: shortcodes/reusables/{name}.html
+		filepath.Join(shortcodesDir, "reusables", name+".html"),
+	}
+}
+
 // lookupShortcode finds a Hugo shortcode and traces its data file dependencies.
-// Returns the most recent modification date from shortcode template and data files.
+// The project's layouts/ is searched first, then each theme's layouts/ under
+// themes/ (theme-provided shortcodes are common on sites whose only marker is a
+// themes/ directory). Returns the most recent modification date from shortcode
+// template and data files.
 func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 	if rp.hugoRoot == "" {
 		return nil
@@ -378,29 +438,17 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 		return rp.mostRecentFile(paths)
 	}
 
-	// Look for shortcode template
-	shortcodesDir := filepath.Join(rp.hugoRoot, "layouts", "shortcodes")
+	// Look for the shortcode template, project layouts before theme layouts.
 	shortcodePath := ""
-
-	// Try: layouts/shortcodes/{name}.html
-	candidate := filepath.Join(shortcodesDir, name+".html")
-	if _, err := os.Stat(candidate); err == nil {
-		shortcodePath = candidate
-	}
-
-	// Try: layouts/shortcodes/{name}/index.html (for shortcodes in subdirs)
-	if shortcodePath == "" {
-		candidate = filepath.Join(shortcodesDir, name, "index.html")
-		if _, err := os.Stat(candidate); err == nil {
-			shortcodePath = candidate
+	for _, layouts := range rp.layoutRoots() {
+		for _, candidate := range shortcodeCandidates(layouts, name) {
+			if _, err := os.Stat(candidate); err == nil {
+				shortcodePath = candidate
+				break
+			}
 		}
-	}
-
-	// Try nested path: layouts/shortcodes/reusables/{name}.html
-	if shortcodePath == "" {
-		candidate = filepath.Join(shortcodesDir, "reusables", name+".html")
-		if _, err := os.Stat(candidate); err == nil {
-			shortcodePath = candidate
+		if shortcodePath != "" {
+			break
 		}
 	}
 
