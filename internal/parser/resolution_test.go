@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/nrynss/rustydocs/internal/config"
 	"github.com/nrynss/rustydocs/internal/git"
 	"github.com/nrynss/rustydocs/internal/testutil"
 )
@@ -295,7 +297,7 @@ func TestGetReusableInfo_HugoShortcode(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("note", rp)
+	info := GetReusableInfo("note", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(note) returned nil")
 	}
@@ -325,7 +327,7 @@ func TestGetReusableInfo_HugoShortcode_DataDepNewer(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("note", rp)
+	info := GetReusableInfo("note", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(note) returned nil")
 	}
@@ -349,7 +351,7 @@ func TestGetReusableInfo_ReusablesDir(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("foo", rp)
+	info := GetReusableInfo("foo", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(foo) returned nil")
 	}
@@ -374,7 +376,7 @@ func TestGetReusableInfo_ReusablesDir_IndexConvention(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("bar", rp)
+	info := GetReusableInfo("bar", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(bar) returned nil")
 	}
@@ -384,7 +386,7 @@ func TestGetReusableInfo_ReusablesDir_IndexConvention(t *testing.T) {
 }
 
 func TestGetReusableInfo_NilPatterns(t *testing.T) {
-	if got := GetReusableInfo("anything", nil); got != nil {
+	if got := GetReusableInfo("anything", "", nil); got != nil {
 		t.Errorf("GetReusableInfo with nil rp = %v, want nil", got)
 	}
 }
@@ -399,7 +401,7 @@ func TestGetReusableInfo_Unresolvable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
-	if got := GetReusableInfo("does-not-exist", rp); got != nil {
+	if got := GetReusableInfo("does-not-exist", "", rp); got != nil {
 		t.Errorf("GetReusableInfo for unknown reusable = %v, want nil", got)
 	}
 }
@@ -427,7 +429,7 @@ func TestCalculateSectionStaleness_MostRecent(t *testing.T) {
 		Reusables: []string{"widget"},
 	}
 
-	got := CalculateSectionStaleness(section, rp)
+	got := CalculateSectionStaleness(section, "", rp)
 	if got == nil {
 		t.Fatal("CalculateSectionStaleness returned nil")
 	}
@@ -458,7 +460,7 @@ func TestCalculateSectionStaleness_LinesDrive(t *testing.T) {
 		Reusables: []string{"widget"},
 	}
 
-	got := CalculateSectionStaleness(section, rp)
+	got := CalculateSectionStaleness(section, "", rp)
 	if got == nil {
 		t.Fatal("CalculateSectionStaleness returned nil")
 	}
@@ -478,7 +480,7 @@ func TestCalculateSectionStaleness_Nil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
-	if got := CalculateSectionStaleness(section, rp); got != nil {
+	if got := CalculateSectionStaleness(section, "", rp); got != nil {
 		t.Errorf("staleness with no lines and no resolvable reusables = %v, want nil", got)
 	}
 }
@@ -509,7 +511,7 @@ func TestGetReusableInfo_ThemeShortcode(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("note", rp)
+	info := GetReusableInfo("note", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(note) returned nil; theme shortcode was not resolved")
 	}
@@ -521,7 +523,7 @@ func TestGetReusableInfo_ThemeShortcode(t *testing.T) {
 		t.Errorf("shortcodeCache[note] = %v, want first entry %q", got, want)
 	}
 	// A second lookup must come from the cache and agree.
-	if again := GetReusableInfo("note", rp); again == nil || !sameInstant(again.LastModified, tmplDate) {
+	if again := GetReusableInfo("note", "", rp); again == nil || !sameInstant(again.LastModified, tmplDate) {
 		t.Errorf("cached lookup = %v, want %v", again, tmplDate)
 	}
 }
@@ -547,7 +549,7 @@ func TestGetReusableInfo_ProjectShortcodeBeatsTheme(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("note", rp)
+	info := GetReusableInfo("note", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(note) returned nil")
 	}
@@ -639,7 +641,7 @@ func TestGetReusableInfo_SymlinkedThemeShortcode(t *testing.T) {
 		t.Fatalf("NewReusablePatterns: %v", err)
 	}
 
-	info := GetReusableInfo("alert", rp)
+	info := GetReusableInfo("alert", "", rp)
 	if info == nil {
 		t.Fatal("GetReusableInfo(alert) returned nil; symlinked theme shortcode was not resolved")
 	}
@@ -649,5 +651,533 @@ func TestGetReusableInfo_SymlinkedThemeShortcode(t *testing.T) {
 	want := filepath.Join(repo.Dir, "themes", "mytheme", "layouts", "shortcodes", "alert.html")
 	if got := rp.shortcodeCache["alert"]; len(got) == 0 || got[0] != want {
 		t.Errorf("shortcodeCache[alert] = %v, want first entry %q", got, want)
+	}
+}
+
+// mintlifyPatternStrings reuses the mintlify profile's pattern, so the path
+// resolver's tests match on exactly what the profile ships.
+var mintlifyPatternStrings = func() []string {
+	p, ok := config.LookupProfile(config.ProfileMintlify)
+	if !ok {
+		panic("mintlify profile missing from config registry")
+	}
+	return p.ReusablePatterns
+}()
+
+// newPathRP builds a ReusablePatterns wired for the Mintlify profile: snippet
+// pattern, .mdx/.md reusable extensions, the given project root and the path
+// resolver.
+func newPathRP(t *testing.T, root string) *ReusablePatterns {
+	t.Helper()
+	rp, err := NewReusablePatternsFor(ReusableConfig{
+		Patterns:   mintlifyPatternStrings,
+		Extensions: []string{".mdx", ".md"},
+		Root:       root,
+		Resolver:   config.ResolverPath,
+	})
+	if err != nil {
+		t.Fatalf("NewReusablePatternsFor: %v", err)
+	}
+	return rp
+}
+
+// TestFindReusables_MintlifyPattern checks the parser side of the narrow
+// Mintlify pattern: the capture is the snippet *path*, and neither an MDX
+// component nor a Hugo shortcode is picked up (#7).
+func TestFindReusables_MintlifyPattern(t *testing.T) {
+	rp := newPathRP(t, t.TempDir())
+	content := "# Title\n\n" +
+		`<Snippet file="/snippets/foo.mdx" />` + "\n" +
+		"<Card title=\"nope\" />\n" +
+		"{{< alert >}}\n" +
+		`<Snippet file="./local.mdx" />` + "\n"
+
+	got := FindReusables(content, rp)
+	want := []string{"/snippets/foo.mdx", "./local.mdx"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FindReusables = %v, want %v", got, want)
+	}
+}
+
+// TestGetReusableInfo_PathResolver covers the direct-path resolver end to end
+// against a real repository: root-absolute and page-relative captures resolve,
+// a traversal out of the root does not, a missing snippet yields no info, and
+// an extensionless capture falls back to the reusable extensions (#7).
+func TestGetReusableInfo_PathResolver(t *testing.T) {
+	repo := testutil.NewRepo(t)
+
+	snippetDate := time.Date(2024, 5, 20, 12, 0, 0, 0, time.UTC)
+	repo.Commit(snippetDate, "add snippets", map[string]string{
+		"docs.json":               `{"name":"docs"}`,
+		"snippets/foo.mdx":        "shared snippet\n",
+		"snippets/bare.md":        "extensionless target\n",
+		"snippets/dir/index.mdx":  "index snippet\n",
+		"docs/guides/partial.mdx": "page-local partial\n",
+		"docs/guides/page.mdx":    "# Page\n",
+		"top-level.mdx":           "inside the root, two levels up from the page\n",
+	})
+
+	// A sibling tree the traversal cases try to reach: committed in another
+	// repo entirely, so an escape that succeeded would come back as real git
+	// info rather than as "file not found".
+	outside := testutil.NewRepo(t)
+	outside.Commit(snippetDate, "outside", map[string]string{"secret.mdx": "not yours\n"})
+
+	root := repo.Dir
+	page := repo.Path("docs/guides/page.mdx")
+	rp := newPathRP(t, root)
+
+	// A relative capture that climbs out of the docs project and lands on a
+	// real, committed file elsewhere on the machine.
+	escape, err := filepath.Rel(filepath.Dir(page), outside.Path("secret.mdx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		ref     string
+		source  string
+		wantNil bool
+	}{
+		{name: "root-absolute path", ref: "/snippets/foo.mdx", source: page},
+		{name: "root-absolute path with no source file", ref: "/snippets/foo.mdx"},
+		{name: "relative to the referencing page", ref: "./partial.mdx", source: page},
+		{name: "bare relative to the referencing page", ref: "partial.mdx", source: page},
+		{name: "relative falls back to the root", ref: "snippets/foo.mdx", source: page},
+		{name: "extensionless tries the reusable extensions", ref: "/snippets/bare"},
+		{name: "extensionless directory index", ref: "/snippets/dir"},
+		{name: "traversal that stays inside the root", ref: "../../top-level.mdx", source: page},
+		{name: "missing snippet", ref: "/snippets/nope.mdx", source: page, wantNil: true},
+		{name: "traversal out of the root", ref: escape, source: page, wantNil: true},
+		{name: "root-absolute traversal out of the root", ref: "/../top-level.mdx", wantNil: true},
+		{name: "absolute path into another tree", ref: outside.Path("secret.mdx"), source: page, wantNil: true},
+		{name: "empty reference", ref: "", source: page, wantNil: true},
+		{name: "blank reference", ref: "   ", source: page, wantNil: true},
+		{name: "root itself", ref: "/", source: page, wantNil: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := GetReusableInfo(tt.ref, tt.source, rp)
+			if tt.wantNil {
+				if info != nil {
+					t.Fatalf("GetReusableInfo(%q) = %+v, want nil", tt.ref, info)
+				}
+				return
+			}
+			if info == nil {
+				t.Fatalf("GetReusableInfo(%q) returned nil", tt.ref)
+			}
+			if !sameInstant(info.LastModified, snippetDate) {
+				t.Errorf("LastModified = %v, want %v", info.LastModified, snippetDate)
+			}
+		})
+	}
+}
+
+// TestGetReusableInfo_PathResolver_BasePrecedence pins the lookup order of the
+// direct-path resolver, which is what decides whether a real Mintlify project
+// resolves at all: a bare capture is a *snippets-directory* reference first
+// (snippets/, then _snippets/), then the project root, and only then the
+// referencing page's directory; an explicitly page-relative "./" capture keeps
+// the page's directory first; and a root-absolute "/" capture is the root and
+// nothing else (#7).
+//
+// Every candidate file carries a different commit date, so the date that comes
+// back names the base that won.
+func TestGetReusableInfo_PathResolver_BasePrecedence(t *testing.T) {
+	var (
+		snippetsDate   = time.Date(2021, 1, 4, 12, 0, 0, 0, time.UTC)
+		underscoreDate = time.Date(2022, 2, 5, 12, 0, 0, 0, time.UTC)
+		rootDate       = time.Date(2023, 3, 6, 12, 0, 0, 0, time.UTC)
+		pageDate       = time.Date(2024, 4, 7, 12, 0, 0, 0, time.UTC)
+	)
+
+	repo := testutil.NewRepo(t)
+	// "both.mdx" exists in snippets/ and next to the page; "underscore.mdx"
+	// only in _snippets/; "rooted.mdx" only at the root; "local.mdx" only
+	// next to the page.
+	repo.Commit(snippetsDate, "snippets", map[string]string{
+		"docs.json":         `{"name":"docs"}`,
+		"snippets/both.mdx": "snippets copy\n",
+		"docs/page.mdx":     "# Page\n",
+	})
+	repo.Commit(underscoreDate, "underscore snippets", map[string]string{
+		"_snippets/underscore.mdx": "underscore copy\n",
+	})
+	repo.Commit(rootDate, "root copy", map[string]string{
+		"rooted.mdx": "root copy\n",
+	})
+	repo.Commit(pageDate, "page-local copies", map[string]string{
+		"docs/both.mdx":  "page-local copy\n",
+		"docs/local.mdx": "page-local only\n",
+	})
+
+	page := repo.Path("docs/page.mdx")
+	rp := newPathRP(t, repo.Dir)
+
+	tests := []struct {
+		name string
+		ref  string
+		want time.Time
+	}{
+		{
+			name: "a bare name resolves from snippets/",
+			ref:  "both.mdx",
+			want: snippetsDate,
+		},
+		{
+			name: "a bare name falls through to _snippets/ when snippets/ has no match",
+			ref:  "underscore.mdx",
+			want: underscoreDate,
+		},
+		{
+			name: "a bare name falls back to the project root",
+			ref:  "rooted.mdx",
+			want: rootDate,
+		},
+		{
+			name: "a bare name found nowhere else falls back to the page directory",
+			ref:  "local.mdx",
+			want: pageDate,
+		},
+		{
+			name: "an explicit ./ capture is page-relative",
+			ref:  "./both.mdx",
+			want: pageDate,
+		},
+		{
+			name: "a root-absolute capture is resolved against the root",
+			ref:  "/snippets/both.mdx",
+			want: snippetsDate,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := GetReusableInfo(tt.ref, page, rp)
+			if info == nil {
+				t.Fatalf("GetReusableInfo(%q) returned nil", tt.ref)
+			}
+			if !sameInstant(info.LastModified, tt.want) {
+				t.Errorf("GetReusableInfo(%q) resolved to %v, want the copy committed %v",
+					tt.ref, info.LastModified, tt.want)
+			}
+		})
+	}
+
+	// The reported identity follows resolution, so the bare capture that won
+	// from snippets/ is named by that path and not by the page-local file of
+	// the same name.
+	if got := rp.DisplayName("both.mdx", page, GetReusableInfo("both.mdx", page, rp)); got != "snippets/both.mdx" {
+		t.Errorf("DisplayName(bare capture) = %q, want snippets/both.mdx", got)
+	}
+
+	// With no source file the page directory simply is not a base; the shared
+	// ones still apply.
+	if info := GetReusableInfo("both.mdx", "", rp); info == nil || !sameInstant(info.LastModified, snippetsDate) {
+		t.Errorf("GetReusableInfo(no source) = %+v, want the snippets/ copy", info)
+	}
+	if info := GetReusableInfo("local.mdx", "", rp); info != nil {
+		t.Errorf("GetReusableInfo(page-only snippet, no source) = %+v, want nil", info)
+	}
+}
+
+// TestGetReusableInfo_PathResolver_NoRoot verifies that without a detected
+// project root nothing is resolved: there is no base to resolve against and no
+// bound to keep the result inside the docs project.
+func TestGetReusableInfo_PathResolver_NoRoot(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Date(2024, 5, 20, 12, 0, 0, 0, time.UTC), "add", map[string]string{
+		"snippets/foo.mdx": "x\n",
+		"docs/page.mdx":    "# Page\n",
+	})
+	rp := newPathRP(t, "")
+	if got := GetReusableInfo("/snippets/foo.mdx", repo.Path("docs/page.mdx"), rp); got != nil {
+		t.Errorf("GetReusableInfo with no root = %+v, want nil", got)
+	}
+}
+
+// TestGetReusableInfo_PathResolver_UntrackedSnippet checks that an existing but
+// uncommitted snippet resolves to no info — reported unknown, never fresh (#55).
+func TestGetReusableInfo_PathResolver_UntrackedSnippet(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Date(2024, 5, 20, 12, 0, 0, 0, time.UTC), "init", map[string]string{
+		"docs.json":     "{}",
+		"docs/page.mdx": "# Page\n",
+	})
+	repo.Write("snippets/untracked.mdx", "not committed\n")
+
+	rp := newPathRP(t, repo.Dir)
+	if got := GetReusableInfo("/snippets/untracked.mdx", repo.Path("docs/page.mdx"), rp); got != nil {
+		t.Errorf("GetReusableInfo(untracked) = %+v, want nil", got)
+	}
+}
+
+// TestCalculateSectionStaleness_PathReusable folds a path-resolved snippet's
+// date into the section that references it: the page is old, the snippet is
+// new, so the section's effective date is the snippet's.
+func TestCalculateSectionStaleness_PathReusable(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	pageDate := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	snippetDate := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	repo.Commit(pageDate, "page", map[string]string{
+		"docs.json":     "{}",
+		"docs/page.mdx": "# Page\n",
+	})
+	repo.Commit(snippetDate, "snippet", map[string]string{
+		"snippets/foo.mdx": "fresh\n",
+	})
+
+	rp := newPathRP(t, repo.Dir)
+	section := &Chunk{
+		Title:     "Page",
+		Lines:     []git.LineInfo{mkLine(1, pageDate, "alice")},
+		Reusables: []string{"/snippets/foo.mdx"},
+	}
+	got := CalculateSectionStaleness(section, repo.Path("docs/page.mdx"), rp)
+	if got == nil {
+		t.Fatal("CalculateSectionStaleness returned nil")
+	}
+	if !sameInstant(*got, snippetDate) {
+		t.Errorf("effective date = %v, want the snippet's %v", got, snippetDate)
+	}
+}
+
+// TestNewReusablePatterns_LegacyResolverInference pins the compatibility
+// shim: the four-argument constructor still infers ResolverHugo from a
+// non-empty root and ResolverNone from an empty one, so pre-profile callers
+// behave exactly as before.
+func TestNewReusablePatterns_LegacyResolverInference(t *testing.T) {
+	withRoot, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, "", "/site")
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+	if withRoot.resolver != config.ResolverHugo || withRoot.root != "/site" {
+		t.Errorf("resolver/root = %q/%q, want hugo//site", withRoot.resolver, withRoot.root)
+	}
+	noRoot, err := NewReusablePatterns(defaultPatternStrings, []string{".md"}, "/shared", "")
+	if err != nil {
+		t.Fatalf("NewReusablePatterns: %v", err)
+	}
+	if noRoot.resolver != config.ResolverNone || noRoot.reusablesDir != "/shared" {
+		t.Errorf("resolver/dir = %q/%q, want none//shared", noRoot.resolver, noRoot.reusablesDir)
+	}
+	if _, err := NewReusablePatternsFor(ReusableConfig{Patterns: []string{"("}}); err == nil {
+		t.Error("NewReusablePatternsFor with an invalid pattern should error")
+	}
+}
+
+// TestGetReusableInfo_PathResolver_SymlinkEscape is the regression test for
+// purely lexical containment (#7 review). "snippets/out" is a symlink pointing
+// at a whole other repository; without resolving symlinks before the
+// containment check, <Snippet file="/snippets/out/passwd.mdx" /> folded that
+// repository's fresh commit date into the report and marked a genuinely stale
+// page fresh. The symlink must be ignored, while a symlink that stays inside
+// the project root must still resolve.
+func TestGetReusableInfo_PathResolver_SymlinkEscape(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	oldDate := time.Date(2020, 1, 2, 12, 0, 0, 0, time.UTC)
+	repo.Commit(oldDate, "docs", map[string]string{
+		"docs.json":          "{}",
+		"docs/page.mdx":      "# Page\n",
+		"real/inside.mdx":    "a snippet that really lives in the project\n",
+		"snippets/keepme.md": "another in-project snippet\n",
+	})
+
+	// A separate repository with a much newer commit: if an escape resolved,
+	// its date would come back and look fresh.
+	outside := testutil.NewRepo(t)
+	freshDate := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	outside.Commit(freshDate, "secret", map[string]string{"passwd.mdx": "not yours\n"})
+
+	// snippets/out -> <other repo>   (escapes the root)
+	if err := os.Symlink(outside.Dir, repo.Path("snippets/out")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// snippets/link.mdx -> ../real/inside.mdx   (stays inside the root)
+	if err := os.Symlink(filepath.Join("..", "real", "inside.mdx"), repo.Path("snippets/link.mdx")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// snippets/dangling.mdx -> nowhere
+	if err := os.Symlink(repo.Path("real/gone.mdx"), repo.Path("snippets/dangling.mdx")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	rp := newPathRP(t, repo.Dir)
+	page := repo.Path("docs/page.mdx")
+
+	if got := GetReusableInfo("/snippets/out/passwd.mdx", page, rp); got != nil {
+		t.Errorf("a snippet reached through a symlink out of the root resolved to %+v, want nil", got)
+	}
+	// The same file addressed relatively through the same symlink.
+	if got := GetReusableInfo("../snippets/out/passwd.mdx", page, rp); got != nil {
+		t.Errorf("relative escape through a symlink resolved to %+v, want nil", got)
+	}
+	// A symlink whose target is inside the root still resolves normally.
+	inside := GetReusableInfo("/snippets/link.mdx", page, rp)
+	if inside == nil {
+		t.Fatal("a symlink pointing inside the root should still resolve")
+	}
+	if !sameInstant(inside.LastModified, oldDate) {
+		t.Errorf("in-root symlink LastModified = %v, want %v", inside.LastModified, oldDate)
+	}
+	// A dangling symlink is simply not a match, not an error.
+	if got := GetReusableInfo("/snippets/dangling.mdx", page, rp); got != nil {
+		t.Errorf("dangling symlink resolved to %+v, want nil", got)
+	}
+	// And the plain ".." rejection still holds.
+	escape, err := filepath.Rel(filepath.Dir(page), outside.Path("passwd.mdx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := GetReusableInfo(escape, page, rp); got != nil {
+		t.Errorf("\"..\" escape resolved to %+v, want nil", got)
+	}
+}
+
+// TestWithinRoot_SymlinkedRoot pins the other half of the symlink fix: the root
+// itself is resolved before the comparison. On macOS a t.TempDir() lives under
+// /var, which is a symlink to /private/var, so comparing a resolved candidate
+// against an unresolved root would reject every legitimate snippet.
+func TestWithinRoot_SymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "snippets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(real, "snippets", "foo.mdx")
+	if err := os.WriteFile(target, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	// Root given through a symlink, candidate given by its real path.
+	rp := newPathRP(t, link)
+	if !rp.withinRoot(target) {
+		t.Error("withinRoot(real path, symlinked root) = false, want true")
+	}
+	// And vice versa.
+	rp2 := newPathRP(t, real)
+	if !rp2.withinRoot(filepath.Join(link, "snippets", "foo.mdx")) {
+		t.Error("withinRoot(symlinked path, real root) = false, want true")
+	}
+	// A path that does not exist cannot be resolved, and is not a match.
+	if rp.withinRoot(filepath.Join(real, "snippets", "missing.mdx")) {
+		t.Error("withinRoot(missing candidate) = true, want false")
+	}
+	// An empty root rejects everything.
+	if newPathRP(t, "").withinRoot(target) {
+		t.Error("withinRoot with no root = true, want false")
+	}
+}
+
+// TestDisplayName covers the reported identity of a resolved reusable: under
+// the path resolver it is the resolved file's path relative to the project
+// root, and everything else keeps the raw capture (#7 review).
+func TestDisplayName(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "snippets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(root, "snippets", "foo.mdx")
+	if err := os.WriteFile(inside, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "elsewhere.mdx")
+	if err := os.WriteFile(outside, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rp := newPathRP(t, root)
+	if got := rp.DisplayName("/snippets/foo.mdx", "", &git.FileInfo{Path: inside}); got != "snippets/foo.mdx" {
+		t.Errorf("DisplayName(resolved) = %q, want %q", got, "snippets/foo.mdx")
+	}
+	if got := rp.DisplayName("./nope.mdx", "", nil); got != "./nope.mdx" {
+		t.Errorf("DisplayName(unresolved) = %q, want the raw capture", got)
+	}
+	if got := rp.DisplayName("x", "", &git.FileInfo{Path: outside}); got != "x" {
+		t.Errorf("DisplayName(outside the root) = %q, want the raw capture", got)
+	}
+	if got := rp.DisplayName("x", "", &git.FileInfo{}); got != "x" {
+		t.Errorf("DisplayName(no path) = %q, want the raw capture", got)
+	}
+	if got := newPathRP(t, "").DisplayName("x", "", &git.FileInfo{Path: inside}); got != "x" {
+		t.Errorf("DisplayName(no root) = %q, want the raw capture", got)
+	}
+
+	// Under any other resolver the capture is a name, not a path, so it is
+	// reported unchanged.
+	hugoRP, err := NewReusablePatternsFor(ReusableConfig{
+		Patterns: defaultPatternStrings, Extensions: []string{".md"},
+		Root: root, Resolver: config.ResolverHugo,
+	})
+	if err != nil {
+		t.Fatalf("NewReusablePatternsFor: %v", err)
+	}
+	if got := hugoRP.DisplayName("note", "", &git.FileInfo{Path: inside}); got != "note" {
+		t.Errorf("DisplayName(hugo resolver) = %q, want %q", got, "note")
+	}
+
+	var nilRP *ReusablePatterns
+	if got := nilRP.DisplayName("x", "", &git.FileInfo{Path: inside}); got != "x" {
+		t.Errorf("DisplayName(nil receiver) = %q, want the raw capture", got)
+	}
+}
+
+// TestDisplayName_NoHistoryStillDistinguishes pins the collision fix for
+// snippets git knows nothing about. Two uncommitted files in different
+// directories, both referenced as <Snippet file="new.mdx" /> from their own
+// page, resolve to different files but have no git info at all — deriving the
+// display name from the resolution rather than from the (nil) info is what
+// keeps them two rows instead of one (#7 review pass 2).
+func TestDisplayName_NoHistoryStillDistinguishes(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"g", "a"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "new.mdx"), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rp := newPathRP(t, root)
+	gotG := rp.DisplayName("new.mdx", filepath.Join(root, "g", "page.mdx"), nil)
+	gotA := rp.DisplayName("new.mdx", filepath.Join(root, "a", "page.mdx"), nil)
+	if gotG != "g/new.mdx" {
+		t.Errorf("DisplayName(from g/) = %q, want %q", gotG, "g/new.mdx")
+	}
+	if gotA != "a/new.mdx" {
+		t.Errorf("DisplayName(from a/) = %q, want %q", gotA, "a/new.mdx")
+	}
+	if gotG == gotA {
+		t.Errorf("two distinct uncommitted snippets collapsed into one name %q", gotG)
+	}
+
+	// Nothing resolves: the raw capture is still the fallback.
+	if got := rp.DisplayName("nope.mdx", filepath.Join(root, "g", "page.mdx"), nil); got != "nope.mdx" {
+		t.Errorf("DisplayName(nothing resolves) = %q, want the raw capture", got)
+	}
+}
+
+// TestFindReusables_MintlifyQuoteStyles checks that both MDX quote styles are
+// detected and that <SnippetGroup> is not mistaken for a snippet include
+// (#7 review).
+func TestFindReusables_MintlifyQuoteStyles(t *testing.T) {
+	rp := newPathRP(t, t.TempDir())
+	content := "# Title\n\n" +
+		`<Snippet file='/snippets/single.mdx' />` + "\n" +
+		`<Snippet file="/snippets/double.mdx" />` + "\n" +
+		`<Snippet other='x' file='/snippets/attrs-before.mdx' more='y' />` + "\n" +
+		`<SnippetGroup file="/snippets/group.mdx" />` + "\n"
+
+	got := append([]string(nil), FindReusables(content, rp)...)
+	sort.Strings(got)
+	want := []string{"/snippets/attrs-before.mdx", "/snippets/double.mdx", "/snippets/single.mdx"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FindReusables = %v, want %v", got, want)
 	}
 }

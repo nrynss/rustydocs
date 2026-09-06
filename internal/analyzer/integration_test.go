@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -519,5 +520,239 @@ func TestAnalyze_FilesSkippedByExtension(t *testing.T) {
 	}
 	if got := res.FilesSkippedByExtension(); got != 0 {
 		t.Errorf("excluded mdx: FilesSkippedByExtension = %d, want 0", got)
+	}
+}
+
+// mintlifyConfigJSON is a minimal but realistic Mintlify config. The docs.json
+// / mint.json markers are validated by content as well as by name, so a
+// placeholder like `{"name":"docs"}` no longer selects the profile (#7 review).
+const mintlifyConfigJSON = `{"$schema":"https://mintlify.com/docs.json",` +
+	`"name":"Docs","theme":"mint","colors":{"primary":"#000"},` +
+	`"navigation":{"pages":["docs/page"]}}`
+
+// TestAnalyze_MintlifyFixture runs the analyzer over the committed
+// testdata/mintlify-docs fixture: docs.json auto-detection, the narrow
+// <Snippet file="…" /> pattern and the direct-path resolver, end to end (#7).
+// The page is committed long before the threshold and the snippet just inside
+// it, so the section that references the snippet folds in the newer date and
+// comes out fresh while the page that references nothing stays stale.
+func TestAnalyze_MintlifyFixture(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.CommitTree(now.AddDate(0, 0, -300), "import mintlify docs", "mintlify-docs", ".")
+	// Touch the snippet well inside the 90-day threshold.
+	snippetDate := now.AddDate(0, 0, -10)
+	repo.Commit(snippetDate, "refresh snippet", map[string]string{
+		"snippets/foo.mdx": "Shared snippet body, refreshed.\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs") // docs.json lives at the repo root
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMintlify || !cfg.ProfileAuto {
+		t.Fatalf("resolved %q auto=%v, want mintlify auto-detected", cfg.ResolvedProfile.Name, cfg.ProfileAuto)
+	}
+	if cfg.ProjectRoot != repo.Dir {
+		t.Errorf("detected root = %q, want %q", cfg.ProjectRoot, repo.Dir)
+	}
+	// a.mdx, b.md and c.mdx; snippets/ is outside the content dir.
+	if res.TotalFiles() != 3 {
+		t.Fatalf("TotalFiles = %d, want 3 (%v)", res.TotalFiles(), res.Files)
+	}
+
+	// Exactly the two snippet paths are reusables: <Card /> and
+	// {{< not-a-reusable >}} on the same page must not leak in from the hugo
+	// pattern list. Both are reported under the resolved path relative to the
+	// project root rather than under the raw capture, so the root-absolute
+	// "/snippets/foo.mdx" and the bare "aws-access-key-config.mdx" — the form
+	// real Mintlify projects use — name the files they actually resolved to
+	// (#7 review).
+	byName := map[string]ReusableInfo{}
+	for _, r := range res.AllReusables {
+		byName[r.Name] = r
+	}
+	if len(byName) != 2 {
+		t.Fatalf("AllReusables = %+v, want the two resolved snippet paths", res.AllReusables)
+	}
+	bare, ok := byName["snippets/aws-access-key-config.mdx"]
+	if !ok {
+		t.Fatalf("the bare <Snippet file=\"aws-access-key-config.mdx\" /> did not resolve "+
+			"from snippets/: %+v", res.AllReusables)
+	}
+	if bare.LastUpdated == nil {
+		t.Error("the bare snippet resolved to no date")
+	}
+	snippet, ok := byName["snippets/foo.mdx"]
+	if !ok {
+		t.Fatalf("AllReusables = %+v, want snippets/foo.mdx", res.AllReusables)
+	}
+	if snippet.LastUpdated == nil {
+		t.Fatal("snippet was not resolved to a date; the path resolver did not find it")
+	}
+	if snippet.LastUpdated.Unix() != snippetDate.Unix() {
+		t.Errorf("snippet LastUpdated = %v, want %v", snippet.LastUpdated, snippetDate)
+	}
+	if !snippet.IsFresh {
+		t.Error("snippet committed 10 days ago should be fresh")
+	}
+	if got := res.UnresolvedReusables(); got != 0 {
+		t.Errorf("UnresolvedReusables = %d, want 0: every snippet in the fixture resolves", got)
+	}
+
+	byPath := map[string]FileAnalysis{}
+	for _, f := range res.Files {
+		byPath[f.RelativePath] = f
+	}
+	a, ok := byPath["a.mdx"]
+	if !ok {
+		t.Fatalf("a.mdx missing from results (%v)", res.Files)
+	}
+	// a.mdx has two sections; the one holding the snippet is kept fresh by it,
+	// the other (components only) is 300 days old and stale.
+	staleTitles := make([]string, 0, len(a.StaleSections))
+	for _, s := range a.StaleSections {
+		staleTitles = append(staleTitles, s.Title)
+	}
+	if len(staleTitles) != 1 || staleTitles[0] != "Components are not reusables" {
+		t.Errorf("a.mdx stale sections = %v, want only the section without the snippet", staleTitles)
+	}
+
+	b, ok := byPath["b.md"]
+	if !ok {
+		t.Fatalf("b.md missing from results (%v)", res.Files)
+	}
+	if !b.IsStale() {
+		t.Error("b.md references no snippet and is 300 days old; want stale")
+	}
+}
+
+// TestAnalyze_MintlifyStaleSnippetStaysStale is the mirror of the fixture test:
+// when the snippet is as old as the page, folding its date in changes nothing
+// and the referencing section stays stale (#7).
+func TestAnalyze_MintlifyStaleSnippetStaysStale(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -400), "old snippet", map[string]string{
+		"snippets/foo.mdx": "old shared snippet\n",
+	})
+	repo.Commit(now.AddDate(0, 0, -200), "page", map[string]string{
+		"docs.json":     mintlifyConfigJSON,
+		"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.StaleSections() != 1 {
+		t.Errorf("StaleSections = %d, want 1", res.StaleSections())
+	}
+	if len(res.AllReusables) != 1 || res.AllReusables[0].IsFresh {
+		t.Errorf("AllReusables = %+v, want one stale snippet", res.AllReusables)
+	}
+	if res.AllReusables[0].LastUpdated == nil {
+		t.Error("an old snippet must still resolve to a date, not to unknown")
+	}
+}
+
+// TestAnalyze_MintlifyMissingSnippetIsUnknown checks that a snippet reference
+// pointing at no file leaves the reusable unknown — never fresh (#55).
+func TestAnalyze_MintlifyMissingSnippetIsUnknown(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "page", map[string]string{
+		"docs.json":     mintlifyConfigJSON,
+		"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/gone.mdx\" />\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(res.AllReusables) != 1 {
+		t.Fatalf("AllReusables = %+v, want one entry", res.AllReusables)
+	}
+	if res.AllReusables[0].LastUpdated != nil || res.AllReusables[0].IsFresh {
+		t.Errorf("missing snippet = %+v, want unknown date and not fresh", res.AllReusables[0])
+	}
+}
+
+// TestAnalyze_MintlifySameNamedRelativeSnippets is the regression test for the
+// cross-file reusables aggregate (#7 review). Two pages in different
+// directories each reference "./shared.mdx" and mean two different files;
+// keying the aggregate on the raw capture collapsed them into a single row
+// showing only the older date. They must appear as two entries, each with its
+// own date, named by the path that was actually resolved.
+func TestAnalyze_MintlifySameNamedRelativeSnippets(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	oldDate := now.AddDate(0, 0, -300)
+	freshDate := now.AddDate(0, 0, -5)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(oldDate, "old area", map[string]string{
+		"docs.json":         mintlifyConfigJSON,
+		"docs/a/page.mdx":   "# A\n\n<Snippet file=\"./shared.mdx\" />\n",
+		"docs/a/shared.mdx": "the old shared snippet\n",
+		"docs/b/page.mdx":   "# B\n\n<Snippet file=\"./shared.mdx\" />\n",
+	})
+	repo.Commit(freshDate, "fresh area", map[string]string{
+		"docs/b/shared.mdx": "the fresh shared snippet\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMintlify {
+		t.Fatalf("resolved profile = %q, want mintlify", cfg.ResolvedProfile.Name)
+	}
+
+	got := map[string]string{}
+	for _, r := range res.AllReusables {
+		if r.LastUpdated == nil {
+			t.Fatalf("reusable %q resolved to no date", r.Name)
+		}
+		got[r.Name] = r.LastUpdated.UTC().Format("2006-01-02")
+	}
+	want := map[string]string{
+		"docs/a/shared.mdx": oldDate.UTC().Format("2006-01-02"),
+		"docs/b/shared.mdx": freshDate.UTC().Format("2006-01-02"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllReusables = %v, want two distinct entries %v", got, want)
+	}
+
+	// The per-file lists carry the same resolved names.
+	for _, f := range res.Files {
+		for _, r := range f.Reusables {
+			if _, ok := want[r.Name]; !ok {
+				t.Errorf("%s: reusable %q is not one of the resolved snippet paths", f.RelativePath, r.Name)
+			}
+		}
 	}
 }

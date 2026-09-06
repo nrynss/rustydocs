@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +70,14 @@ type FileAnalysis struct {
 	OldestSectionDate    *time.Time
 	DaysStale            int
 	OldestSectionDays    int
+	// unresolvedReusableRefs holds the distinct reusable references on this
+	// file that produced no resolved history — the ones reported "unknown" —
+	// as the raw captures the page actually wrote, in the order they were
+	// first seen. It is diagnostic only (aggregated into
+	// Results.UnresolvedReusables / UnresolvedReusableRefs) and is not part of
+	// any report. The count is its length: the loop that fills it already
+	// visits each distinct capture on the file exactly once.
+	unresolvedReusableRefs []string
 	// HistoryMissing is true when git produced no timestamps for the file
 	// (neither file-level nor line-level), e.g. an uncommitted file, a shallow
 	// clone, or a content tree that is not a git repository. Such a file cannot
@@ -100,6 +109,15 @@ type Results struct {
 	// FilesSkippedByExtension / SkippedExtensions), not part of any report.
 	filesSkippedExt int
 	skippedExts     map[string]struct{}
+
+	// unresolvedReusables counts reusable references (once per file per
+	// distinct capture) that resolved to nothing with git history and were
+	// therefore reported "unknown"; unresolvedRefs holds the distinct raw
+	// captures behind that count, de-duplicated across files and ordered by
+	// the (sorted) file they were first seen in. Diagnostic only (see
+	// UnresolvedReusables / UnresolvedReusableRefs), not part of any report.
+	unresolvedReusables int
+	unresolvedRefs      []string
 }
 
 // TotalFiles returns the total number of files analyzed.
@@ -159,6 +177,28 @@ func (r *Results) SkippedExtensions() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// UnresolvedReusables returns the number of reusable references that resolved
+// to no file with git history and were therefore reported "unknown" (counted
+// once per file per distinct capture). It exists so the CLI can gate its
+// missing-project-root note on something actually having failed, rather than
+// on the resolver alone: a run whose includes all resolve through a legacy
+// reusables directory, and a run with no reusable references at all, both
+// report zero and get no note (#7).
+func (r *Results) UnresolvedReusables() int {
+	return r.unresolvedReusables
+}
+
+// UnresolvedReusableRefs returns the distinct raw captures counted by
+// UnresolvedReusables — "typo.mdx", "/snippets/gone.mdx" — de-duplicated
+// across files and in a deterministic order (files are sorted before they are
+// merged, and each file keeps first-seen order within itself). It exists so
+// the CLI note can name what failed instead of only counting it: a bare count
+// tells a reader that something is wrong but not which reference to go and
+// look at (#7).
+func (r *Results) UnresolvedReusableRefs() []string {
+	return slices.Clone(r.unresolvedRefs)
 }
 
 // StaleFilesPct returns the percentage of files with stale content.
@@ -291,21 +331,32 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 		// If Getwd fails, leave reusablesDir as relative (will likely fail later but won't crash)
 	}
 
-	// Hugo root (for shortcode tracing) is filled by cfg.ApplyProfile: the
-	// user's hugo_root, else the root detected for the hugo profile, else "".
-	hugoRoot := cfg.HugoRoot
-	if hugoRoot != "" && !filepath.IsAbs(hugoRoot) {
+	// The project root (Hugo's site root for shortcode tracing, the docs
+	// project root Mintlify snippet paths resolve against) is filled by
+	// cfg.ApplyProfile: the root the user supplied, else the root detected for
+	// the resolved profile, else "".
+	root := cfg.ProjectRoot
+	if root != "" && !filepath.IsAbs(root) {
 		if cwd, err := os.Getwd(); err == nil {
-			hugoRoot = filepath.Join(cwd, hugoRoot)
+			root = filepath.Join(cwd, root)
 		}
-		// If Getwd fails, leave hugoRoot as relative
+		// If Getwd fails, leave root as relative
 	}
 
 	// Patterns are validated once in AnalyzeWithProgress before any worker
 	// starts, so this only fails for a Config handed to analyzeFile directly.
 	// Never fall back to another profile's patterns: that would silently turn
-	// Hugo detection on for a markdown/Mintlify run. See #11.
-	rp, err := parser.NewReusablePatterns(cfg.Reusables.Patterns, cfg.Reusables.Extensions, reusablesDir, hugoRoot)
+	// Hugo detection on for a markdown/Mintlify run. See #11. The resolver
+	// comes from the resolved profile rather than being inferred from which
+	// roots happen to be set, so a Mintlify root resolves snippet paths and a
+	// Hugo root traces shortcodes (#7).
+	rp, err := parser.NewReusablePatternsFor(parser.ReusableConfig{
+		Patterns:     cfg.Reusables.Patterns,
+		Extensions:   cfg.Reusables.Extensions,
+		ReusablesDir: reusablesDir,
+		Root:         root,
+		Resolver:     cfg.ResolvedProfile.Resolver,
+	})
 	if err != nil {
 		return FileAnalysis{Path: filePath, RelativePath: relativePath}, fmt.Errorf("%s: %w", relativePath, err)
 	}
@@ -331,11 +382,12 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 	// Analyze each section for staleness
 	var staleSections []parser.Section
 	allReusables := make(map[string]ReusableInfo)
+	var unresolvedReusableRefs []string
 	var oldestSectionDate *time.Time
 
 	for _, section := range sections {
 		// Calculate effective staleness considering reusables
-		effectiveDate := parser.CalculateSectionStaleness(&section, rp)
+		effectiveDate := parser.CalculateSectionStaleness(&section, filePath, rp)
 
 		if effectiveDate != nil && effectiveDate.Before(thresholdDate) {
 			staleSections = append(staleSections, section)
@@ -348,19 +400,31 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 			}
 		}
 
-		// Track reusables
+		// Track reusables. The map is keyed by the raw capture so a reference
+		// repeated across sections is only resolved once; the *reported* name
+		// is rp.DisplayName's, which under the path resolver is the resolved
+		// file's root-relative path rather than the capture. That is what
+		// makes the cross-file aggregate correct: two pages in different
+		// directories can both write "./shared.mdx" and mean different files.
 		for _, reusableName := range section.Reusables {
 			if _, exists := allReusables[reusableName]; !exists {
-				reusableInfo := parser.GetReusableInfo(reusableName, rp)
+				reusableInfo := parser.GetReusableInfo(reusableName, filePath, rp)
 				var lastUpdated *time.Time
 				var lastAuthor string
 				if reusableInfo != nil {
 					lastUpdated = &reusableInfo.LastModified
 					lastAuthor = reusableInfo.LastAuthor
 				}
+				if reusableInfo == nil {
+					// Nothing resolved (or what resolved has no history), so
+					// this reference is reported "unknown". Recorded so the
+					// CLI can say whether resolution actually failed anywhere,
+					// and name the captures when it did (#7).
+					unresolvedReusableRefs = append(unresolvedReusableRefs, reusableName)
+				}
 				isFresh := lastUpdated != nil && !lastUpdated.Before(thresholdDate)
 				allReusables[reusableName] = ReusableInfo{
-					Name:        reusableName,
+					Name:        rp.DisplayName(reusableName, filePath, reusableInfo),
 					LastUpdated: lastUpdated,
 					IsFresh:     isFresh,
 					LastAuthor:  lastAuthor,
@@ -377,7 +441,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 
 	// Also consider section dates for most recent
 	for _, section := range sections {
-		sectionDate := parser.CalculateSectionStaleness(&section, rp)
+		sectionDate := parser.CalculateSectionStaleness(&section, filePath, rp)
 		if sectionDate != nil {
 			if effectiveLastUpdated == nil || sectionDate.After(*effectiveLastUpdated) {
 				effectiveLastUpdated = sectionDate
@@ -397,11 +461,26 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 		oldestSectionDays = int(now.Sub(*oldestSectionDate).Hours() / 24)
 	}
 
-	// Convert reusables map to slice
+	// Convert reusables map to slice, collapsing captures that turned out to
+	// name the same file (e.g. "/snippets/a.mdx" and "snippets/a.mdx" on one
+	// page both display as "snippets/a.mdx"). An entry that resolved wins over
+	// one that did not, mirroring the cross-file merge in AnalyzeWithProgress.
 	reusables := make([]ReusableInfo, 0, len(allReusables))
+	byName := make(map[string]int, len(allReusables))
 	for _, r := range allReusables {
+		if i, seen := byName[r.Name]; seen {
+			if reusables[i].LastUpdated == nil && r.LastUpdated != nil {
+				reusables[i] = r
+			}
+			continue
+		}
+		byName[r.Name] = len(reusables)
 		reusables = append(reusables, r)
 	}
+	// allReusables is ranged from a map, so without this the per-file
+	// "**Reusables:**" line and the JSON array come out in a different order on
+	// every run, making report diffs flap in CI.
+	sort.Slice(reusables, func(i, j int) bool { return reusables[i].Name < reusables[j].Name })
 
 	// No git history at all (no file-level commit and no blame timestamps) means
 	// staleness is unknown for this file — record it so it is reported as such
@@ -420,6 +499,8 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 		DaysStale:            daysStale,
 		OldestSectionDays:    oldestSectionDays,
 		HistoryMissing:       historyMissing,
+
+		unresolvedReusableRefs: unresolvedReusableRefs,
 	}, nil
 }
 
@@ -616,9 +697,27 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		return analyses[i].RelativePath < analyses[j].RelativePath
 	})
 
-	// Collect all unique reusables across all files
+	// Collect all unique reusables across all files. ReusableInfo.Name is the
+	// reported identity, which under the path resolver is the resolved file's
+	// root-relative path (see parser.ReusablePatterns.DisplayName) — keying on
+	// the raw capture instead would merge two pages' distinct "./shared.mdx"
+	// snippets into one row showing only the older date.
 	reusableMap := make(map[string]ReusableInfo)
+	unresolved := 0
+	var unresolvedRefs []string
+	seenUnresolved := make(map[string]struct{})
 	for _, analysis := range analyses {
+		unresolved += len(analysis.unresolvedReusableRefs)
+		// The count stays per-file (two pages that both write "typo.mdx" name
+		// two broken includes), but the *names* are de-duplicated: repeating
+		// one capture in a list is noise, not diagnosis.
+		for _, ref := range analysis.unresolvedReusableRefs {
+			if _, seen := seenUnresolved[ref]; seen {
+				continue
+			}
+			seenUnresolved[ref] = struct{}{}
+			unresolvedRefs = append(unresolvedRefs, ref)
+		}
 		for _, r := range analysis.Reusables {
 			existing, exists := reusableMap[r.Name]
 			if !exists || (existing.LastUpdated == nil && r.LastUpdated != nil) {
@@ -644,5 +743,8 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		filesExcluded:   excluded,
 		filesSkippedExt: skippedExt,
 		skippedExts:     skippedExts,
+
+		unresolvedReusables: unresolved,
+		unresolvedRefs:      unresolvedRefs,
 	}, nil
 }

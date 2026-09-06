@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nrynss/rustydocs/internal/config"
@@ -82,28 +83,52 @@ var (
 	headerPattern = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
 )
 
-// ReusablePatterns holds compiled regex patterns for detecting reusables.
+// ReusablePatterns holds compiled regex patterns for detecting reusables and
+// the settings that decide how a detected reference is resolved to a file.
 type ReusablePatterns struct {
-	patterns       []*regexp.Regexp
-	extensions     []string
-	hugoRoot       string              // Hugo project root (contains layouts/, data/)
+	patterns   []*regexp.Regexp
+	extensions []string
+	// root is the resolved profile's project root: the Hugo site root holding
+	// layouts/ and data/ under ResolverHugo, the docs project root that snippet
+	// paths resolve against under ResolverPath. Empty when the profile has no
+	// root concept or none was detected.
+	root string
+	// resolver decides what a captured reference means; see config.Resolver.
+	resolver       config.Resolver
 	reusablesDir   string              // Legacy: direct reusables directory
 	filePaths      map[string]string   // Cache: name -> file path
 	shortcodeCache map[string][]string // Cache: shortcode name -> data file paths
 	cacheBuilt     bool
+	// rootOnce guards resolvedRoot, the symlink-resolved form of root computed
+	// on first use by resolvedRootPath.
+	rootOnce     sync.Once
+	resolvedRoot string
 }
 
-// NewReusablePatterns creates a new ReusablePatterns from config patterns.
-// Returns an error if any pattern fails to compile.
-func NewReusablePatterns(patterns []string, extensions []string, reusablesDir string, hugoRoot string) (*ReusablePatterns, error) {
+// ReusableConfig describes reusable detection and resolution for one run: the
+// patterns to compile, the extensions tried when a reference carries none, the
+// legacy reusables directory, the profile's project root and the resolver that
+// says what a capture means (see config.Resolver).
+type ReusableConfig struct {
+	Patterns     []string
+	Extensions   []string
+	ReusablesDir string
+	Root         string
+	Resolver     config.Resolver
+}
+
+// NewReusablePatternsFor creates a ReusablePatterns from a resolved profile's
+// reusable settings. Returns an error if any pattern fails to compile.
+func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 	rp := &ReusablePatterns{
-		extensions:     extensions,
-		reusablesDir:   reusablesDir,
-		hugoRoot:       hugoRoot,
+		extensions:     rc.Extensions,
+		root:           rc.Root,
+		resolver:       rc.Resolver,
+		reusablesDir:   rc.ReusablesDir,
 		filePaths:      make(map[string]string),
 		shortcodeCache: make(map[string][]string),
 	}
-	for _, p := range patterns {
+	for _, p := range rc.Patterns {
 		re, err := regexp.Compile(p)
 		if err != nil {
 			return nil, fmt.Errorf("invalid reusable pattern %q: %w", p, err)
@@ -111,6 +136,26 @@ func NewReusablePatterns(patterns []string, extensions []string, reusablesDir st
 		rp.patterns = append(rp.patterns, re)
 	}
 	return rp, nil
+}
+
+// NewReusablePatterns creates a new ReusablePatterns from config patterns,
+// inferring the resolver the way rustydocs did before profiles carried one: a
+// non-empty hugoRoot means Hugo shortcode resolution, an empty one means no
+// root-based resolution at all. Callers that have a resolved profile should
+// use NewReusablePatternsFor and pass its Resolver.
+// Returns an error if any pattern fails to compile.
+func NewReusablePatterns(patterns []string, extensions []string, reusablesDir string, hugoRoot string) (*ReusablePatterns, error) {
+	resolver := config.ResolverNone
+	if hugoRoot != "" {
+		resolver = config.ResolverHugo
+	}
+	return NewReusablePatternsFor(ReusableConfig{
+		Patterns:     patterns,
+		Extensions:   extensions,
+		ReusablesDir: reusablesDir,
+		Root:         hugoRoot,
+		Resolver:     resolver,
+	})
 }
 
 // hugoProfile returns the built-in Hugo profile, the single source of truth for
@@ -337,11 +382,24 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	return reusables
 }
 
-// GetReusableInfo returns git metadata for a reusable component.
-// It traces shortcodes to their source files and returns the most recent modification.
-func GetReusableInfo(reusableName string, rp *ReusablePatterns) *git.FileInfo {
+// GetReusableInfo returns git metadata for a reusable component referenced by
+// sourceFile (the absolute path of the file the reference was found in; "" when
+// it is not known). It resolves the reference to a file the way the active
+// resolver prescribes and returns that file's most recent modification, or nil
+// when nothing resolves — a reusable with no info is reported as unknown, never
+// as fresh.
+func GetReusableInfo(reusableName, sourceFile string, rp *ReusablePatterns) *git.FileInfo {
 	if rp == nil {
 		return nil
+	}
+
+	// The path resolver takes the capture literally: it is a file path, not a
+	// name to look up by convention, so it is resolved on its own terms and
+	// first. See lookupDirectPath.
+	if rp.resolver == config.ResolverPath {
+		if info := rp.lookupDirectPath(reusableName, sourceFile); info != nil {
+			return info
+		}
 	}
 
 	rp.ensureCache()
@@ -356,7 +414,7 @@ func GetReusableInfo(reusableName string, rp *ReusablePatterns) *git.FileInfo {
 	}
 
 	// 2. Try Hugo shortcode lookup
-	if rp.hugoRoot != "" {
+	if rp.resolver == config.ResolverHugo && rp.root != "" {
 		if info := rp.lookupShortcode(name); info != nil {
 			return info
 		}
@@ -370,6 +428,251 @@ func GetReusableInfo(reusableName string, rp *ReusablePatterns) *git.FileInfo {
 	return nil
 }
 
+// lookupDirectPath resolves a captured path (config.ResolverPath) to a file and
+// returns its git info. See resolveDirectPath for the lookup order. Resolution
+// needs a known root: without one there is nothing to resolve against and
+// nothing to bound the result, so nil is returned.
+func (rp *ReusablePatterns) lookupDirectPath(ref, sourceFile string) *git.FileInfo {
+	target, ok := rp.resolveDirectPath(ref, sourceFile)
+	if !ok {
+		return nil
+	}
+	return rp.mostRecentFile([]string{target})
+}
+
+// resolveDirectPath performs the config.ResolverPath lookup itself: it returns
+// the existing file a captured path refers to, or ("", false) when nothing
+// inside the project root matches. The bases searched, and why, are in
+// directPathBases; the first candidate that exists under any of them wins.
+//
+// It is separate from lookupDirectPath because resolution and git history are
+// independent questions — a snippet that exists but has never been committed
+// resolves fine and simply has no history, and DisplayName needs the resolved
+// path in exactly that case so two uncommitted files referenced by the same
+// relative capture do not collapse into one reported row (#7).
+func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, bool) {
+	ref = filepath.ToSlash(strings.TrimSpace(ref))
+	if ref == "" || rp.root == "" {
+		return "", false
+	}
+
+	bases, ref := rp.directPathBases(ref, sourceFile)
+	if ref == "" {
+		return "", false
+	}
+
+	for _, base := range bases {
+		for _, candidate := range rp.pathCandidates(base, ref) {
+			if !rp.withinRoot(candidate) {
+				// A reference that leaves the docs project — with "..", or
+				// through a symlink that points out of the tree — must not
+				// pull an arbitrary file of the machine into a report. This
+				// also filters candidates that do not exist at all.
+				continue
+			}
+			if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+				continue
+			}
+			// The file exists; it is the answer, so no further candidate is
+			// tried.
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// snippetDirNames are the conventional snippet directories at a Mintlify
+// project root, in lookup order. Mintlify's own docs use "snippets/"; the
+// underscore-prefixed variant is common in the wild (a leading underscore
+// keeps the directory out of the published navigation in several static site
+// generators, and Mintlify projects migrated from them keep the name).
+var snippetDirNames = []string{"snippets", "_snippets"}
+
+// directPathBases returns the directories a captured reference is tried
+// against, in order, together with the reference to try under them — the
+// leading "/" of a root-absolute capture is consumed by the base choice. The
+// shape of the capture decides:
+//
+//	"/snippets/x.mdx"  project-root-absolute: the root, and only the root.
+//	"./x.mdx", "../x.mdx"  explicitly page-relative: the referencing page's
+//	                   directory first, then the shared bases below (a
+//	                   dot-slash reference to a file that turns out to live in
+//	                   snippets/ still resolves rather than silently going
+//	                   unknown).
+//	"x.mdx", "cloud/x.mdx"  the common form, and the one that matters:
+//	                   Mintlify resolves a bare file= against the project's
+//	                   *snippets directory*, not against the page and not
+//	                   against the root. So snippets/ and _snippets/ come
+//	                   first, then the root, and only then the referencing
+//	                   page's directory as a tolerant last resort.
+//
+// The ordering of the bare form is load-bearing. Real Mintlify projects
+// (sequin, turso-docs, agno, elementary) overwhelmingly write
+// <Snippet file="aws-access-key-config.mdx" /> meaning
+// <root>/snippets/aws-access-key-config.mdx; searching the page directory and
+// the root only, as rustydocs first did, resolved almost none of them and
+// reported every snippet "unknown". A bare name that exists in both snippets/
+// and next to the page resolves to snippets/, which is what Mintlify itself
+// renders (#7).
+func (rp *ReusablePatterns) directPathBases(ref, sourceFile string) (bases []string, rest string) {
+	if rootRel, ok := strings.CutPrefix(ref, "/"); ok {
+		return []string{rp.root}, rootRel
+	}
+
+	pageDir := ""
+	if sourceFile != "" {
+		pageDir = filepath.Dir(sourceFile)
+	}
+
+	shared := make([]string, 0, len(snippetDirNames)+2)
+	for _, name := range snippetDirNames {
+		shared = append(shared, filepath.Join(rp.root, name))
+	}
+	shared = append(shared, rp.root)
+
+	switch {
+	case pageDir == "":
+		return shared, ref
+	case strings.HasPrefix(ref, "./"), strings.HasPrefix(ref, "../"):
+		return append([]string{pageDir}, shared...), ref
+	default:
+		return append(shared, pageDir), ref
+	}
+}
+
+// pathCandidates returns the files tried for a slash-separated reference under
+// one base directory, in order. A reference that already carries an extension
+// is taken as-is; an extensionless one mirrors lookupInDir, trying each
+// reusable extension and then the directory's index file.
+func (rp *ReusablePatterns) pathCandidates(base, ref string) []string {
+	joined := filepath.Join(base, filepath.FromSlash(ref))
+	if filepath.Ext(ref) != "" {
+		return []string{filepath.Clean(joined)}
+	}
+	candidates := make([]string, 0, 1+2*len(rp.extensions))
+	candidates = append(candidates, filepath.Clean(joined))
+	for _, ext := range rp.extensions {
+		candidates = append(candidates, filepath.Clean(joined+ext))
+	}
+	for _, ext := range rp.extensions {
+		candidates = append(candidates, filepath.Clean(filepath.Join(joined, "index"+ext)))
+	}
+	return candidates
+}
+
+// resolvedRootPath returns the project root with symlinks resolved, computed
+// once per ReusablePatterns. Resolving the root matters as much as resolving
+// the candidate: on macOS /var and /tmp are themselves symlinks (/var ->
+// /private/var), so comparing a resolved candidate against an unresolved root
+// would reject every legitimate snippet under a temp-dir checkout. The same
+// resolve-both-sides rule is why git.GetFileLastModified resolves a file path
+// before making it relative to `git rev-parse --show-toplevel`.
+//
+// A root that cannot be resolved (it does not exist) falls back to its
+// absolute, lexically cleaned form so containment still rejects ".." escapes.
+func (rp *ReusablePatterns) resolvedRootPath() string {
+	rp.rootOnce.Do(func() {
+		if rp.root == "" {
+			return
+		}
+		abs := rp.root
+		if a, err := filepath.Abs(abs); err == nil {
+			abs = a
+		}
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			rp.resolvedRoot = resolved
+			return
+		}
+		rp.resolvedRoot = filepath.Clean(abs)
+	})
+	return rp.resolvedRoot
+}
+
+// withinRoot reports whether a candidate path really lives inside the project
+// root. Both sides have their symlinks resolved before the comparison, so
+// containment is a fact about the filesystem rather than about the spelling of
+// the path: a "snippets/out -> /elsewhere/secretrepo" symlink inside the root
+// no longer lets <Snippet file="/snippets/out/passwd.mdx" /> fold a foreign
+// repository's commit date into the report. A candidate that walks out of the
+// root with ".." is still rejected, now after resolution rather than instead
+// of it.
+//
+// A candidate that does not exist cannot be resolved and is simply not a match
+// (filepath.EvalSymlinks fails on a missing path): the caller skips it and
+// tries the next candidate, exactly as it does for a path that stats away. An
+// empty root rejects everything.
+func (rp *ReusablePatterns) withinRoot(candidate string) bool {
+	root := rp.resolvedRootPath()
+	if root == "" {
+		return false
+	}
+	abs := candidate
+	if a, err := filepath.Abs(candidate); err == nil {
+		abs = a
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// Missing, broken symlink, or unreadable: not a match.
+		return false
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// DisplayName returns the name a reusable referenced from sourceFile should be
+// reported under. info is the git metadata the reference resolved to, or nil
+// when it has none.
+//
+// Under the path resolver the captured reference is not a stable identity: two
+// pages in different directories can both reference "./shared.mdx" and mean
+// two different files, so reporting them under the raw capture collapses them
+// into one row of the cross-file "Reusable Components" table. The resolved
+// file's path relative to the project root is both unique and the more useful
+// label, so it is what the reports show.
+//
+// Crucially the display path is derived from *resolution*, not from git: a
+// snippet that exists but has never been committed has no info at all, and
+// falling back to the raw capture there would re-collapse exactly the rows
+// this exists to keep apart. Only a reference that resolves to no file inside
+// the root (or one under another resolver) keeps the raw capture.
+func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileInfo) string {
+	if rp == nil || rp.resolver != config.ResolverPath {
+		return ref
+	}
+	root := rp.resolvedRootPath()
+	if root == "" {
+		return ref
+	}
+
+	var target string
+	switch {
+	case info != nil && info.Path != "":
+		target = info.Path
+	default:
+		resolved, ok := rp.resolveDirectPath(ref, sourceFile)
+		if !ok {
+			return ref
+		}
+		target = resolved
+	}
+
+	abs := target
+	if a, err := filepath.Abs(abs); err == nil {
+		abs = a
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ref
+	}
+	return filepath.ToSlash(rel)
+}
+
 // layoutRoots returns the layouts directories searched for shortcode
 // templates, in Hugo's own lookup order: the project's own layouts/ first, then
 // the layouts/ of each theme under themes/ (sorted by theme directory name, as
@@ -377,8 +680,8 @@ func GetReusableInfo(reusableName string, rp *ReusablePatterns) *git.FileInfo {
 // theme one. A missing or unreadable themes/ directory simply yields the
 // project layouts.
 func (rp *ReusablePatterns) layoutRoots() []string {
-	roots := []string{filepath.Join(rp.hugoRoot, "layouts")}
-	themesDir := filepath.Join(rp.hugoRoot, "themes")
+	roots := []string{filepath.Join(rp.root, "layouts")}
+	themesDir := filepath.Join(rp.root, "themes")
 	entries, err := os.ReadDir(themesDir)
 	if err != nil {
 		return roots
@@ -429,7 +732,7 @@ func shortcodeCandidates(layoutsDir, name string) []string {
 // themes/ directory). Returns the most recent modification date from shortcode
 // template and data files.
 func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
-	if rp.hugoRoot == "" {
+	if rp.root == "" {
 		return nil
 	}
 
@@ -480,7 +783,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	readFileRe := regexp.MustCompile(`readFile\s+"([^"]+)"`)
 	for _, match := range readFileRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
-			fullPath := filepath.Join(rp.hugoRoot, match[1])
+			fullPath := filepath.Join(rp.root, match[1])
 			if _, err := os.Stat(fullPath); err == nil {
 				dataFiles = append(dataFiles, fullPath)
 			}
@@ -491,7 +794,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	partialRe := regexp.MustCompile(`partial\s+"([^"]+)"`)
 	for _, match := range partialRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
-			partialPath := filepath.Join(rp.hugoRoot, "layouts", "partials", match[1])
+			partialPath := filepath.Join(rp.root, "layouts", "partials", match[1])
 			if !strings.HasSuffix(partialPath, ".html") {
 				partialPath += ".html"
 			}
@@ -508,7 +811,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 		if len(match) > 1 {
 			// Try common extensions
 			for _, ext := range []string{".yaml", ".yml", ".json", ".toml"} {
-				dataPath := filepath.Join(rp.hugoRoot, "data", match[1]+ext)
+				dataPath := filepath.Join(rp.root, "data", match[1]+ext)
 				if _, err := os.Stat(dataPath); err == nil {
 					dataFiles = append(dataFiles, dataPath)
 					break
@@ -631,9 +934,12 @@ func normalizeReusableName(name string) string {
 	return name
 }
 
-// CalculateSectionStaleness calculates the effective staleness date for a chunk.
-// Takes into account both the chunk's own lines and any reusable components.
-func CalculateSectionStaleness(section *Chunk, rp *ReusablePatterns) *time.Time {
+// CalculateSectionStaleness calculates the effective staleness date for a chunk
+// of sourceFile (the absolute path of the file the chunk came from, "" when it
+// is not known — a path-resolved reusable then loses its relative-to-the-page
+// fallback). Takes into account both the chunk's own lines and any reusable
+// components.
+func CalculateSectionStaleness(section *Chunk, sourceFile string, rp *ReusablePatterns) *time.Time {
 	var dates []time.Time
 
 	// Get the most recent line date in the section
@@ -643,7 +949,7 @@ func CalculateSectionStaleness(section *Chunk, rp *ReusablePatterns) *time.Time 
 
 	// Check reusable freshness
 	for _, reusable := range section.Reusables {
-		if info := GetReusableInfo(reusable, rp); info != nil {
+		if info := GetReusableInfo(reusable, sourceFile, rp); info != nil {
 			dates = append(dates, info.LastModified)
 		}
 	}

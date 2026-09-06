@@ -34,9 +34,10 @@ type Config struct {
 	ThresholdDays int    `json:"threshold_days"`
 	ContentDir    string `json:"content_dir"`
 	// Profile selects a built-in documentation-tool profile by name (see
-	// Profiles). Empty = auto-detect from content_dir (hugo when a layouts/ or
-	// themes/ directory, a hugo.{toml,yaml,json} file, or a config/_default/
-	// Hugo config is found at or above it, otherwise markdown).
+	// Profiles). Empty = auto-detect from content_dir: the nearest profile
+	// root marker found walking up from it wins (a Hugo layouts/ or themes/
+	// directory, a hugo.{toml,yaml,json} file or a config/_default/ Hugo
+	// config; a Mintlify docs.json or mint.json), otherwise markdown.
 	Profile string `json:"profile"`
 	// ResolvedProfile is the profile ApplyProfile selected; ProfileAuto is
 	// true when it was auto-detected rather than named explicitly.
@@ -49,17 +50,50 @@ type Config struct {
 	// resolved list differing from the profile's is not evidence of a user
 	// override; consult this field instead.
 	ExtensionsFromUser bool `json:"-"`
+	// RootFromUser is true when the project root in force was supplied by the
+	// user (--project-root / "project_root", or the deprecated "hugo_root")
+	// rather than detected from the profile's markers. ApplyProfile records it
+	// before filling in a detected root, and validates a user-supplied root.
+	RootFromUser bool `json:"-"`
+	// Warnings holds non-fatal diagnostics produced while resolving the
+	// profile — a candidate root marker that could not be read (a chmod 000
+	// docs.json) and is therefore skipped, and the deprecation notice for the
+	// old "hugo_root" key — whether it supplied the root or was ignored
+	// because "project_root" / --project-root was set too.
+	// The config package never prints; ApplyProfile fills this and the CLI
+	// writes each entry to stderr.
+	Warnings []string `json:"-"`
 	// ContentExtensions is the file-extension allowlist for the walk (empty:
 	// from profile). ApplyProfile canonicalises it in place with
 	// NormalizeExtensions, so after that call it holds exactly the lowercase,
 	// dot-prefixed set the analyzer matches on — which is what the banner, the
 	// stderr warnings and the JSON report's content_extensions echo.
 	ContentExtensions []string `json:"content_extensions"`
-	// HugoRoot is the Hugo project root. When empty, ApplyProfile fills it
-	// only if the resolved profile has RootMarkers (today: the hugo profile),
-	// using the nearest marker found walking up from ContentDir. Setting it
-	// explicitly also forces the hugo profile during auto-detection.
-	HugoRoot        string          `json:"hugo_root"`
+	// ProjectRoot is the project root: the directory a profile's reusable
+	// references resolve against (Hugo's site root holding layouts/ and data/,
+	// the docs root Mintlify snippet paths hang off). "project_root" in the
+	// config file, --project-root on the command line. When empty, ApplyProfile
+	// fills it only if the resolved profile has RootMarkers, using the nearest
+	// marker found walking up from ContentDir.
+	//
+	// Setting it never influences which profile is selected: auto-detection is
+	// marker-driven, so a project whose markers rustydocs cannot see must name
+	// its profile alongside the root.
+	//
+	// "project_root" is the canonical spelling. The Hugo-era "hugo_root" is a
+	// deprecated alias for it, decoded into legacyHugoRoot by UnmarshalJSON and
+	// folded in by ApplyProfile; "project_root" wins when both are present.
+	ProjectRoot string `json:"project_root"`
+	// legacyHugoRoot holds the deprecated "hugo_root" config-file key. It is
+	// kept apart from ProjectRoot only until ApplyProfile folds it in, so that
+	// the two spellings can be told apart: which one supplied the root decides
+	// the deprecation warning and the legacy hugo-profile fallback (see
+	// Config.foldLegacyRoot).
+	legacyHugoRoot string
+	// rootSource names where the project root in force came from, for
+	// diagnostics and for the legacy fallback; "" when no user-supplied root
+	// was given. Set once by foldLegacyRoot.
+	rootSource      string
 	ReusablesDir    string          `json:"reusables_dir"` // Deprecated: use Reusables.Dir
 	Reusables       ReusablesConfig `json:"reusables"`
 	OutputDir       string          `json:"output_dir"`
@@ -74,7 +108,7 @@ type Config struct {
 
 // DefaultConfig returns a new Config with default values. Profile-dependent
 // settings (ContentExtensions, Reusables.Patterns, Reusables.Extensions,
-// HugoRoot) are left empty here and filled by ApplyProfile.
+// ProjectRoot) are left empty here and filled by ApplyProfile.
 func DefaultConfig() *Config {
 	return &Config{
 		ThresholdDays: 90,
@@ -86,6 +120,33 @@ func DefaultConfig() *Config {
 		},
 		Workers: 0, // 0 means use runtime.NumCPU()
 	}
+}
+
+// UnmarshalJSON decodes a config document, accepting the deprecated
+// "hugo_root" spelling of "project_root" alongside the canonical one.
+//
+// The alias cannot be a second struct field with its own tag, because the two
+// keys must be told apart *after* decoding: only a root that arrived through
+// "hugo_root" earns the deprecation warning and the legacy hugo-profile
+// fallback (see Config.foldLegacyRoot). It is decoded into the unexported
+// legacyHugoRoot instead, which also keeps the deprecated key out of Config's
+// exported surface.
+//
+// The configAlias detour is the usual one: the alias type has no methods, so
+// unmarshalling through it does not call this method again. Decoding into the
+// receiver leaves fields absent from the document at whatever DefaultConfig
+// set them to.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	aux := struct {
+		*configAlias
+		HugoRoot string `json:"hugo_root"`
+	}{configAlias: (*configAlias)(c)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	c.legacyHugoRoot = aux.HugoRoot
+	return nil
 }
 
 // LoadConfig loads configuration from a JSON file.

@@ -99,7 +99,7 @@ func TestGetStalenessClass(t *testing.T) {
 }
 
 // TestDetectRoot_HugoLayoutsMarker covers the Hugo profile's root detection:
-// DetectRoot with the hugo profile's RootMarkers (layouts/ and themes/ plus
+// the marker walk over the hugo profile's RootMarkers (layouts/ and themes/ plus
 // the hugo.* and config/_default/ config files). The trailing slash means the
 // layouts marker is a directory: a regular file named layouts is not a Hugo
 // marker. The other markers are exercised in TestDetectRoot_HugoConfigMarkers
@@ -120,8 +120,8 @@ func TestDetectRoot_HugoLayoutsMarker(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "layouts"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := DetectRoot(content, markers); got != "" {
-		t.Errorf("DetectRoot(file named layouts) = %q, want \"\"", got)
+	if got := detectRootByMarkers(content, markers); got != "" {
+		t.Errorf("detectRootByMarkers(file named layouts) = %q, want \"\"", got)
 	}
 	if err := os.Remove(filepath.Join(root, "layouts")); err != nil {
 		t.Fatal(err)
@@ -131,12 +131,12 @@ func TestDetectRoot_HugoLayoutsMarker(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "layouts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := DetectRoot(content, markers); got != root {
-		t.Errorf("DetectRoot(layouts/) = %q, want %q", got, root)
+	if got := detectRootByMarkers(content, markers); got != root {
+		t.Errorf("detectRootByMarkers(layouts/) = %q, want %q", got, root)
 	}
 
 	// A tree with no layouts/ anywhere up to the root returns "".
-	if got := DetectRoot(t.TempDir(), markers); got != "" {
-		t.Errorf("DetectRoot(no layouts) = %q, want \"\"", got)
+	if got := detectRootByMarkers(t.TempDir(), markers); got != "" {
+		t.Errorf("detectRootByMarkers(no layouts) = %q, want \"\"", got)
 	}
 }

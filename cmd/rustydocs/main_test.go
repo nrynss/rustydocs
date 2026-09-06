@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +42,11 @@ func TestRunArgs_ContentDirMustExist(t *testing.T) {
 
 // minimal shape for asserting on the JSON report.
 type jsonReport struct {
+	Config struct {
+		Profile           string   `json:"profile"`
+		ProfileAuto       bool     `json:"profile_auto"`
+		ContentExtensions []string `json:"content_extensions"`
+	} `json:"config"`
 	Summary struct {
 		FilesMissingHistory int `json:"files_missing_history"`
 	} `json:"summary"`
@@ -50,6 +57,14 @@ type jsonReport struct {
 			Level string `json:"level"`
 		} `json:"sections"`
 	} `json:"files"`
+	Reusables []jsonReusable `json:"reusables"`
+}
+
+// jsonReusable is one row of the report's cross-file reusables table.
+type jsonReusable struct {
+	Name        string `json:"name"`
+	LastUpdated string `json:"last_updated"`
+	Level       string `json:"level"`
 }
 
 func readJSONReport(t *testing.T, dir string) jsonReport {
@@ -163,7 +178,7 @@ func TestRunArgs_ListProfiles(t *testing.T) {
 	if err := runArgs([]string{"--list-profiles"}, &out, &errb); err != nil {
 		t.Fatalf("runArgs --list-profiles: %v", err)
 	}
-	for _, name := range []string{"markdown", "hugo"} {
+	for _, name := range []string{"markdown", "hugo", "mintlify"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("--list-profiles output missing %q:\n%s", name, out.String())
 		}
@@ -803,5 +818,760 @@ func TestRunArgs_ExtensionsCanonicalisedInJSONReport(t *testing.T) {
 	}
 	if got := rep.Config.ContentExtensions; len(got) != 1 || got[0] != ".md" {
 		t.Errorf("config.content_extensions = %v, want [.md]", got)
+	}
+}
+
+// TestRunArgs_MintlifyEndToEnd runs the CLI over the committed
+// testdata/mintlify-docs fixture (#7): docs.json is auto-detected, the banner
+// names the profile and its root, and the JSON report carries the snippet as a
+// reusable resolved to a real date — with <Card /> and {{< not-a-reusable >}}
+// on the same page deliberately absent.
+func TestRunArgs_MintlifyEndToEnd(t *testing.T) {
+	now := time.Now()
+	repo := testutil.NewRepo(t)
+	repo.CommitTree(now.AddDate(0, 0, -300), "import mintlify docs", "mintlify-docs", ".")
+	snippetDate := now.AddDate(0, 0, -10)
+	repo.Commit(snippetDate, "refresh snippet", map[string]string{
+		"snippets/foo.mdx": "Shared snippet body, refreshed.\n",
+	})
+	outDir := filepath.Join(t.TempDir(), "reports")
+
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{
+		"--content-dir", repo.Path("docs"),
+		"--output-dir", outDir,
+		"--threshold-days", "90",
+	}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+
+	if want := "Profile: mintlify (auto-detected, root: " + repo.Dir + ")\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("banner missing %q:\n%s", want, out.String())
+	}
+
+	rep := readJSONReport(t, outDir)
+	if rep.Config.Profile != "mintlify" || !rep.Config.ProfileAuto {
+		t.Errorf("config profile = %q auto=%v, want mintlify auto-detected", rep.Config.Profile, rep.Config.ProfileAuto)
+	}
+	if got := rep.Config.ContentExtensions; len(got) != 2 || got[0] != ".md" || got[1] != ".mdx" {
+		t.Errorf("config.content_extensions = %v, want [.md .mdx]", got)
+	}
+	// Two snippet references, both reported under the *resolved* path relative
+	// to the project root rather than under the raw capture: that is what makes
+	// two pages' same-named relative snippets distinct rows (#7 review). One is
+	// written root-absolute, the other as the bare filename real Mintlify
+	// projects use, which resolves out of snippets/.
+	byName := map[string]jsonReusable{}
+	for _, r := range rep.Reusables {
+		byName[r.Name] = r
+	}
+	if len(byName) != 2 {
+		t.Fatalf("reusables = %+v, want the two resolved snippet paths", rep.Reusables)
+	}
+	bare, ok := byName["snippets/aws-access-key-config.mdx"]
+	if !ok {
+		t.Fatalf("the bare <Snippet file=\"aws-access-key-config.mdx\" /> did not resolve "+
+			"out of snippets/: %+v", rep.Reusables)
+	}
+	if bare.LastUpdated == "" || bare.Level == "unknown" {
+		t.Errorf("bare snippet was not resolved to a date: %+v", bare)
+	}
+	snippet, ok := byName["snippets/foo.mdx"]
+	if !ok {
+		t.Fatalf("reusables = %+v, want snippets/foo.mdx", rep.Reusables)
+	}
+	if snippet.LastUpdated == "" || snippet.Level == "unknown" {
+		t.Errorf("snippet was not resolved to a date: %+v", snippet)
+	}
+	if want := snippetDate.Format("2006-01-02"); !strings.HasPrefix(snippet.LastUpdated, want) {
+		t.Errorf("snippet last_updated = %q, want it to start with %q", snippet.LastUpdated, want)
+	}
+	// Everything resolved, so the unresolved-reusables note must stay quiet.
+	if strings.Contains(errb.String(), "could not be resolved") {
+		t.Errorf("unexpected unresolved-reusables note:\n%s", errb.String())
+	}
+}
+
+// TestRunArgs_MintlifyExplicitProfile pins --profile mintlify: the banner
+// reports it without the "auto-detected" note, and the narrow snippet pattern
+// replaces the hugo component pattern even in a repo with no docs.json.
+func TestRunArgs_MintlifyExplicitProfile(t *testing.T) {
+	now := time.Now()
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "v", map[string]string{
+		"docs/page.mdx": "# Page\n\n<Card />\n\n{{< bar >}}\n",
+	})
+	outDir := filepath.Join(t.TempDir(), "reports")
+
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{
+		"--content-dir", repo.Path("docs"),
+		"--output-dir", outDir,
+		"--profile", "mintlify",
+	}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "Profile: mintlify\n") {
+		t.Errorf("banner missing explicit mintlify profile:\n%s", out.String())
+	}
+	rep := readJSONReport(t, outDir)
+	if len(rep.Reusables) != 0 {
+		t.Errorf("reusables = %+v, want none: <Card /> and {{< bar >}} are not Mintlify snippets", rep.Reusables)
+	}
+}
+
+// mintlifyConfigJSON is a minimal but realistic Mintlify config: the docs.json
+// marker is validated by content as well as by name (#7 review).
+const mintlifyConfigJSON = `{"$schema":"https://mintlify.com/docs.json",` +
+	`"name":"Docs","theme":"mint","colors":{"primary":"#000"},` +
+	`"navigation":{"pages":["docs/page"]}}`
+
+// TestRunArgs_MintlifyNoRootNote covers the diagnostic for a run whose profile
+// resolves includes against a project root that was never found: --profile
+// mintlify on a tree with no docs.json/mint.json used to report every snippet
+// as unknown in silence (#7 review). The note must name the profile and the
+// remedy, and must not fire once a root exists.
+func TestRunArgs_MintlifyNoRootNote(t *testing.T) {
+	now := time.Now()
+
+	run := func(t *testing.T, repo *testutil.Repo, extraArgs ...string) (string, string) {
+		t.Helper()
+		outDir := filepath.Join(t.TempDir(), "reports")
+		args := append([]string{
+			"--content-dir", repo.Path("docs"),
+			"--output-dir", outDir,
+			"--profile", "mintlify",
+		}, extraArgs...)
+		var out, errb bytes.Buffer
+		if err := runArgs(args, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		return out.String(), errb.String()
+	}
+
+	const noteFragment = `profile "mintlify": 1 reusable reference(s) resolved to no file with git history`
+
+	t.Run("no marker: the note fires and snippets stay unknown", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx":    "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+			"snippets/foo.mdx": "shared\n",
+		})
+		_, stderr := run(t, repo)
+		if !strings.Contains(stderr, noteFragment) {
+			t.Errorf("stderr missing the unresolved-root note:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "--project-root") {
+			t.Errorf("the note should name --project-root:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "docs.json or mint.json") {
+			t.Errorf("the note should name the markers it looked for:\n%s", stderr)
+		}
+	})
+
+	t.Run("a docs.json is present: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":        mintlifyConfigJSON,
+			"docs/page.mdx":    "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+			"snippets/foo.mdx": "shared\n",
+		})
+		_, stderr := run(t, repo)
+		if strings.Contains(stderr, noteFragment) {
+			t.Errorf("the note fired even though a root was found:\n%s", stderr)
+		}
+	})
+
+	t.Run("--project-root supplies the missing root", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		snippetDate := now.AddDate(0, 0, -3)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+		})
+		repo.Commit(snippetDate, "snippet", map[string]string{
+			"snippets/foo.mdx": "shared\n",
+		})
+
+		outDir := filepath.Join(t.TempDir(), "reports")
+		var out, errb bytes.Buffer
+		if err := runArgs([]string{
+			"--content-dir", repo.Path("docs"),
+			"--output-dir", outDir,
+			"--profile", "mintlify",
+			"--project-root", repo.Dir,
+		}, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		if strings.Contains(errb.String(), noteFragment) {
+			t.Errorf("the note fired even though --project-root was given:\n%s", errb.String())
+		}
+		if want := "Profile: mintlify (root: " + repo.Dir + ")\n"; !strings.Contains(out.String(), want) {
+			t.Errorf("banner missing %q:\n%s", want, out.String())
+		}
+		rep := readJSONReport(t, outDir)
+		if len(rep.Reusables) != 1 {
+			t.Fatalf("reusables = %+v, want the resolved snippet", rep.Reusables)
+		}
+		if rep.Reusables[0].Name != "snippets/foo.mdx" || rep.Reusables[0].Level == "unknown" {
+			t.Errorf("snippet = %+v, want it resolved under its root-relative path", rep.Reusables[0])
+		}
+	})
+}
+
+// TestRunArgs_ProjectRootConfigAlias pins the config-file spellings of the
+// project root: "project_root" is the current name and wins over the legacy
+// "hugo_root", which keeps working (#7 review).
+func TestRunArgs_ProjectRootConfigAlias(t *testing.T) {
+	now := time.Now()
+	snippetDate := now.AddDate(0, 0, -3)
+
+	newRepo := func(t *testing.T) *testutil.Repo {
+		t.Helper()
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+		})
+		repo.Commit(snippetDate, "snippet", map[string]string{
+			"snippets/foo.mdx": "shared\n",
+		})
+		return repo
+	}
+
+	runWithConfig := func(t *testing.T, repo *testutil.Repo, cfg map[string]any) jsonReport {
+		t.Helper()
+		outDir := filepath.Join(t.TempDir(), "reports")
+		cfg["content_dir"] = repo.Path("docs")
+		cfg["output_dir"] = outDir
+		cfg["profile"] = "mintlify"
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		if err := runArgs([]string{"--config", cfgPath}, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		return readJSONReport(t, outDir)
+	}
+
+	t.Run("project_root", func(t *testing.T) {
+		repo := newRepo(t)
+		rep := runWithConfig(t, repo, map[string]any{"project_root": repo.Dir})
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Level == "unknown" {
+			t.Errorf("reusables = %+v, want the snippet resolved", rep.Reusables)
+		}
+	})
+
+	t.Run("legacy hugo_root still works", func(t *testing.T) {
+		repo := newRepo(t)
+		rep := runWithConfig(t, repo, map[string]any{"hugo_root": repo.Dir})
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Level == "unknown" {
+			t.Errorf("reusables = %+v, want the snippet resolved", rep.Reusables)
+		}
+	})
+
+	t.Run("project_root wins over hugo_root", func(t *testing.T) {
+		repo := newRepo(t)
+		rep := runWithConfig(t, repo, map[string]any{
+			"project_root": repo.Dir,
+			"hugo_root":    filepath.Join(repo.Dir, "docs"),
+		})
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Name != "snippets/foo.mdx" {
+			t.Errorf("reusables = %+v, want the snippet resolved against the repo root", rep.Reusables)
+		}
+	})
+}
+
+// TestRunArgs_LegacyHugoRootDeprecation covers what the renamed root key does
+// for configs written against the old spelling: "hugo_root" still supplies the
+// project root, it now says on stderr that the key is deprecated, and it keeps
+// the one behaviour the rename would otherwise have broken — a hugo_root
+// pointing at a tree with no Hugo marker still selects the hugo profile
+// (#7 review pass 3).
+func TestRunArgs_LegacyHugoRootDeprecation(t *testing.T) {
+	now := time.Now()
+
+	runWithConfig := func(t *testing.T, contentDir string, cfg map[string]any) (string, string) {
+		t.Helper()
+		cfg["content_dir"] = contentDir
+		cfg["output_dir"] = filepath.Join(t.TempDir(), "reports")
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		if err := runArgs([]string{"--config", cfgPath}, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		return out.String(), errb.String()
+	}
+
+	t.Run("a tree with no marker still gets the hugo profile", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.md": "# Page\n\nbody\n",
+		})
+		stdout, stderr := runWithConfig(t, repo.Path("docs"), map[string]any{"hugo_root": repo.Dir})
+		if !strings.Contains(stdout, "Profile: hugo (auto-detected, root: "+repo.Dir+")") {
+			t.Errorf("banner = %q, want the legacy hugo fallback", stdout)
+		}
+		if !strings.Contains(stderr, `"hugo_root" is deprecated`) ||
+			!strings.Contains(stderr, `"project_root"`) {
+			t.Errorf("stderr should carry the rename notice:\n%s", stderr)
+		}
+	})
+
+	t.Run("a real Hugo site is detected from its markers, not from the key", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "site", map[string]string{
+			"hugo.toml":                    "baseURL = '/'\n",
+			"layouts/shortcodes/note.html": "<p>note</p>\n",
+			"content/docs/page.md":         "# Page\n\n{{< note >}}\n",
+		})
+		stdout, stderr := runWithConfig(t, repo.Path("content/docs"), map[string]any{"hugo_root": repo.Dir})
+		if !strings.Contains(stdout, "Profile: hugo (auto-detected, root: "+repo.Dir+")") {
+			t.Errorf("banner = %q, want hugo at the site root", stdout)
+		}
+		if !strings.Contains(stderr, `"hugo_root" is deprecated`) {
+			t.Errorf("stderr should carry the rename notice:\n%s", stderr)
+		}
+	})
+
+	// The whole point of the rename: the current spelling says where to
+	// resolve from, never what the project is. On a Mintlify tree it used to
+	// force the hugo profile, whose component pattern captured "Snippet" as a
+	// name and resolved nothing.
+	t.Run("project_root does not force hugo on a Mintlify tree", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":           mintlifyConfigJSON,
+			"docs/page.mdx":       "# Page\n\n<Snippet file=\"shared.mdx\" />\n",
+			"snippets/shared.mdx": "shared\n",
+		})
+		outDir := filepath.Join(t.TempDir(), "reports")
+		var out, errb bytes.Buffer
+		if err := runArgs([]string{
+			"--content-dir", repo.Path("docs"),
+			"--output-dir", outDir,
+			"--project-root", repo.Dir,
+		}, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		if !strings.Contains(out.String(), "Profile: mintlify (auto-detected, root: "+repo.Dir+")") {
+			t.Errorf("banner = %q, want mintlify", out.String())
+		}
+		rep := readJSONReport(t, outDir)
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Name != "snippets/shared.mdx" ||
+			rep.Reusables[0].Level == "unknown" {
+			t.Errorf("reusables = %+v, want the bare snippet resolved out of snippets/", rep.Reusables)
+		}
+		if strings.Contains(errb.String(), "deprecated") {
+			t.Errorf("the current spelling must not be deprecated:\n%s", errb.String())
+		}
+	})
+
+	t.Run("an explicit profile wins over a supplied root", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx": "# Page\n\n<Card />\n",
+		})
+		outDir := filepath.Join(t.TempDir(), "reports")
+		var out, errb bytes.Buffer
+		if err := runArgs([]string{
+			"--content-dir", repo.Path("docs"),
+			"--output-dir", outDir,
+			"--project-root", repo.Dir,
+			"--profile", "mintlify",
+		}, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		if !strings.Contains(out.String(), "Profile: mintlify (root: "+repo.Dir+")") {
+			t.Errorf("banner = %q, want the explicit mintlify profile", out.String())
+		}
+	})
+}
+
+// TestRunArgs_UnresolvedReusablesNote pins what the unresolved-includes note
+// means. It used to fire on the resolver alone: a hugo-profile run whose
+// includes all resolved through a legacy reusables directory got told its
+// references "cannot be resolved" while the very same run's JSON reported them
+// resolved, and a tree with no reusable references at all got the note too
+// (#7 review pass 2). It then still went silent whenever a root *was* found,
+// which hid the far more common failure — a Mintlify project whose root is
+// right there and whose snippet paths simply do not resolve. It is now driven
+// by the count of unresolved references; a missing root only adds a sentence
+// (#7 review pass 3).
+func TestRunArgs_UnresolvedReusablesNote(t *testing.T) {
+	now := time.Now()
+
+	runIn := func(t *testing.T, args ...string) (string, string, string) {
+		t.Helper()
+		outDir := filepath.Join(t.TempDir(), "reports")
+		var out, errb bytes.Buffer
+		if err := runArgs(append(args, "--output-dir", outDir), &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		return out.String(), errb.String(), outDir
+	}
+
+	const hugoNote = `profile "hugo": `
+	const mintNote = `profile "mintlify": `
+
+	t.Run("legacy reusables-dir resolves everything: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.md":   "# Page\n\n{{< note >}}\n",
+			"shared/note.md": "shared\n",
+		})
+		_, stderr, outDir := runIn(t,
+			"--content-dir", repo.Path("docs"),
+			"--profile", "hugo",
+			"--reusables-dir", repo.Path("shared"),
+		)
+		if strings.Contains(stderr, hugoNote) {
+			t.Errorf("the note fired even though every reference resolved:\n%s", stderr)
+		}
+		rep := readJSONReport(t, outDir)
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Level == "unknown" {
+			t.Errorf("reusables = %+v, want the shortcode resolved through the reusables dir", rep.Reusables)
+		}
+	})
+
+	t.Run("no reusable references at all: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx": "# Page\n\nplain prose, nothing included\n",
+		})
+		_, stderr, _ := runIn(t,
+			"--content-dir", repo.Path("docs"),
+			"--profile", "mintlify",
+		)
+		if strings.Contains(stderr, mintNote) {
+			t.Errorf("the note fired on a tree with no reusable references:\n%s", stderr)
+		}
+	})
+
+	t.Run("no root and references really do fail: the note fires, counts them and names the remedy", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.mdx":    "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+			"snippets/foo.mdx": "shared\n",
+		})
+		_, stderr, _ := runIn(t,
+			"--content-dir", repo.Path("docs"),
+			"--profile", "mintlify",
+		)
+		if !strings.Contains(stderr, mintNote) {
+			t.Errorf("stderr missing the unresolved-reusables note:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "1 reusable reference(s) resolved to no file with git history") {
+			t.Errorf("the note should count the failures:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, ": /snippets/foo.mdx.") {
+			t.Errorf("the note should name the capture that failed:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "No project root was found") ||
+			!strings.Contains(stderr, "--project-root") {
+			t.Errorf("with no root the note should say so and name the remedy:\n%s", stderr)
+		}
+	})
+
+	// The case the root-gated version could not see at all: the root is right
+	// there next to docs.json, and the snippets simply do not resolve.
+	t.Run("a root was found but references still fail: the note fires without the root sentence", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":     mintlifyConfigJSON,
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"typo.mdx\" />\n",
+		})
+		_, stderr, outDir := runIn(t, "--content-dir", repo.Path("docs"))
+		if !strings.Contains(stderr, mintNote) ||
+			!strings.Contains(stderr, "1 reusable reference(s) resolved to no file with git history") {
+			t.Errorf("stderr missing the unresolved-reusables note:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "No project root was found") {
+			t.Errorf("a root was found; the note must not claim otherwise:\n%s", stderr)
+		}
+		rep := readJSONReport(t, outDir)
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Level != "unknown" {
+			t.Errorf("reusables = %+v, want the unresolved snippet reported unknown", rep.Reusables)
+		}
+	})
+
+	t.Run("everything resolves: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":           mintlifyConfigJSON,
+			"docs/page.mdx":       "# Page\n\n<Snippet file=\"shared.mdx\" />\n",
+			"snippets/shared.mdx": "shared\n",
+		})
+		_, stderr, _ := runIn(t, "--content-dir", repo.Path("docs"))
+		if strings.Contains(stderr, mintNote) {
+			t.Errorf("the note fired even though every reference resolved:\n%s", stderr)
+		}
+	})
+
+	// The note is scoped to the direct-path resolver. The hugo profile's
+	// second pattern captures every capitalised JSX/HTML tag, and none of
+	// <Tabs>, <Card>, <Badge> is a shortcode, so on a real MDX site the note
+	// counted almost nothing but noise: measured 8 unresolved captures of
+	// which exactly 1 was actionable (#7 review pass 4). Those rows are still
+	// in the report as level "unknown" — that is where a Hugo user looks.
+	t.Run("hugo: unresolvable JSX components print no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "site", map[string]string{
+			"layouts/shortcodes/note.html": "<div>note</div>\n",
+			"content/page.mdx": "# Page\n\n{{< note >}}\n\n" +
+				"<Tabs>\n<TabItem>x</TabItem>\n</Tabs>\n\n<Card />\n<Badge />\n",
+		})
+		_, stderr, outDir := runIn(t, "--content-dir", repo.Path("content"))
+		if strings.Contains(stderr, hugoNote) || strings.Contains(stderr, "resolved to no file") {
+			t.Errorf("the hugo run must not print the unresolved-reusables note:\n%s", stderr)
+		}
+		rep := readJSONReport(t, outDir)
+		var unknown int
+		for _, r := range rep.Reusables {
+			if r.Level == "unknown" {
+				unknown++
+			}
+		}
+		if unknown == 0 {
+			t.Errorf("reusables = %+v, want the unresolvable components still reported unknown",
+				rep.Reusables)
+		}
+	})
+
+	t.Run("mintlify: a broken snippet is named", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":     mintlifyConfigJSON,
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"nope.mdx\" />\n",
+		})
+		_, stderr, _ := runIn(t, "--content-dir", repo.Path("docs"))
+		if !strings.Contains(stderr, mintNote) {
+			t.Fatalf("stderr missing the unresolved-reusables note:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, ": nope.mdx.") {
+			t.Errorf("the note should name the capture, not only count it:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "and 0 more") || strings.Contains(stderr, "more.") {
+			t.Errorf("a single capture must not be truncated:\n%s", stderr)
+		}
+	})
+
+	t.Run("mintlify: more than three broken snippets truncate", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json": mintlifyConfigJSON,
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"a.mdx\" />\n<Snippet file=\"b.mdx\" />\n" +
+				"<Snippet file=\"c.mdx\" />\n<Snippet file=\"d.mdx\" />\n<Snippet file=\"e.mdx\" />\n",
+		})
+		_, stderr, _ := runIn(t, "--content-dir", repo.Path("docs"))
+		if !strings.Contains(stderr, "5 reusable reference(s) resolved to no file with git history") {
+			t.Errorf("the note should count all five:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, ": a.mdx, b.mdx, c.mdx and 2 more.") {
+			t.Errorf("the note should name three captures and summarise the rest:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "d.mdx") {
+			t.Errorf("the note should not spell out the truncated captures:\n%s", stderr)
+		}
+	})
+
+	// The second cause the note has to cover: the snippet resolves perfectly
+	// well — the report even names it by its resolved path — it has simply
+	// never been committed, so git offers no date. The note used to claim it
+	// "could not be resolved to a file", which sent the reader looking for a
+	// typo that was not there (#7 review pass 4).
+	t.Run("mintlify: an uncommitted snippet is described accurately", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":     mintlifyConfigJSON,
+			"docs/page.mdx": "# Page\n\n<Snippet file=\"fresh.mdx\" />\n",
+		})
+		repo.Write("snippets/fresh.mdx", "brand new, never committed\n")
+
+		_, stderr, outDir := runIn(t, "--content-dir", repo.Path("docs"))
+		if !strings.Contains(stderr, "resolved to no file with git history") ||
+			!strings.Contains(stderr, "has never been committed") {
+			t.Errorf("the note must cover the uncommitted-file cause:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "could not be resolved to a file") {
+			t.Errorf("the snippet did resolve; the note must not claim otherwise:\n%s", stderr)
+		}
+		rep := readJSONReport(t, outDir)
+		if len(rep.Reusables) != 1 || rep.Reusables[0].Name != "snippets/fresh.mdx" {
+			t.Errorf("reusables = %+v, want the snippet under its resolved path", rep.Reusables)
+		}
+	})
+}
+
+// TestRunArgs_UnusedProjectRootNote: a project root the user supplied that the
+// resolved profile never reads used to be validated and then discarded in
+// total silence — describeProfile keeps it out of the banner when the profile
+// has no root markers, so nothing was printed at all. That is the likeliest
+// migration error the project_root rename creates: a markerless Hugo site
+// whose config said "hugo_root" got the hugo profile and shortcode tracing,
+// and the same site on --project-root gets markdown, no tracing, and a run
+// that looks healthy because the .md files still match (#7 review pass 4).
+func TestRunArgs_UnusedProjectRootNote(t *testing.T) {
+	now := time.Now()
+
+	runIn := func(t *testing.T, args ...string) string {
+		t.Helper()
+		var out, errb bytes.Buffer
+		args = append(args, "--output-dir", filepath.Join(t.TempDir(), "reports"))
+		if err := runArgs(args, &out, &errb); err != nil {
+			t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+		}
+		return errb.String()
+	}
+
+	const noteFragment = "is not used by the"
+
+	t.Run("markdown profile: the note fires and names --profile", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.md": "# Page\n\nprose\n",
+		})
+		stderr := runIn(t, "--content-dir", repo.Path("docs"), "--project-root", repo.Dir)
+		if !strings.Contains(stderr, noteFragment) ||
+			!strings.Contains(stderr, `"markdown" profile`) {
+			t.Errorf("stderr missing the unused-root note:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "--profile") {
+			t.Errorf("the note should point at --profile:\n%s", stderr)
+		}
+	})
+
+	t.Run("a profile that uses the root: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs.json":           mintlifyConfigJSON,
+			"docs/page.mdx":       "# Page\n\n<Snippet file=\"shared.mdx\" />\n",
+			"snippets/shared.mdx": "shared\n",
+		})
+		stderr := runIn(t, "--content-dir", repo.Path("docs"), "--project-root", repo.Dir)
+		if strings.Contains(stderr, noteFragment) {
+			t.Errorf("the root is used by mintlify; the note must stay quiet:\n%s", stderr)
+		}
+	})
+
+	t.Run("no root supplied: no note", func(t *testing.T) {
+		repo := testutil.NewRepo(t)
+		repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+			"docs/page.md": "# Page\n\nprose\n",
+		})
+		stderr := runIn(t, "--content-dir", repo.Path("docs"))
+		if strings.Contains(stderr, noteFragment) {
+			t.Errorf("no root was supplied; the note must stay quiet:\n%s", stderr)
+		}
+	})
+}
+
+// TestRunArgs_ExplicitRootMustExist: a project root the user named but that is
+// not there is a configuration error, not a silently useless run. It used to
+// print "Profile: mintlify (root: /does/not/exist)", resolve nothing, report
+// every snippet unknown and exit 0 (#7 review pass 2).
+func TestRunArgs_ExplicitRootMustExist(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Now().AddDate(0, 0, -200), "docs", map[string]string{
+		"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+	})
+	missing := filepath.Join(t.TempDir(), "nope")
+
+	var out, errb bytes.Buffer
+	err := runArgs([]string{
+		"--content-dir", repo.Path("docs"),
+		"--output-dir", filepath.Join(t.TempDir(), "reports"),
+		"--profile", "mintlify",
+		"--project-root", missing,
+	}, &out, &errb)
+	if err == nil {
+		t.Fatal("runArgs() = nil, want an error for a nonexistent --project-root")
+	}
+	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "--project-root") {
+		t.Errorf("error = %v, want it to name the path and the flag", err)
+	}
+	if strings.Contains(out.String(), "Analyzing documentation") {
+		t.Errorf("the run should fail before analysis starts:\n%s", out.String())
+	}
+}
+
+// TestRunArgs_UnreadableMarkerWarning: a docs.json the process cannot read
+// still does not select the mintlify profile, but the user is now told why
+// instead of silently getting a markdown run (#7 review pass 2).
+func TestRunArgs_UnreadableMarkerWarning(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: an unreadable file is still readable")
+	}
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Now().AddDate(0, 0, -200), "docs", map[string]string{
+		"docs.json":     mintlifyConfigJSON,
+		"docs/page.mdx": "# Page\n\nbody\n",
+	})
+	marker := repo.Path("docs.json")
+	if err := os.Chmod(marker, 0o000); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+
+	outDir := filepath.Join(t.TempDir(), "reports")
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{
+		"--content-dir", repo.Path("docs"),
+		"--output-dir", outDir,
+	}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+	if !strings.Contains(errb.String(), marker) || !strings.Contains(errb.String(), "mintlify") {
+		t.Errorf("stderr should name the unreadable marker and the profile it would have selected:\n%s", errb.String())
+	}
+	if !strings.Contains(out.String(), "Profile: markdown") {
+		t.Errorf("detection must be unchanged (markdown):\n%s", out.String())
+	}
+}
+
+// TestRunArgs_UncommittedSnippetsStayDistinct: two different files that git
+// knows nothing about, referenced by the same relative capture from their own
+// pages, must stay two rows. The display name used to fall back to the raw
+// capture whenever there was no git info, collapsing them into one "new.mdx"
+// row (#7 review pass 2).
+func TestRunArgs_UncommittedSnippetsStayDistinct(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Now().AddDate(0, 0, -200), "docs", map[string]string{
+		"docs.json":       mintlifyConfigJSON,
+		"docs/g/page.mdx": "# G\n\n<Snippet file=\"new.mdx\" />\n",
+		"docs/a/page.mdx": "# A\n\n<Snippet file=\"new.mdx\" />\n",
+	})
+	repo.Write("docs/g/new.mdx", "g snippet\n")
+	repo.Write("docs/a/new.mdx", "a snippet\n")
+
+	outDir := filepath.Join(t.TempDir(), "reports")
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{
+		"--content-dir", repo.Path("docs"),
+		"--output-dir", outDir,
+	}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+
+	rep := readJSONReport(t, outDir)
+	names := make([]string, 0, len(rep.Reusables))
+	for _, r := range rep.Reusables {
+		names = append(names, r.Name)
+	}
+	sort.Strings(names)
+	want := []string{"docs/a/new.mdx", "docs/g/new.mdx"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("reusables = %v, want two distinct rows %v", names, want)
 	}
 }

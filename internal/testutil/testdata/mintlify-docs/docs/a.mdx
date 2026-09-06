@@ -1,0 +1,18 @@
+---
+title: Snippet page
+---
+
+# Snippet page
+
+This page pulls in a shared snippet by path.
+
+<Snippet file="/snippets/foo.mdx" />
+
+## Components are not reusables
+
+A bare MDX component and a Hugo shortcode must not be reported as reusables
+under the mintlify profile.
+
+<Card title="Not a reusable" />
+
+{{< not-a-reusable >}}

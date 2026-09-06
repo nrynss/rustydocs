@@ -8,8 +8,8 @@ Find stale documentation using git history. Analyzes your documentation at the s
 
 - **Section-level analysis**: Uses `git blame` to analyze staleness per section, not just per file
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
-- **Tool profiles**: a `hugo` profile (auto-detected) adds MDX support and Hugo shortcode / JSX component tracking; more profiles are on the way (see [Profiles](#profiles))
-- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`) and folds their freshness into the section that uses them
+- **Tool profiles**: `hugo` and `mintlify` profiles (both auto-detected) add MDX support and include tracking — Hugo shortcodes / JSX components, and Mintlify `<Snippet file="…" />` snippets resolved by path; more profiles are on the way (see [Profiles](#profiles))
+- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, `<Snippet file="foo.mdx" />` includes — and folds their freshness into the section that uses them
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
 - **Dual output**: Generates both Markdown and HTML reports
 - **Zero dependencies**: Uses only Go standard library
@@ -53,22 +53,62 @@ A **profile** describes how a documentation tool lays out its content: which fil
 extensions are documentation, how the project root is located, and how (if at
 all) reusable/included content is referenced and resolved. Profiles only supply
 defaults; anything you set explicitly (`--extensions`, `content_extensions`,
-`reusables.patterns`, `reusables.dir`, `hugo_root`) always wins.
+`reusables.patterns`, `reusables.dir`, `--project-root`/`project_root`) always
+wins.
 
 | Profile    | Extensions                 | Root marker         | Reusable detection                                   |
 | ---------- | -------------------------- | ------------------- | ---------------------------------------------------- |
 | `markdown` | `.md`, `.markdown`         | none                | **off** (plain CommonMark/GFM has no include mechanism) |
+| `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style), resolved as a **path** under `snippets/` / `_snippets/` or the project root |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
 
 **Auto-detection.** When no profile is named, rustydocs walks up from
 `content_dir` one directory at a time looking for the profiles' root markers;
-the marker nearest to `content_dir` wins (a `layouts/` or `themes/` directory,
-a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config — `hugo.*`
-or `config.*` under that directory — selects `hugo`; the config-file and
+the marker nearest to `content_dir` wins. A `docs.json` or `mint.json` file
+selects `mintlify`; a `layouts/` or `themes/` directory, a
+`hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config — `hugo.*`
+or `config.*` under that directory — selects `hugo` (the config-file and
 `themes/` markers matter for fresh clones of theme-based sites, since git does
-not track an empty `layouts/` directory). If nothing is found, the `markdown`
-profile is used. An explicit `hugo_root` also selects `hugo`, and a Hugo site
-matching none of these markers must pass `--profile hugo` or set `hugo_root`.
+not track an empty `layouts/` directory). A nested docs tree therefore wins
+over a marker further up: a Mintlify `docs.json` inside a repo that also has a
+`layouts/` at its root selects `mintlify`.
+
+The Mintlify markers are checked by **content** as well as by name: a
+`docs.json` or `mint.json` selects the profile only when it parses as a JSON
+object carrying a recognisably Mintlify key (`navigation`, `theme`, `colors`,
+`logo`, `favicon`, `tabs`, `anchors`, or a `$schema` mentioning Mintlify). A
+file that merely has the name — some other tool's `docs.json`, or a malformed
+one — is ignored, and detection carries on up the tree. Only when both a Hugo
+and a Mintlify marker sit in the *same* directory does registry order decide,
+and there **`hugo` wins**: `layouts/` and `hugo.toml` are unambiguous evidence,
+and picking `mintlify` would silently switch shortcode tracing off on a Hugo
+site that happens to ship a `docs.json`. Pass `--profile mintlify` to override
+that tie.
+
+If nothing is found, the `markdown` profile is used. **A project root you
+supply never selects a profile**: `--project-root` / `project_root` says where
+reusable references resolve *from*, not what the project *is*, so a Hugo or
+Mintlify project matching none of these markers must pass `--profile` as well —
+for Mintlify, together with `--project-root`, since the profile has no root to
+resolve snippet paths against otherwise (rustydocs says so on stderr when
+that happens). A project root you supply yourself must exist and be a
+directory: a mistyped path fails the run immediately rather than producing a
+report in which nothing resolves.
+
+The deprecated `hugo_root` key is the one exception, for backward
+compatibility: a config that sets it and names no profile still gets `hugo`
+when no marker is found anywhere, which is what that key used to mean. Rename
+it to `project_root` — rustydocs prints a deprecation notice while you still
+have the old spelling.
+
+A marker file that rustydocs cannot *read* (permissions) is skipped, but it is
+not swallowed either — the run prints a warning naming the file and the profile
+whose marker it is, so a `chmod 000 docs.json` does not silently look like a
+plain Markdown project. The warning is about that one marker: if another marker
+in the same directory still matches (a readable `mint.json` next to the
+unreadable `docs.json`), the profile is selected as usual and the warning just
+records what was skipped.
+
 The walk never leaves the enclosing git repository: it stops at the directory
 holding `.git` (a marker sitting next to `.git` still counts), so a checkout
 that happens to live under some unrelated `themes/` or `layouts/` directory is
@@ -83,8 +123,22 @@ resolved profile is printed in the run banner, e.g.
 `Profile: markdown (auto-detected)`.
 
 ```bash
-rustydocs --list-profiles                        # print the built-in profiles
-rustydocs --content-dir ./docs --profile hugo    # force a profile
+rustydocs --list-profiles                          # print the built-in profiles
+rustydocs --content-dir ./docs --profile hugo      # force a profile
+
+# A Mintlify project: docs.json at the repo root is detected automatically, and
+# every <Snippet file="…" /> on a page folds the snippet's own commit
+# date into the section that includes it.
+rustydocs --content-dir ./docs --output-dir ./reports --threshold-days 90
+rustydocs --content-dir ./docs --profile mintlify  # or name it explicitly
+
+# No docs.json (a docs subtree checked out on its own, say)? Name the root, or
+# snippet paths have nothing to resolve against.
+rustydocs --content-dir ./docs --profile mintlify --project-root .
+
+# --project-root alone never changes the profile: on a repo with a docs.json
+# this is still a mintlify run.
+rustydocs --content-dir ./docs --project-root .
 ```
 
 Or in `config.json`: `"profile": "hugo"` (empty string = auto-detect).
@@ -106,7 +160,7 @@ Create a `config.json` file:
   "threshold_days": 90,
   "profile": "",
   "content_dir": "src/hugo/docsy/content/en",
-  "hugo_root": "src/hugo/docsy",
+  "project_root": "src/hugo/docsy",
   "output_dir": "./reports",
   "exclude_dirs": ["images", "releasenotes"],
   "staleness_levels": {
@@ -122,13 +176,14 @@ Create a `config.json` file:
 | Option                 | Description                                        | Default                      |
 | ---------------------- | -------------------------------------------------- | ---------------------------- |
 | `threshold_days`       | Days before content is considered stale            | 90                           |
-| `profile`              | Documentation profile (`markdown`, `hugo`); empty = auto-detect | (auto-detect)   |
+| `profile`              | Documentation profile (`markdown`, `mintlify`, `hugo`); empty = auto-detect | (auto-detect)   |
 | `content_dir`          | Directory containing documentation files           | (required)                   |
 | `content_extensions`   | File extensions to analyze                         | from profile                 |
-| `hugo_root`            | Hugo project root (auto-detected for the `hugo` profile) | (auto-detect)          |
+| `project_root`         | Project root reusables resolve against — the Hugo site root, or the Mintlify project root snippet paths are relative to (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
+| `hugo_root`            | **Deprecated** spelling of `project_root`. On its own it still supplies the root, with a deprecation warning telling you to rename it; when `project_root` (or `--project-root`) is set too, that one wins and `hugo_root` is *ignored*, with a warning saying so. Unlike `project_root` it keeps its legacy side effect: it selects the `hugo` profile when no marker is found | (auto-detect)          |
 | `output_dir`           | Output directory for reports                       | `./reports`                  |
 | `reusables.dir`        | Directory containing reusable component files      | (optional)                   |
-| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `markdown`: none) |
+| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `mintlify`: `<Snippet file>`; `markdown`: none) |
 | `exclude_patterns`     | Glob patterns to exclude files                     | `[]`                         |
 | `exclude_dirs`         | Directory names to exclude entirely                | `[]`                         |
 | `staleness_levels`     | Thresholds for warning/caution/critical            | 90/180/365                   |
@@ -146,11 +201,74 @@ Under the `hugo` profile, when you use Hugo shortcodes like `{{< alert >}}`, rus
 
 This means if your content uses `{{< reusables/warning >}}` and that shortcode reads from `data/reusables/warning.md`, the staleness check includes the data file's last modification date.
 
-The `hugo_root` is auto-detected by walking up from `content_dir` (no further than the enclosing git repository root, though a submodule `content/` is walked through into its parent repository) until finding a `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config; finding one is also what selects the `hugo` profile.
+The project root is auto-detected by walking up from `content_dir` (no further than the enclosing git repository root, though a submodule `content/` is walked through into its parent repository) until finding a `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config; finding one is also what selects the `hugo` profile. Set `project_root` / `--project-root` to override the detected root; on a site with none of those markers, pair it with `--profile hugo`.
+
+### Mintlify Snippet Resolution
+
+Under the `mintlify` profile, a snippet include carries the file path outright,
+so there is nothing to trace — the path *is* the answer:
+
+```mdx
+<Snippet file="aws-access-key-config.mdx" />
+<Snippet file="cloud/prerequisites.mdx" />
+```
+
+Mintlify resolves a `file=` like that against the project's **snippets
+directory**, not against the page and not against the project root, and that
+bare form is what real projects overwhelmingly write. The **path resolver**
+follows the same order:
+
+1. A path starting with `/` is resolved against the **project root** (the
+   directory holding `docs.json` / `mint.json`) and nowhere else — Mintlify's
+   root-absolute form.
+2. A path starting with `./` or `../` is resolved against the directory of the
+   **page that references it** first, then falls through to the bases below.
+3. Anything else — a bare filename or a bare relative path, the common form —
+   is resolved against `<root>/snippets/`, then `<root>/_snippets/`, then the
+   project root, and only then against the referencing page's directory as a
+   tolerant last resort. A name present in both `snippets/` and next to the
+   page therefore resolves to `snippets/`, which is what Mintlify renders.
+4. A path with no extension is tried against `.mdx` and `.md` (and then against
+   `<path>/index.mdx`, `<path>/index.md`), so a slightly loose reference still
+   resolves. The first candidate that exists wins.
+5. A path that leaves the project root is **ignored**, so a report never reaches
+   outside the docs project. Containment is checked after resolving symlinks on
+   both the candidate and the root, so neither a `..` traversal nor a symlink
+   inside the tree that points somewhere else (`snippets/out -> /elsewhere`)
+   can fold a foreign file's commit date into the report. A symlink whose
+   target stays inside the root resolves normally.
+
+The resolved file's last commit date is folded into the section that includes
+it, exactly as Hugo shortcodes are — a stale-looking page whose snippet was
+updated last week is not stale. A reference that resolves to nothing (a missing
+or uncommitted snippet) is reported as *unknown*, never as fresh.
+
+Resolution needs a project root. Under auto-detection that is the directory
+holding `docs.json` / `mint.json`; on a tree with neither (or with
+`--profile mintlify` forced), pass `--project-root PATH` — otherwise there is
+nothing to resolve against and every snippet is reported *unknown*.
+
+Whenever any reference comes back unresolved, rustydocs prints a note on stderr
+counting them and naming the profile, whether or not a root was found; when the
+root is what is missing, the note says so and points at `--project-root`. A run
+where everything resolved, or one with no includes at all, stays quiet. The
+exit code is unchanged either way.
+
+Reports name a snippet by its path relative to the project root, and that path
+comes from resolving the reference, not from git — so two pages that both write
+`<Snippet file="new.mdx" />` and mean two different files stay two rows even
+when neither file has been committed yet.
+
+Both quote styles are recognised (`file="…"` and `file='…'`), in any attribute
+position. Only `<Snippet …>` itself counts: a bare `<Card />`, a `<Tabs>`, or a
+`<SnippetGroup file="…">` on a Mintlify page is **not** a reusable, because its
+name does not identify a snippet file. Snippets
+brought in with an `import` statement and used as `<X />` need an import map and
+are not resolved yet (#13/#18/#19).
 
 ### Default Component Patterns
 
-The `hugo` profile detects (the `markdown` profile detects nothing unless you set `reusables.patterns`):
+The `hugo` profile detects (the `markdown` profile detects nothing unless you set `reusables.patterns`; the `mintlify` profile detects only `<Snippet file="…" />`, see above):
 
 **Hugo shortcodes** (all styles):
 - `{{< shortcode >}}`
@@ -175,7 +293,12 @@ Options:
   --threshold-days INT    Days before content is considered stale (default: 90)
   --exclude-dirs STRING   Comma-separated directories to exclude
   --extensions STRING     Comma-separated documentation extensions to analyze (default: from profile)
-  --profile NAME          Documentation profile: hugo, markdown (default: auto-detect)
+  --profile NAME          Documentation profile: hugo, markdown, mintlify (default: auto-detect)
+  --project-root PATH     Project root that reusable references resolve against (Hugo site
+                          root, Mintlify docs root); default: detected from the profile's
+                          markers. It never selects a profile on its own, so pair it with
+                          --profile on a project whose markers are absent. Config-file
+                          spelling: "project_root" (deprecated: "hugo_root")
   --list-profiles         List built-in profiles and exit
   --file-level-only       Skip section-level analysis (faster)
   --paragraph-level       Analyze at paragraph level (more granular)
@@ -269,7 +392,7 @@ Generated: 2025-12-10 | Threshold: 90 days
 1. **Resolves** a profile (`--profile`, or auto-detected from the content dir) and **scans** the files whose extensions it lists
 2. **Parses** content to identify sections by headers (`#`, `##`, `###`)
 3. **Runs** `git blame` concurrently to get per-line modification dates
-4. **Detects** reusable components (Hugo shortcodes, JSX — `hugo` profile) and checks their freshness
+4. **Detects** reusable components (Hugo shortcodes, JSX — `hugo` profile; `<Snippet file>` includes — `mintlify` profile) and checks their freshness
 5. **Calculates** section staleness based on the oldest line in each section
 6. **Generates** reports in JSON, Markdown, and HTML
 

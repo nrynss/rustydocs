@@ -130,9 +130,13 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
 		extensions     = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: from profile)")
 		profile        = fs.String("profile", "", "Documentation profile: "+strings.Join(config.Profiles(), ", ")+" (default: auto-detect)")
-		listProfiles   = fs.Bool("list-profiles", false, "List built-in profiles and exit")
-		workers        = fs.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
-		showVersion    = fs.Bool("version", false, "Show version and exit")
+		projectRoot    = fs.String("project-root", "", "Project root that reusable references resolve against "+
+			"(Hugo site root, Mintlify docs root); default: detected from the profile's markers. "+
+			"It never selects a profile on its own, so pair it with --profile on a project whose "+
+			"markers are absent. Config-file spelling: \"project_root\" (deprecated: \"hugo_root\")")
+		listProfiles = fs.Bool("list-profiles", false, "List built-in profiles and exit")
+		workers      = fs.Int("workers", 0, "Number of parallel workers (default: number of CPUs)")
+		showVersion  = fs.Bool("version", false, "Show version and exit")
 	)
 
 	fs.Usage = func() {
@@ -219,6 +223,9 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	if *profile != "" {
 		cfg.Profile = *profile
 	}
+	if *projectRoot != "" {
+		cfg.ProjectRoot = *projectRoot
+	}
 
 	// Resolve the documentation profile (explicit --profile / "profile", else
 	// auto-detected from the content dir) and fill in the profile-dependent
@@ -249,6 +256,20 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "Analyzing documentation in: %s\n", cfg.ContentDir)
 	fmt.Fprintf(stdout, "Profile: %s\n", describeProfile(cfg))
 	fmt.Fprintf(stdout, "Threshold: %d days | Workers: %d\n\n", cfg.ThresholdDays, workerCount)
+
+	// Non-fatal diagnostics from profile resolution (an unreadable candidate
+	// root marker, which silently falls through to another profile). The
+	// config package never prints, so they surface here (#7).
+	for _, w := range cfg.Warnings {
+		fmt.Fprintf(stderr, "Warning: %s\n", w)
+	}
+
+	// A root the user supplied that the resolved profile never reads. Printed
+	// here, beside the other configuration diagnostics, because it is about
+	// the run's setup rather than its findings (#7).
+	if note := describeUnusedProjectRoot(cfg); note != "" {
+		fmt.Fprintf(stderr, "Note: %s\n", note)
+	}
 
 	results, err := analyzer.AnalyzeWithProgress(cfg, stdout)
 	if err != nil {
@@ -321,7 +342,146 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 			describeSkippedExtensions(cfg, skipped, results.SkippedExtensions()))
 	}
 
+	// Some reusable references produced no resolved history and were reported
+	// unknown. Silence there looks like a clean run, so say how many, name the
+	// first few, and — if the cause was a project root that was never found —
+	// how to fix it (#7).
+	if note := describeUnresolvedReusables(cfg,
+		results.UnresolvedReusables(), results.UnresolvedReusableRefs()); note != "" {
+		fmt.Fprintf(stderr, "\nNote: %s\n", note)
+	}
+
 	return nil
+}
+
+// describeUnresolvedReusables returns the stderr note for a run in which some
+// reusable references produced no resolved history and were therefore reported
+// *unknown*. unresolved is the count of those references
+// (analyzer.Results.UnresolvedReusables) and refs the distinct captures behind
+// it (analyzer.Results.UnresolvedReusableRefs); "" is returned when nothing
+// failed, or when the resolved profile is not one the note can speak for.
+//
+// It is scoped to config.ResolverPath — Mintlify today. Under that resolver
+// the capture *is* a file path, so every unresolved reference is a genuine
+// defect the reader can act on. Under the hugo resolver it is not: the
+// profile's second pattern captures every capitalised JSX/HTML tag on the
+// page, and <Tabs>, <Card>, <Badge> and friends are simply not shortcodes, so
+// on a real MDX site the note's population was overwhelmingly noise (measured
+// at 1 actionable capture in 8). Those rows still appear in the report as
+// level "unknown", which is where a Hugo user should look; what is removed is
+// a stderr note that cried wolf on every run (#7 review pass 4).
+//
+// Within that scope the note is driven by the count, not by whether a project
+// root was found. Gating it on a missing root (as it once was) made the far
+// more common failure invisible: a Mintlify project whose root is right there
+// next to docs.json, where the snippet paths simply did not resolve, exited 0
+// with an empty stderr and a report full of "unknown". A root that was never
+// found is only the most diagnosable *cause*, so it adds a sentence rather
+// than deciding whether anything is said at all.
+//
+// The wording covers both ways a reference lands here, because the analyzer
+// cannot tell them apart for every resolver and the reader has to check both:
+// the file is missing (a typo, a moved snippet), or it exists and resolves
+// fine but has never been committed, so git offers no date for it. The note
+// used to claim only the first, which was wrong for an uncommitted snippet
+// that the report meanwhile listed under its correct resolved path (#7 review
+// pass 4).
+//
+// The exit code is unchanged either way: unresolved includes are a
+// data-quality note, not a failure.
+func describeUnresolvedReusables(cfg *config.Config, unresolved int, refs []string) string {
+	if unresolved <= 0 || cfg.ResolvedProfile.Resolver != config.ResolverPath {
+		return ""
+	}
+	var b strings.Builder
+	// The count is per file per capture; refs is deduplicated across the run, so
+	// the two differ whenever one broken include is referenced by several pages.
+	// Say so, rather than letting a reader hunt for a name that was collapsed.
+	distinct := ""
+	if len(refs) > 0 && len(refs) != unresolved {
+		distinct = fmt.Sprintf(" (%d distinct)", len(refs))
+	}
+	fmt.Fprintf(&b, "profile %q: %d reusable reference(s)%s resolved to no file with git history "+
+		"(the file is missing, or it exists but has never been committed) "+
+		"and are reported as unknown, never as fresh%s",
+		cfg.ResolvedProfile.Name, unresolved, distinct, describeUnresolvedRefs(refs))
+
+	if cfg.ProjectRoot != "" || len(cfg.ResolvedProfile.RootMarkers) == 0 {
+		return b.String()
+	}
+
+	// No project root: for a resolver that works relative to one, that alone
+	// explains every failure, and naming the markers that were looked for is
+	// what turns the note into something actionable.
+	fmt.Fprintf(&b, " No project root was found — no %s at or above %s (the search stops at "+
+		"the enclosing git repository) — so snippet path references "+
+		"(e.g. <Snippet file=\"aws-config.mdx\" />) had nothing to resolve against. "+
+		"Pass --project-root PATH (or set \"project_root\" in the config file) to point at it.",
+		joinOr(cfg.ResolvedProfile.RootMarkers), cfg.ContentDir)
+	return b.String()
+}
+
+// joinOr renders a list of alternatives the way prose wants them ("a, b or c")
+// rather than as a bare comma-joined list, which reads as if it were truncated.
+func joinOr(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
+}
+
+// unresolvedRefsShown caps how many captures describeUnresolvedRefs names
+// before it summarises the rest. Three is enough to recognise the pattern
+// ("they are all under /snippets/") without turning one stderr line into a
+// wall of text on a project that broke a shared include.
+const unresolvedRefsShown = 3
+
+// describeUnresolvedRefs renders the tail of the unresolved-reusables note:
+// the captures themselves, truncated, and always ending the sentence. Callers
+// concatenate it directly, so it returns "." when there is nothing to name.
+func describeUnresolvedRefs(refs []string) string {
+	if len(refs) == 0 {
+		return "."
+	}
+	shown, more := refs, ""
+	if len(refs) > unresolvedRefsShown {
+		shown = refs[:unresolvedRefsShown]
+		more = fmt.Sprintf(" and %d more", len(refs)-unresolvedRefsShown)
+	}
+	return fmt.Sprintf(": %s%s.", strings.Join(shown, ", "), more)
+}
+
+// describeUnusedProjectRoot returns the stderr note for a run where the user
+// supplied a project root that the resolved profile has no use for: it has no
+// root markers, or it resolves no reusable references at all. The root is
+// still validated (a path that does not exist is an error), and then simply
+// never read — and describeProfile deliberately keeps it out of the banner in
+// exactly that case, so without this note the run says nothing whatsoever
+// about it.
+//
+// This is the likeliest migration error the project_root rename creates. A
+// markerless Hugo site whose config said "hugo_root" used to get the hugo
+// profile — that key selected it — and with it shortcode tracing. The same
+// site migrated to "project_root" / --project-root gets "markdown" instead,
+// because the current spelling never selects a profile, and the .md files
+// still match, so the run looks entirely healthy while every shortcode has
+// quietly stopped being traced. Naming --profile is the fix (#7 review
+// pass 4).
+func describeUnusedProjectRoot(cfg *config.Config) string {
+	if !cfg.RootFromUser {
+		return ""
+	}
+	p := cfg.ResolvedProfile
+	if len(p.RootMarkers) > 0 && p.Resolver != config.ResolverNone {
+		return ""
+	}
+	return fmt.Sprintf("the project root %q is not used by the %q profile, which resolves no "+
+		"reusable references against one, so it was ignored. A root never selects a profile: "+
+		"pass --profile to name the one this project uses (see --list-profiles).",
+		cfg.ProjectRoot, p.Name)
 }
 
 // describeActiveExtensions renders the extension allowlist that was in force
@@ -390,8 +550,8 @@ func describeProfile(cfg *config.Config) string {
 	if cfg.ProfileAuto {
 		notes = append(notes, "auto-detected")
 	}
-	if cfg.HugoRoot != "" && len(cfg.ResolvedProfile.RootMarkers) > 0 {
-		notes = append(notes, "root: "+cfg.HugoRoot)
+	if cfg.ProjectRoot != "" && len(cfg.ResolvedProfile.RootMarkers) > 0 {
+		notes = append(notes, "root: "+cfg.ProjectRoot)
 	}
 	if len(notes) == 0 {
 		return cfg.ResolvedProfile.Name

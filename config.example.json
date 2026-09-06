@@ -2,7 +2,7 @@
   "threshold_days": 90,
   "profile": "",
   "content_dir": "src/hugo/docsy/content/en",
-  "hugo_root": "src/hugo/docsy",
+  "project_root": "src/hugo/docsy",
   "output_dir": "./reports",
   "reusables": {
     "dir": "src/hugo/docsy/data/reusables",
