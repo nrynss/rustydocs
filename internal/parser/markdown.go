@@ -860,14 +860,57 @@ func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileIn
 	if a, err := filepath.Abs(abs); err == nil {
 		abs = a
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
+
+	// Containment is decided on the symlink-resolved form, so a path reached
+	// through a symlinked tree is still recognised as inside the project. The
+	// *label*, though, is built from the spelling the reference actually used:
+	// filepath.EvalSymlinks case-normalises on Windows and nowhere else, so
+	// resolving the label would relabel a broken "/snippets/Note.mdx" as the
+	// neighbouring "snippets/note.mdx" that happens to exist — pointing the
+	// reader at the wrong file for a reference that did not resolve, and
+	// reporting a different name per platform for one repository.
+	checked := abs
+	if resolved, err := filepath.EvalSymlinks(checked); err == nil {
+		checked = resolved
 	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !relWithin(root, checked) {
 		return ref
 	}
-	return filepath.ToSlash(rel)
+
+	// Prefer the unresolved spelling; fall back to the resolved one when the
+	// two roots disagree (an unresolved path under a symlinked root will not
+	// be relative to the resolved root at all).
+	if rel, ok := relUnder(rp.root, abs); ok {
+		return rel
+	}
+	rel, ok := relUnder(root, checked)
+	if !ok {
+		return ref
+	}
+	return rel
+}
+
+// relWithin reports whether path sits inside base.
+func relWithin(base, path string) bool {
+	_, ok := relUnder(base, path)
+	return ok
+}
+
+// relUnder returns path relative to base in slash form, and whether it is
+// inside base at all. base is made absolute first so a relative project root
+// still works.
+func relUnder(base, path string) (string, bool) {
+	if base == "" {
+		return "", false
+	}
+	if a, err := filepath.Abs(base); err == nil {
+		base = a
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 // displayTarget returns the file a reference names, for labelling purposes: the
