@@ -100,7 +100,6 @@ func bugfixResults(t *testing.T) (*analyzer.Results, *config.Config) {
 	allReusableFreshTS := daysAgo(10)
 	cfg := config.DefaultConfig()
 	cfg.ContentDir = "docs"
-	cfg.ShowReusables = true
 
 	res := &analyzer.Results{
 		Files:       []analyzer.FileAnalysis{staleFile, missingHistoryFile},
@@ -146,6 +145,69 @@ func TestGenerateHTML(t *testing.T) {
 	// 400 is the exact day-delta for the critical section under the pinned now.
 	if !strings.Contains(html, "400") {
 		t.Error("HTML missing the 400-day staleness value for the critical section")
+	}
+}
+
+// TestGenerateHTMLReusablesTable pins the top-level "Reusable Components"
+// table. html.go always built TemplateData.Reusables and the template never
+// referenced it, so the HTML report silently dropped every reusable while
+// Markdown and JSON listed them. The table must render outside the tab
+// sections (reusables are not per-tab) with one row per entry, carrying the
+// fresh/stale/unknown status class, and it must be omitted entirely when there
+// are no reusables.
+func TestGenerateHTMLReusablesTable(t *testing.T) {
+	pinNow(t)
+	res, cfg := bugfixResults(t)
+
+	out := filepath.Join(t.TempDir(), "out.html")
+	if err := GenerateHTML(res, cfg, out); err != nil {
+		t.Fatalf("GenerateHTML: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+
+	if !strings.Contains(html, "Reusable Components (2)") {
+		t.Errorf("HTML missing the Reusable Components heading and count:\n%s", html)
+	}
+	// A reusable with a known date renders its date, "Fresh" and its author.
+	freshRow := regexp.MustCompile(`(?s)<tr class="fresh">.*?top-fresh</td>.*?<td>2026-06-14</td>.*?<td>Fresh</td>.*?<td>Margaret Hamilton</td>`)
+	if !freshRow.MatchString(html) {
+		t.Errorf("HTML: fresh reusable row did not render:\n%s", html)
+	}
+	// One with no resolvable date stays Unknown rather than becoming fresh.
+	unknownRow := regexp.MustCompile(`(?s)<tr class="unknown">.*?top-unknown</td>.*?<td>Unknown</td>.*?<td>Unknown</td>.*?<td>Unknown</td>`)
+	if !unknownRow.MatchString(html) {
+		t.Errorf("HTML: unknown-date reusable row did not render:\n%s", html)
+	}
+	// The table is global information, so it must sit before the tab strip.
+	tableAt := strings.Index(html, `<table class="sections-table reusables-table">`)
+	tabsAt := strings.Index(html, `<div class="tabs">`)
+	if tableAt < 0 || tabsAt < 0 || tableAt > tabsAt {
+		t.Errorf("reusables table must render before the tab sections (table=%d tabs=%d)", tableAt, tabsAt)
+	}
+	// Every status class the generator can emit must exist in the stylesheet
+	// (or be deliberately unstyled): guard against a row class with no rule.
+	for _, cls := range []string{".reusables-table tr.fresh", ".reusables-table tr.stale"} {
+		if !strings.Contains(html, cls) {
+			t.Errorf("stylesheet missing rule for %q", cls)
+		}
+	}
+
+	// With no reusables at all the section disappears entirely.
+	res.AllReusables = nil
+	empty := filepath.Join(t.TempDir(), "empty.html")
+	if err := GenerateHTML(res, cfg, empty); err != nil {
+		t.Fatalf("GenerateHTML (no reusables): %v", err)
+	}
+	emptyData, err := os.ReadFile(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(emptyData), "Reusable Components") {
+		t.Error("HTML rendered the Reusable Components section with no reusables")
 	}
 }
 

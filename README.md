@@ -207,9 +207,9 @@ anything is blamed, because a real docs repo is mostly not documentation:
    directory (its files resolve against the submodule's own repository, which
    is where their history lives).
 3. **Files git ignores.** rustydocs asks git itself, in one batched
-   `git check-ignore` for the whole run, so nested `.gitignore` files,
-   negations, `core.excludesFile` and the index are all honoured exactly. A
-   *tracked* file is never dropped, however the patterns read.
+   `git check-ignore` per repository the walk touched, so nested `.gitignore`
+   files, negations, `core.excludesFile` and the index are all honoured
+   exactly. A *tracked* file is never dropped, however the patterns read.
 
 A content tree that is not a git repository still works: the name rules apply,
 the ignore query is skipped, and its files are reported *unknown* as they always
@@ -217,7 +217,7 @@ were. The content root itself is never pruned, so `--content-dir .` at a
 repository root, or pointing straight at a dot-directory, does what you meant.
 
 Measured on a production Mintlify site, this took a run from 4,032 files in
-48.7 s with 1,078 files reported as having no git history, to 551 files in 7.5 s
+48.7 s with 1,078 files reported as having no git history, to 552 files in 7.5 s
 with none.
 
 When the defaults remove anything, rustydocs prints a note on stderr naming the
