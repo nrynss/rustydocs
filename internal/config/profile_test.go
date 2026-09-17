@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -822,7 +823,7 @@ func TestApplyProfile(t *testing.T) {
 				for _, w := range c.Warnings {
 					if strings.Contains(w, `"hugo_root" is deprecated`) &&
 						strings.Contains(w, "was ignored") &&
-						strings.Contains(w, plainContent) {
+						strings.Contains(w, strconv.Quote(plainContent)) {
 						warned = true
 					}
 				}
@@ -1720,7 +1721,7 @@ func TestApplyProfile_ExplicitRootMustExist(t *testing.T) {
 		if err == nil {
 			t.Fatal("ApplyProfile() = nil, want an error for a nonexistent project root")
 		}
-		if !strings.Contains(err.Error(), missing) {
+		if !strings.Contains(err.Error(), strconv.Quote(missing)) {
 			t.Errorf("error does not name the path: %v", err)
 		}
 		if !strings.Contains(err.Error(), "--project-root") || !strings.Contains(err.Error(), "project_root") {
@@ -1825,10 +1826,6 @@ func TestApplyProfile_ExplicitRootMustExist(t *testing.T) {
 // but the reason is now recorded on Config.Warnings for the CLI to print
 // (#7 review pass 2).
 func TestApplyProfile_UnreadableMarkerWarns(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: an unreadable file is still readable")
-	}
-
 	newTree := func(t *testing.T, docsJSON string) (root, content string) {
 		t.Helper()
 		root = t.TempDir()
@@ -1845,10 +1842,7 @@ func TestApplyProfile_UnreadableMarkerWarns(t *testing.T) {
 	t.Run("unreadable docs.json warns and detection falls through", func(t *testing.T) {
 		root, content := newTree(t, mintlifyConfigJSON)
 		marker := filepath.Join(root, "docs.json")
-		if err := os.Chmod(marker, 0o000); err != nil {
-			t.Skipf("chmod unavailable: %v", err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+		makeUnreadable(t, marker)
 
 		cfg := Config{ContentDir: content}
 		if err := cfg.ApplyProfile(); err != nil {
@@ -1876,10 +1870,7 @@ func TestApplyProfile_UnreadableMarkerWarns(t *testing.T) {
 	t.Run("an unreadable marker alongside a readable one still selects the profile", func(t *testing.T) {
 		root, content := newTree(t, mintlifyConfigJSON)
 		marker := filepath.Join(root, "docs.json")
-		if err := os.Chmod(marker, 0o000); err != nil {
-			t.Skipf("chmod unavailable: %v", err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+		makeUnreadable(t, marker)
 		if err := os.WriteFile(filepath.Join(root, "mint.json"), []byte(mintlifyConfigJSON), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1936,10 +1927,7 @@ func TestApplyProfile_UnreadableMarkerWarns(t *testing.T) {
 	t.Run("warnings do not accumulate across calls", func(t *testing.T) {
 		root, content := newTree(t, mintlifyConfigJSON)
 		marker := filepath.Join(root, "docs.json")
-		if err := os.Chmod(marker, 0o000); err != nil {
-			t.Skipf("chmod unavailable: %v", err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+		makeUnreadable(t, marker)
 
 		cfg := Config{ContentDir: content}
 		for i := 0; i < 3; i++ {
@@ -1996,5 +1984,21 @@ func TestIsMintlifyConfig_SizeCap(t *testing.T) {
 	}
 	if got {
 		t.Error("isMintlifyConfig(over the cap) = true, want false: the file is truncated at the cap")
+	}
+}
+
+// makeUnreadable chmods path so it cannot be read, and skips the test when the
+// platform does not honour that. os.Chmod on Windows only toggles the
+// read-only attribute, so a 0o000 file is still perfectly readable there, and
+// root ignores the mode entirely — in both cases the scenario under test
+// cannot be set up at all, which is not a failure of the code.
+func makeUnreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skipf("%s is still readable after chmod 000 (Windows, or running as root)", path)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1498,7 +1499,7 @@ func TestRunArgs_ExplicitRootMustExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("runArgs() = nil, want an error for a nonexistent --project-root")
 	}
-	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "--project-root") {
+	if !strings.Contains(err.Error(), strconv.Quote(missing)) || !strings.Contains(err.Error(), "--project-root") {
 		t.Errorf("error = %v, want it to name the path and the flag", err)
 	}
 	if strings.Contains(out.String(), "Analyzing documentation") {
@@ -1510,19 +1511,13 @@ func TestRunArgs_ExplicitRootMustExist(t *testing.T) {
 // still does not select the mintlify profile, but the user is now told why
 // instead of silently getting a markdown run (#7 review pass 2).
 func TestRunArgs_UnreadableMarkerWarning(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: an unreadable file is still readable")
-	}
 	repo := testutil.NewRepo(t)
 	repo.Commit(time.Now().AddDate(0, 0, -200), "docs", map[string]string{
 		"docs.json":     mintlifyConfigJSON,
 		"docs/page.mdx": "# Page\n\nbody\n",
 	})
 	marker := repo.Path("docs.json")
-	if err := os.Chmod(marker, 0o000); err != nil {
-		t.Skipf("chmod unavailable: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(marker, 0o600) })
+	makeUnreadable(t, marker)
 
 	outDir := filepath.Join(t.TempDir(), "reports")
 	var out, errb bytes.Buffer
@@ -1532,6 +1527,7 @@ func TestRunArgs_UnreadableMarkerWarning(t *testing.T) {
 	}, &out, &errb); err != nil {
 		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
 	}
+	// This warning renders the path with %s, not %q, so match it unquoted.
 	if !strings.Contains(errb.String(), marker) || !strings.Contains(errb.String(), "mintlify") {
 		t.Errorf("stderr should name the unreadable marker and the profile it would have selected:\n%s", errb.String())
 	}
@@ -1573,5 +1569,21 @@ func TestRunArgs_UncommittedSnippetsStayDistinct(t *testing.T) {
 	want := []string{"docs/a/new.mdx", "docs/g/new.mdx"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("reusables = %v, want two distinct rows %v", names, want)
+	}
+}
+
+// makeUnreadable chmods path so it cannot be read, and skips the test when the
+// platform does not honour that. os.Chmod on Windows only toggles the
+// read-only attribute, so a 0o000 file is still perfectly readable there, and
+// root ignores the mode entirely — in both cases the scenario under test
+// cannot be set up at all, which is not a failure of the code.
+func makeUnreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skipf("%s is still readable after chmod 000 (Windows, or running as root)", path)
 	}
 }
