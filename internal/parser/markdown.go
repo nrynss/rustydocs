@@ -657,7 +657,13 @@ func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, b
 			if info, err := os.Stat(candidate); err != nil || info.IsDir() {
 				continue
 			}
-			if !rp.caseExactUnder(base, candidate) {
+			// Check from the project root, not from base: for a page-relative
+			// "../Snippets/note.mdx" the candidate climbs out of the page's
+			// directory, and caseExactUnder would then verify only the file
+			// name — letting a mis-cased *directory* through, which is the
+			// same defect this gate exists to close. withinRoot has already
+			// established the candidate is under the root.
+			if !rp.caseExactUnder(rp.root, candidate) {
 				// A case-insensitive filesystem said yes to a spelling the
 				// file does not actually have — <Note /> finding
 				// snippets/note.mdx. Accepting it would make the report

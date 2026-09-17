@@ -252,3 +252,33 @@ func TestCaseExactUnder_OutsideBaseChecksTheFileName(t *testing.T) {
 		t.Error("../Sibling.mdx must not resolve: the name does not match the file")
 	}
 }
+
+// TestResolveDirectPath_CaseExactAcrossDotDot covers the escape hatch in
+// caseExactUnder: a page-relative capture that climbs out of the page's own
+// directory. Verifying only the file name there would let a mis-cased
+// *directory* through on a case-insensitive filesystem, which is the same
+// defect the gate exists to close, so the check runs from the project root.
+//
+// This asserts resolveDirectPath rather than ResolveReusable on purpose: git
+// pathspecs are case-exact, so a mis-cased path that the resolver wrongly
+// accepts still finds no history on macOS and Linux and the defect stays
+// invisible one layer up. Windows normalises the case before git sees it, and
+// then it is not invisible at all.
+func TestResolveDirectPath_CaseExactAcrossDotDot(t *testing.T) {
+	cr := newCaseRepo(t)
+	t.Logf("filesystem is case-insensitive: %v",
+		filesystemIsCaseInsensitive(t, cr.repo.Dir))
+
+	// The page lives in guides/, so "../snippets/note.mdx" names the real file.
+	if target, ok := cr.rp.resolveDirectPath("../snippets/note.mdx", cr.page); !ok {
+		t.Errorf("exact ../ capture did not resolve (got %q)", target)
+	}
+	// Only the directory's case differs, so it must not resolve.
+	for _, ref := range []string{"../Snippets/note.mdx", "../SNIPPETS/note.mdx"} {
+		if target, ok := cr.rp.resolveDirectPath(ref, cr.page); ok {
+			t.Errorf("resolveDirectPath(%q) = %q, true; want no match: a mis-cased "+
+				"directory after \"..\" must not resolve to a differently-cased one",
+				ref, target)
+		}
+	}
+}
