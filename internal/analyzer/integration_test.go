@@ -3,6 +3,9 @@ package analyzer
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +107,129 @@ func TestAnalyze_HugoSiteFixture(t *testing.T) {
 	}
 	if note.LastUpdated == nil {
 		t.Error("'note' shortcode was not resolved to a date (Hugo root / readFile tracing)")
+	}
+}
+
+// TestAnalyze_ProfilesControlReusableDetection pins #11: a plain Markdown
+// repo (no layouts/ above it) auto-selects the markdown profile, under which
+// Hugo shortcodes and MDX components in the text are NOT treated as reusables.
+// Selecting the hugo profile explicitly turns detection back on.
+func TestAnalyze_ProfilesControlReusableDetection(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/page.md":   "# Intro\n\nSee <Foo /> and {{< bar >}} here.\n",
+		"docs/other.mdx": "# MDX\n\nonly analyzed under hugo\n",
+	})
+
+	countReusables := func(res *Results) int {
+		n := 0
+		for _, f := range res.Files {
+			for _, s := range f.Sections {
+				n += len(s.Reusables)
+			}
+		}
+		return n
+	}
+
+	// Auto: markdown profile.
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(auto): %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMarkdown || !cfg.ProfileAuto {
+		t.Errorf("resolved %q auto=%v, want markdown auto-detected", cfg.ResolvedProfile.Name, cfg.ProfileAuto)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("markdown profile should analyze only page.md, got %d files", res.TotalFiles())
+	}
+	if n := countReusables(res); n != 0 || len(res.AllReusables) != 0 {
+		t.Errorf("markdown profile must not detect reusables; sections=%d all=%v", n, res.AllReusables)
+	}
+
+	// Explicit hugo profile.
+	hugoCfg := config.DefaultConfig()
+	hugoCfg.ContentDir = repo.Path("docs")
+	hugoCfg.Profile = config.ProfileHugo
+	res, err = Analyze(hugoCfg)
+	if err != nil {
+		t.Fatalf("Analyze(hugo): %v", err)
+	}
+	if hugoCfg.ResolvedProfile.Name != config.ProfileHugo || hugoCfg.ProfileAuto {
+		t.Errorf("resolved %q auto=%v, want explicit hugo", hugoCfg.ResolvedProfile.Name, hugoCfg.ProfileAuto)
+	}
+	if res.TotalFiles() != 2 {
+		t.Errorf("hugo profile should analyze .md and .mdx, got %d files", res.TotalFiles())
+	}
+	names := map[string]bool{}
+	for _, r := range res.AllReusables {
+		names[r.Name] = true
+	}
+	if !names["Foo"] || !names["bar"] {
+		t.Errorf("hugo profile should detect Foo and bar, got %v", res.AllReusables)
+	}
+}
+
+// TestAnalyze_FilesExcluded pins the diagnostic count behind the zero-files
+// warning (#11): files whose extension matched the allowlist but which
+// exclude_dirs / exclude_patterns dropped are counted in FilesExcluded, while
+// files of other extensions are not (they never matched to begin with).
+func TestAnalyze_FilesExcluded(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/keep.md":            "# Keep\n\nbody\n",
+		"docs/drafts/a.md":        "# A\n\nbody\n",
+		"docs/drafts/b.markdown":  "# B\n\nbody\n",
+		"docs/drafts/notes.txt":   "not content\n",
+		"docs/CHANGELOG.md":       "# Changes\n\nbody\n",
+		"docs/other/skipped.json": "{}",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludeDirs = []string{"drafts"}
+	cfg.ExcludePatterns = []string{"CHANGELOG.md"}
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (keep.md)", res.TotalFiles())
+	}
+	if got := res.FilesExcluded(); got != 3 {
+		t.Errorf("FilesExcluded = %d, want 3 (drafts/a.md, drafts/b.markdown, CHANGELOG.md)", got)
+	}
+
+	// Everything excluded (dir rule plus a glob on the rest): zero analyzed,
+	// every extension match counted.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludeDirs = []string{"drafts"}
+	cfg.ExcludePatterns = []string{"*.md"}
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(all excluded): %v", err)
+	}
+	if res.TotalFiles() != 0 || res.FilesExcluded() != 4 {
+		t.Errorf("all excluded: TotalFiles=%d FilesExcluded=%d, want 0 and 4", res.TotalFiles(), res.FilesExcluded())
+	}
+
+	// No exclusions: nothing is counted as excluded.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(no exclusions): %v", err)
+	}
+	if res.TotalFiles() != 4 || res.FilesExcluded() != 0 {
+		t.Errorf("no exclusions: TotalFiles=%d FilesExcluded=%d, want 4 and 0", res.TotalFiles(), res.FilesExcluded())
 	}
 }
 
@@ -281,5 +407,352 @@ func TestResults_Accessors(t *testing.T) {
 	}
 	if empty.OldestFile() != nil {
 		t.Error("empty Results OldestFile should be nil")
+	}
+}
+
+// TestAnalyze_InvalidPatternIsAnError guards against the old behaviour of
+// silently swapping in the Hugo profile's patterns when a configured reusable
+// pattern fails to compile (#11). An invalid pattern must surface as an error
+// that names the pattern, before any file is analyzed, regardless of profile.
+func TestAnalyze_InvalidPatternIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\n\n{{< alert >}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const bad = `(unclosed`
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = dir
+	cfg.Profile = config.ProfileMarkdown
+	cfg.Reusables.Patterns = []string{bad}
+
+	res, err := Analyze(cfg)
+	if err == nil {
+		t.Fatal("Analyze with an uncompilable reusable pattern must return an error")
+	}
+	if res != nil {
+		t.Errorf("Analyze must not return results alongside the error, got %d files", res.TotalFiles())
+	}
+	if !strings.Contains(err.Error(), bad) {
+		t.Errorf("error should name the offending pattern %q, got: %v", bad, err)
+	}
+	// The configured patterns must be left as the user wrote them: no Hugo
+	// fallback was substituted.
+	if len(cfg.Reusables.Patterns) != 1 || cfg.Reusables.Patterns[0] != bad {
+		t.Errorf("Reusables.Patterns were rewritten to %v; the invalid pattern must not be replaced", cfg.Reusables.Patterns)
+	}
+
+	// The per-file path is equally strict: analyzeFile returns the compile
+	// error rather than switching to the Hugo pattern set.
+	fa, ferr := analyzeFile(filepath.Join(dir, "a.md"), cfg, dir)
+	if ferr == nil {
+		t.Fatal("analyzeFile with an uncompilable reusable pattern must return an error")
+	}
+	if !strings.Contains(ferr.Error(), bad) {
+		t.Errorf("analyzeFile error should name the pattern %q, got: %v", bad, ferr)
+	}
+	if len(fa.Sections) != 0 || len(fa.Reusables) != 0 {
+		t.Errorf("analyzeFile must not have detected anything (sections=%d reusables=%d)", len(fa.Sections), len(fa.Reusables))
+	}
+}
+
+// TestAnalyze_FilesSkippedByExtension pins the partial-scan diagnostic (#11):
+// files that are documentation under another built-in profile but not under
+// the active allowlist are counted, while files that are not documentation
+// under any profile (.txt, .png) are not, and neither are files the
+// exclusions would have dropped anyway.
+func TestAnalyze_FilesSkippedByExtension(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "v", map[string]string{
+		"docs/a.md":        "# A\n\nbody\n",
+		"docs/guide.mdx":   "# Guide\n\nbody\n",
+		"docs/notes.txt":   "not content\n",
+		"docs/diagram.png": "not really a png\n",
+	})
+
+	// markdown profile: .mdx is documentation elsewhere, so it is counted;
+	// .txt and .png are not documentation anywhere and are ignored.
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (a.md)", res.TotalFiles())
+	}
+	if got := res.FilesSkippedByExtension(); got != 1 {
+		t.Errorf("FilesSkippedByExtension = %d, want 1 (guide.mdx)", got)
+	}
+	if got := res.SkippedExtensions(); len(got) != 1 || got[0] != ".mdx" {
+		t.Errorf("SkippedExtensions = %v, want [.mdx]", got)
+	}
+
+	// hugo profile: .mdx is in the allowlist, so nothing is skipped.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.Profile = config.ProfileHugo
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(hugo): %v", err)
+	}
+	if res.TotalFiles() != 2 {
+		t.Errorf("hugo: TotalFiles = %d, want 2", res.TotalFiles())
+	}
+	if got := res.FilesSkippedByExtension(); got != 0 {
+		t.Errorf("hugo: FilesSkippedByExtension = %d, want 0", got)
+	}
+	if got := res.SkippedExtensions(); len(got) != 0 {
+		t.Errorf("hugo: SkippedExtensions = %v, want empty", got)
+	}
+
+	// An .mdx the exclusions would drop anyway is not counted: widening the
+	// allowlist would not analyze it.
+	cfg = config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludePatterns = []string{"guide.mdx"}
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze(excluded mdx): %v", err)
+	}
+	if got := res.FilesSkippedByExtension(); got != 0 {
+		t.Errorf("excluded mdx: FilesSkippedByExtension = %d, want 0", got)
+	}
+}
+
+// mintlifyConfigJSON is a minimal but realistic Mintlify config. The docs.json
+// / mint.json markers are validated by content as well as by name, so a
+// placeholder like `{"name":"docs"}` no longer selects the profile (#7 review).
+const mintlifyConfigJSON = `{"$schema":"https://mintlify.com/docs.json",` +
+	`"name":"Docs","theme":"mint","colors":{"primary":"#000"},` +
+	`"navigation":{"pages":["docs/page"]}}`
+
+// TestAnalyze_MintlifyFixture runs the analyzer over the committed
+// testdata/mintlify-docs fixture: docs.json auto-detection, the narrow
+// <Snippet file="…" /> pattern and the direct-path resolver, end to end (#7).
+// The page is committed long before the threshold and the snippet just inside
+// it, so the section that references the snippet folds in the newer date and
+// comes out fresh while the page that references nothing stays stale.
+func TestAnalyze_MintlifyFixture(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.CommitTree(now.AddDate(0, 0, -300), "import mintlify docs", "mintlify-docs", ".")
+	// Touch the snippet well inside the 90-day threshold.
+	snippetDate := now.AddDate(0, 0, -10)
+	repo.Commit(snippetDate, "refresh snippet", map[string]string{
+		"snippets/foo.mdx": "Shared snippet body, refreshed.\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs") // docs.json lives at the repo root
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMintlify || !cfg.ProfileAuto {
+		t.Fatalf("resolved %q auto=%v, want mintlify auto-detected", cfg.ResolvedProfile.Name, cfg.ProfileAuto)
+	}
+	if cfg.ProjectRoot != repo.Dir {
+		t.Errorf("detected root = %q, want %q", cfg.ProjectRoot, repo.Dir)
+	}
+	// a.mdx, b.md and c.mdx; snippets/ is outside the content dir.
+	if res.TotalFiles() != 3 {
+		t.Fatalf("TotalFiles = %d, want 3 (%v)", res.TotalFiles(), res.Files)
+	}
+
+	// Exactly the two snippet paths are reusables: <Card /> and
+	// {{< not-a-reusable >}} on the same page must not leak in from the hugo
+	// pattern list. Both are reported under the resolved path relative to the
+	// project root rather than under the raw capture, so the root-absolute
+	// "/snippets/foo.mdx" and the bare "aws-access-key-config.mdx" — the form
+	// real Mintlify projects use — name the files they actually resolved to
+	// (#7 review).
+	byName := map[string]ReusableInfo{}
+	for _, r := range res.AllReusables {
+		byName[r.Name] = r
+	}
+	if len(byName) != 2 {
+		t.Fatalf("AllReusables = %+v, want the two resolved snippet paths", res.AllReusables)
+	}
+	bare, ok := byName["snippets/aws-access-key-config.mdx"]
+	if !ok {
+		t.Fatalf("the bare <Snippet file=\"aws-access-key-config.mdx\" /> did not resolve "+
+			"from snippets/: %+v", res.AllReusables)
+	}
+	if bare.LastUpdated == nil {
+		t.Error("the bare snippet resolved to no date")
+	}
+	snippet, ok := byName["snippets/foo.mdx"]
+	if !ok {
+		t.Fatalf("AllReusables = %+v, want snippets/foo.mdx", res.AllReusables)
+	}
+	if snippet.LastUpdated == nil {
+		t.Fatal("snippet was not resolved to a date; the path resolver did not find it")
+	}
+	if snippet.LastUpdated.Unix() != snippetDate.Unix() {
+		t.Errorf("snippet LastUpdated = %v, want %v", snippet.LastUpdated, snippetDate)
+	}
+	if !snippet.IsFresh {
+		t.Error("snippet committed 10 days ago should be fresh")
+	}
+	if got := res.UnresolvedReusables(); got != 0 {
+		t.Errorf("UnresolvedReusables = %d, want 0: every snippet in the fixture resolves", got)
+	}
+
+	byPath := map[string]FileAnalysis{}
+	for _, f := range res.Files {
+		byPath[f.RelativePath] = f
+	}
+	a, ok := byPath["a.mdx"]
+	if !ok {
+		t.Fatalf("a.mdx missing from results (%v)", res.Files)
+	}
+	// a.mdx has two sections; the one holding the snippet is kept fresh by it,
+	// the other (components only) is 300 days old and stale.
+	staleTitles := make([]string, 0, len(a.StaleSections))
+	for _, s := range a.StaleSections {
+		staleTitles = append(staleTitles, s.Title)
+	}
+	if len(staleTitles) != 1 || staleTitles[0] != "Components are not reusables" {
+		t.Errorf("a.mdx stale sections = %v, want only the section without the snippet", staleTitles)
+	}
+
+	b, ok := byPath["b.md"]
+	if !ok {
+		t.Fatalf("b.md missing from results (%v)", res.Files)
+	}
+	if !b.IsStale() {
+		t.Error("b.md references no snippet and is 300 days old; want stale")
+	}
+}
+
+// TestAnalyze_MintlifyStaleSnippetStaysStale is the mirror of the fixture test:
+// when the snippet is as old as the page, folding its date in changes nothing
+// and the referencing section stays stale (#7).
+func TestAnalyze_MintlifyStaleSnippetStaysStale(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -400), "old snippet", map[string]string{
+		"snippets/foo.mdx": "old shared snippet\n",
+	})
+	repo.Commit(now.AddDate(0, 0, -200), "page", map[string]string{
+		"docs.json":     mintlifyConfigJSON,
+		"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/foo.mdx\" />\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.StaleSections() != 1 {
+		t.Errorf("StaleSections = %d, want 1", res.StaleSections())
+	}
+	if len(res.AllReusables) != 1 || res.AllReusables[0].IsFresh {
+		t.Errorf("AllReusables = %+v, want one stale snippet", res.AllReusables)
+	}
+	if res.AllReusables[0].LastUpdated == nil {
+		t.Error("an old snippet must still resolve to a date, not to unknown")
+	}
+}
+
+// TestAnalyze_MintlifyMissingSnippetIsUnknown checks that a snippet reference
+// pointing at no file leaves the reusable unknown — never fresh (#55).
+func TestAnalyze_MintlifyMissingSnippetIsUnknown(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "page", map[string]string{
+		"docs.json":     mintlifyConfigJSON,
+		"docs/page.mdx": "# Page\n\n<Snippet file=\"/snippets/gone.mdx\" />\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(res.AllReusables) != 1 {
+		t.Fatalf("AllReusables = %+v, want one entry", res.AllReusables)
+	}
+	if res.AllReusables[0].LastUpdated != nil || res.AllReusables[0].IsFresh {
+		t.Errorf("missing snippet = %+v, want unknown date and not fresh", res.AllReusables[0])
+	}
+}
+
+// TestAnalyze_MintlifySameNamedRelativeSnippets is the regression test for the
+// cross-file reusables aggregate (#7 review). Two pages in different
+// directories each reference "./shared.mdx" and mean two different files;
+// keying the aggregate on the raw capture collapsed them into a single row
+// showing only the older date. They must appear as two entries, each with its
+// own date, named by the path that was actually resolved.
+func TestAnalyze_MintlifySameNamedRelativeSnippets(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	oldDate := now.AddDate(0, 0, -300)
+	freshDate := now.AddDate(0, 0, -5)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(oldDate, "old area", map[string]string{
+		"docs.json":         mintlifyConfigJSON,
+		"docs/a/page.mdx":   "# A\n\n<Snippet file=\"./shared.mdx\" />\n",
+		"docs/a/shared.mdx": "the old shared snippet\n",
+		"docs/b/page.mdx":   "# B\n\n<Snippet file=\"./shared.mdx\" />\n",
+	})
+	repo.Commit(freshDate, "fresh area", map[string]string{
+		"docs/b/shared.mdx": "the fresh shared snippet\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMintlify {
+		t.Fatalf("resolved profile = %q, want mintlify", cfg.ResolvedProfile.Name)
+	}
+
+	got := map[string]string{}
+	for _, r := range res.AllReusables {
+		if r.LastUpdated == nil {
+			t.Fatalf("reusable %q resolved to no date", r.Name)
+		}
+		got[r.Name] = r.LastUpdated.UTC().Format("2006-01-02")
+	}
+	want := map[string]string{
+		"docs/a/shared.mdx": oldDate.UTC().Format("2006-01-02"),
+		"docs/b/shared.mdx": freshDate.UTC().Format("2006-01-02"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllReusables = %v, want two distinct entries %v", got, want)
+	}
+
+	// The per-file lists carry the same resolved names.
+	for _, f := range res.Files {
+		for _, r := range f.Reusables {
+			if _, ok := want[r.Name]; !ok {
+				t.Errorf("%s: reusable %q is not one of the resolved snippet paths", f.RelativePath, r.Name)
+			}
+		}
 	}
 }

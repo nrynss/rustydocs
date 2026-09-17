@@ -64,6 +64,11 @@ func sampleResults() (*analyzer.Results, *config.Config) {
 	}
 	cfg := config.DefaultConfig()
 	cfg.ContentDir = "docs"
+	// Resolve the profile the way the CLI does, so the reports see the same
+	// ResolvedProfile / ContentExtensions a real run would.
+	if err := cfg.ApplyProfile(); err != nil {
+		panic(err)
+	}
 	res := &analyzer.Results{
 		Files:       []analyzer.FileAnalysis{fa},
 		Config:      cfg,
@@ -118,5 +123,66 @@ func TestGenerateJSON(t *testing.T) {
 	}
 	if report.Summary.TotalFiles != 1 {
 		t.Errorf("TotalFiles = %d, want 1", report.Summary.TotalFiles)
+	}
+
+	// The run configuration must record which profile and extension allowlist
+	// produced the artifact, so CI can tell a clean run from one that never
+	// looked at the files it cared about (#11).
+	if report.Config.Profile != config.ProfileMarkdown {
+		t.Errorf("Config.Profile = %q, want %q", report.Config.Profile, config.ProfileMarkdown)
+	}
+	if !report.Config.ProfileAuto {
+		t.Error("Config.ProfileAuto = false, want true (no profile named)")
+	}
+	if got := strings.Join(report.Config.ContentExtensions, ","); got != ".md,.markdown" {
+		t.Errorf("Config.ContentExtensions = %q, want \".md,.markdown\"", got)
+	}
+
+	// The JSON keys themselves are part of the contract.
+	var raw struct {
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"threshold_days", "content_dir", "profile", "profile_auto", "content_extensions", "staleness_levels"} {
+		if _, ok := raw.Config[key]; !ok {
+			t.Errorf("config object missing %q key: %v", key, raw.Config)
+		}
+	}
+}
+
+// TestGenerateJSON_ExplicitProfile pins the other half of the profile record:
+// an explicitly named profile reports profile_auto false and its own
+// extension allowlist.
+func TestGenerateJSON_ExplicitProfile(t *testing.T) {
+	res, cfg := sampleResults()
+	cfg.Profile = config.ProfileHugo
+	cfg.ResolvedProfile = config.Profile{}
+	cfg.ContentExtensions = nil
+	if err := cfg.ApplyProfile(); err != nil {
+		t.Fatalf("ApplyProfile: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.json")
+	if err := GenerateJSON(res, cfg, out); err != nil {
+		t.Fatalf("GenerateJSON: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report JSONReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if report.Config.Profile != config.ProfileHugo {
+		t.Errorf("Config.Profile = %q, want %q", report.Config.Profile, config.ProfileHugo)
+	}
+	if report.Config.ProfileAuto {
+		t.Error("Config.ProfileAuto = true, want false (--profile hugo)")
+	}
+	if got := strings.Join(report.Config.ContentExtensions, ","); got != ".md,.markdown,.mdx" {
+		t.Errorf("Config.ContentExtensions = %q, want the hugo allowlist", got)
 	}
 }
