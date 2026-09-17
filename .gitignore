@@ -40,6 +40,11 @@ reports/
 
 # Tool directories
 .claude/
+.codex/
 .cursor/
 .grepai/
 .gcourer/
+
+# Agent instruction files kept locally rather than checked in
+# (CLAUDE.md is tracked; these are per-developer)
+AGENTS.md
