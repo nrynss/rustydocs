@@ -297,12 +297,18 @@ func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 // analyzeFile analyzes one documentation file. It returns an error only when
 // the configured reusable patterns cannot be compiled; git failures and
 // unreadable files degrade to an analysis with no history, never to an error.
-func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnalysis, error) {
+//
+// cache memoizes the per-file `git log` lookups this file's own header and its
+// reusable resolution perform. It is created once per run by
+// AnalyzeWithProgress and shared by every worker — a cache built here, or on
+// the per-file ReusablePatterns below, could only dedupe within one page. A
+// nil cache disables memoization (#65).
+func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git.FileInfoCache) (FileAnalysis, error) {
 	now := nowFunc()
 	thresholdDate := now.Add(-time.Duration(cfg.ThresholdDays) * 24 * time.Hour)
 
 	// Get file-level info
-	fileInfo, _ := git.GetFileLastModified(filePath)
+	fileInfo, _ := cache.FileLastModified(filePath)
 
 	// Read file content
 	content, err := os.ReadFile(filepath.Clean(filePath))
@@ -356,6 +362,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string) (FileAnaly
 		ReusablesDir: reusablesDir,
 		Root:         root,
 		Resolver:     cfg.ResolvedProfile.Resolver,
+		Cache:        cache,
 	})
 	if err != nil {
 		return FileAnalysis{Path: filePath, RelativePath: relativePath}, fmt.Errorf("%s: %w", relativePath, err)
@@ -610,6 +617,11 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		return nil, err
 	}
 
+	// One git-lookup cache for the whole run, created before the pool starts
+	// and shared by every worker: a shared include is resolved once rather
+	// than once per referencing page (#65).
+	fileInfoCache := git.NewFileInfoCache()
+
 	// Determine number of workers
 	workers := cfg.Workers
 	if workers <= 0 {
@@ -659,7 +671,7 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		go func() {
 			defer wg.Done()
 			for idx := range fileChan {
-				fa, ferr := analyzeFile(mdFiles[idx], cfg, baseDir)
+				fa, ferr := analyzeFile(mdFiles[idx], cfg, baseDir, fileInfoCache)
 				if ferr != nil {
 					firstErrM.Lock()
 					if firstErr == nil {

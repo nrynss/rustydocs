@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -444,7 +445,7 @@ func TestAnalyze_InvalidPatternIsAnError(t *testing.T) {
 
 	// The per-file path is equally strict: analyzeFile returns the compile
 	// error rather than switching to the Hugo pattern set.
-	fa, ferr := analyzeFile(filepath.Join(dir, "a.md"), cfg, dir)
+	fa, ferr := analyzeFile(filepath.Join(dir, "a.md"), cfg, dir, nil)
 	if ferr == nil {
 		t.Fatal("analyzeFile with an uncompilable reusable pattern must return an error")
 	}
@@ -754,5 +755,217 @@ func TestAnalyze_MintlifySameNamedRelativeSnippets(t *testing.T) {
 				t.Errorf("%s: reusable %q is not one of the resolved snippet paths", f.RelativePath, r.Name)
 			}
 		}
+	}
+}
+
+// analyzeUncached re-runs the per-file analysis with no FileInfoCache, which is
+// exactly the pre-#65 code path, so a cached run can be compared against it.
+func analyzeUncached(t *testing.T, files []string, cfg *config.Config, baseDir string) map[string]FileAnalysis {
+	t.Helper()
+	out := make(map[string]FileAnalysis, len(files))
+	for _, f := range files {
+		fa, err := analyzeFile(f, cfg, baseDir, nil)
+		if err != nil {
+			t.Fatalf("uncached analyzeFile(%s): %v", f, err)
+		}
+		out[fa.RelativePath] = fa
+	}
+	return out
+}
+
+// sameDate compares two optional timestamps for reporting purposes.
+func sameDate(a, b *time.Time) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return a.Equal(*b)
+	}
+}
+
+// TestAnalyze_SharedSnippetCacheDoesNotChangeDates is the #65 guard: a snippet
+// referenced from many pages is now resolved once per run rather than once per
+// page, and every reported date must be identical to the uncached path.
+func TestAnalyze_SharedSnippetCacheDoesNotChangeDates(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	const pages = 6
+	repo := testutil.NewRepo(t)
+
+	old := map[string]string{
+		"docs.json":           `{"name":"docs","navigation":[]}`,
+		"snippets/shared.mdx": "Shared body.\n",
+	}
+	for i := 0; i < pages; i++ {
+		name := fmt.Sprintf("docs/page%d.mdx", i)
+		old[name] = fmt.Sprintf(
+			"# Page %d\n\nbody\n\n<Snippet file=\"shared.mdx\" />\n\n"+
+				"## Broken\n\n<Snippet file=\"nope.mdx\" />\n", i)
+	}
+	repo.Commit(now.AddDate(0, 0, -300), "import docs", old)
+
+	snippetDate := now.AddDate(0, 0, -10)
+	repo.Commit(snippetDate, "refresh shared snippet", map[string]string{
+		"snippets/shared.mdx": "Shared body, refreshed.\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileMintlify {
+		t.Fatalf("resolved profile = %q, want mintlify", cfg.ResolvedProfile.Name)
+	}
+	if res.TotalFiles() != pages {
+		t.Fatalf("TotalFiles = %d, want %d", res.TotalFiles(), pages)
+	}
+
+	// The shared snippet keeps its section fresh on every page, and the
+	// broken reference stays unresolved on every page — the negative result is
+	// cached too, and must still be reported.
+	shared, ok := reusableByName(res.AllReusables)["snippets/shared.mdx"]
+	if !ok {
+		t.Fatalf("shared snippet missing from AllReusables: %+v", res.AllReusables)
+	}
+	if shared.LastUpdated == nil || !shared.LastUpdated.Equal(snippetDate) {
+		t.Errorf("shared snippet LastUpdated = %v, want %v", shared.LastUpdated, snippetDate)
+	}
+	if got := res.UnresolvedReusables(); got != pages {
+		t.Errorf("UnresolvedReusables = %d, want %d (the broken ref on each page)", got, pages)
+	}
+
+	// Every reported date must match the uncached path, file by file.
+	paths := make([]string, 0, pages)
+	for i := 0; i < pages; i++ {
+		paths = append(paths, repo.Path(fmt.Sprintf("docs/page%d.mdx", i)))
+	}
+	want := analyzeUncached(t, paths, cfg, repo.Path("docs"))
+	for _, got := range res.Files {
+		ref, ok := want[got.RelativePath]
+		if !ok {
+			t.Fatalf("%s missing from the uncached run", got.RelativePath)
+		}
+		if !sameDate(got.EffectiveLastUpdated, ref.EffectiveLastUpdated) {
+			t.Errorf("%s EffectiveLastUpdated = %v, uncached %v",
+				got.RelativePath, got.EffectiveLastUpdated, ref.EffectiveLastUpdated)
+		}
+		if !sameDate(got.OldestSectionDate, ref.OldestSectionDate) {
+			t.Errorf("%s OldestSectionDate = %v, uncached %v",
+				got.RelativePath, got.OldestSectionDate, ref.OldestSectionDate)
+		}
+		if got.DaysStale != ref.DaysStale || got.OldestSectionDays != ref.OldestSectionDays {
+			t.Errorf("%s day deltas = (%d, %d), uncached (%d, %d)",
+				got.RelativePath, got.DaysStale, got.OldestSectionDays,
+				ref.DaysStale, ref.OldestSectionDays)
+		}
+		if len(got.StaleSections) != len(ref.StaleSections) {
+			t.Errorf("%s stale sections = %d, uncached %d",
+				got.RelativePath, len(got.StaleSections), len(ref.StaleSections))
+		}
+		if !reflect.DeepEqual(reusableByName(got.Reusables), reusableByName(ref.Reusables)) {
+			t.Errorf("%s reusables differ from the uncached run:\n got %+v\nwant %+v",
+				got.RelativePath, got.Reusables, ref.Reusables)
+		}
+	}
+
+	// And the cache really is shared across files: analysing every page
+	// through one cache must serve the repeated snippet lookups as hits.
+	shared65 := git.NewFileInfoCache()
+	for _, p := range paths {
+		if _, err := analyzeFile(p, cfg, repo.Path("docs"), shared65); err != nil {
+			t.Fatalf("cached analyzeFile(%s): %v", p, err)
+		}
+	}
+	hits, misses := shared65.Stats()
+	if hits == 0 {
+		t.Errorf("run-scoped cache served no hits across %d pages (misses=%d)", pages, misses)
+	}
+	if hits <= misses {
+		t.Errorf("cache hits=%d misses=%d: a snippet shared by %d pages should be mostly hits",
+			hits, misses, pages)
+	}
+}
+
+// reusableByName indexes reusables by their reported name for comparison.
+func reusableByName(rs []ReusableInfo) map[string]ReusableInfo {
+	out := make(map[string]ReusableInfo, len(rs))
+	for _, r := range rs {
+		out[r.Name] = r
+	}
+	return out
+}
+
+// TestAnalyze_HugoSharedShortcodeCacheDoesNotChangeDates is the Hugo mirror:
+// the shortcode resolver (layouts/shortcodes lookup plus traced data files)
+// also goes through the run-scoped cache, and must report the same dates (#65).
+func TestAnalyze_HugoSharedShortcodeCacheDoesNotChangeDates(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	const pages = 4
+	repo := testutil.NewRepo(t)
+
+	files := map[string]string{
+		"hugo.toml":                     "baseURL = 'https://example.org/'\n",
+		"layouts/shortcodes/alert.html": "<div class=\"alert\">{{ .Inner }}</div>\n",
+		"layouts/shortcodes/note.html":  "<div class=\"note\">{{ .Inner }}</div>\n",
+		"layouts/_default/baseof.html":  "{{ block \"main\" . }}{{ end }}\n",
+	}
+	for i := 0; i < pages; i++ {
+		files[fmt.Sprintf("content/docs/p%d.md", i)] = fmt.Sprintf(
+			"# P%d\n\nbody\n\n{{< alert >}}shared{{< /alert >}}\n", i)
+	}
+	repo.Commit(now.AddDate(0, 0, -300), "import site", files)
+
+	shortcodeDate := now.AddDate(0, 0, -5)
+	repo.Commit(shortcodeDate, "refresh alert shortcode", map[string]string{
+		"layouts/shortcodes/alert.html": "<div class=\"alert alert--new\">{{ .Inner }}</div>\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ThresholdDays = 90
+	cfg.ContentDir = repo.Path("content/docs")
+
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileHugo {
+		t.Fatalf("resolved profile = %q, want hugo", cfg.ResolvedProfile.Name)
+	}
+
+	paths := make([]string, 0, pages)
+	for i := 0; i < pages; i++ {
+		paths = append(paths, repo.Path(fmt.Sprintf("content/docs/p%d.md", i)))
+	}
+	want := analyzeUncached(t, paths, cfg, repo.Path("content/docs"))
+	for _, got := range res.Files {
+		ref, ok := want[got.RelativePath]
+		if !ok {
+			t.Fatalf("%s missing from the uncached run", got.RelativePath)
+		}
+		if !sameDate(got.EffectiveLastUpdated, ref.EffectiveLastUpdated) {
+			t.Errorf("%s EffectiveLastUpdated = %v, uncached %v",
+				got.RelativePath, got.EffectiveLastUpdated, ref.EffectiveLastUpdated)
+		}
+		if !reflect.DeepEqual(reusableByName(got.Reusables), reusableByName(ref.Reusables)) {
+			t.Errorf("%s reusables differ from the uncached run:\n got %+v\nwant %+v",
+				got.RelativePath, got.Reusables, ref.Reusables)
+		}
+	}
+
+	alert, ok := reusableByName(res.AllReusables)["alert"]
+	if !ok {
+		t.Fatalf("alert shortcode missing from AllReusables: %+v", res.AllReusables)
+	}
+	if alert.LastUpdated == nil || !alert.LastUpdated.Equal(shortcodeDate) {
+		t.Errorf("alert LastUpdated = %v, want %v", alert.LastUpdated, shortcodeDate)
 	}
 }

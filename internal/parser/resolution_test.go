@@ -1181,3 +1181,62 @@ func TestFindReusables_MintlifyQuoteStyles(t *testing.T) {
 		t.Errorf("FindReusables = %v, want %v", got, want)
 	}
 }
+
+// TestReusableConfig_CacheIsUsed checks the #65 wiring on the parser side: when
+// ReusableConfig.Cache is set, repeated resolution of the same snippet goes
+// through the shared cache instead of re-invoking git, and the resolved dates
+// are identical to a ReusablePatterns built without one.
+func TestReusableConfig_CacheIsUsed(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	when := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
+	repo.Commit(when, "add snippet", map[string]string{
+		"snippets/shared.mdx": "shared\n",
+		"docs/a.mdx":          "# A\n",
+	})
+	page := repo.Path("docs/a.mdx")
+
+	uncached := newPathRP(t, repo.Dir)
+
+	cache := git.NewFileInfoCache()
+	cached, err := NewReusablePatternsFor(ReusableConfig{
+		Patterns:   mintlifyPatternStrings,
+		Extensions: []string{".mdx", ".md"},
+		Root:       repo.Dir,
+		Resolver:   config.ResolverPath,
+		Cache:      cache,
+	})
+	if err != nil {
+		t.Fatalf("NewReusablePatternsFor: %v", err)
+	}
+
+	want := GetReusableInfo("shared.mdx", page, uncached)
+	if want == nil {
+		t.Fatal("uncached resolution found no history for the snippet")
+	}
+	for i := 0; i < 5; i++ {
+		got := GetReusableInfo("shared.mdx", page, cached)
+		if got == nil {
+			t.Fatalf("cached resolution %d found no history", i)
+		}
+		if !got.LastModified.Equal(want.LastModified) || got.LastCommit != want.LastCommit {
+			t.Fatalf("cached resolution %d = %+v, uncached %+v", i, *got, *want)
+		}
+	}
+
+	hits, misses := cache.Stats()
+	if misses != 1 {
+		t.Errorf("misses = %d, want 1: the snippet should be looked up once", misses)
+	}
+	if hits != 4 {
+		t.Errorf("hits = %d, want 4", hits)
+	}
+
+	// A ReusablePatterns with no cache must behave exactly as before.
+	if _, misses := (*git.FileInfoCache)(nil).Stats(); misses != 0 {
+		t.Errorf("nil cache reported %d misses", misses)
+	}
+	if again := GetReusableInfo("shared.mdx", page, uncached); again == nil ||
+		!again.LastModified.Equal(want.LastModified) {
+		t.Errorf("uncached resolution is not stable: %+v vs %+v", again, want)
+	}
+}

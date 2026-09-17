@@ -103,6 +103,11 @@ type ReusablePatterns struct {
 	// on first use by resolvedRootPath.
 	rootOnce     sync.Once
 	resolvedRoot string
+	// cache memoizes the per-file `git log` lookups resolution performs. It is
+	// owned by the caller and shared across every ReusablePatterns of a run —
+	// one is built per file (see analyzer.analyzeFile), so a cache living here
+	// would only ever dedupe within a single page. Nil means no caching.
+	cache *git.FileInfoCache
 }
 
 // ReusableConfig describes reusable detection and resolution for one run: the
@@ -115,6 +120,10 @@ type ReusableConfig struct {
 	ReusablesDir string
 	Root         string
 	Resolver     config.Resolver
+	// Cache, when non-nil, memoizes the git lookups resolution performs. It is
+	// created once per analysis run and shared by every file's
+	// ReusablePatterns; nil disables caching (#65).
+	Cache *git.FileInfoCache
 }
 
 // NewReusablePatternsFor creates a ReusablePatterns from a resolved profile's
@@ -127,6 +136,7 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 		reusablesDir:   rc.ReusablesDir,
 		filePaths:      make(map[string]string),
 		shortcodeCache: make(map[string][]string),
+		cache:          rc.Cache,
 	}
 	for _, p := range rc.Patterns {
 		re, err := regexp.Compile(p)
@@ -827,7 +837,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
 	var mostRecent *git.FileInfo
 	for _, p := range paths {
-		info, err := git.GetFileLastModified(p)
+		info, err := rp.cache.FileLastModified(p)
 		if err != nil || info == nil {
 			continue
 		}
@@ -842,14 +852,14 @@ func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
 func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name+ext)
-		if info, err := git.GetFileLastModified(candidate); err == nil && info != nil {
+		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}
 	}
 	// Try as subdirectory with index file
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name, "index"+ext)
-		if info, err := git.GetFileLastModified(candidate); err == nil && info != nil {
+		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}
 	}
@@ -918,7 +928,7 @@ func (rp *ReusablePatterns) storePath(key, path string) {
 
 func (rp *ReusablePatterns) lookupPath(name string) *git.FileInfo {
 	if path, ok := rp.filePaths[name]; ok {
-		fileInfo, err := git.GetFileLastModified(path)
+		fileInfo, err := rp.cache.FileLastModified(path)
 		if err == nil && fileInfo != nil {
 			return fileInfo
 		}

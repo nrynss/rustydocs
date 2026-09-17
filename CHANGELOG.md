@@ -149,6 +149,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Reusable resolution now memoizes its `git log` lookups for the duration of
+  a run** (#65). A snippet or shortcode referenced from many pages used to cost
+  one `git log` subprocess *per referencing page*: on a 300-page x 3-snippet
+  Mintlify tree that was ~900 redundant subprocesses, and process spawn
+  dominated the clock: 11.1 s wall / 27.8 s user / 45.5 s sys, against a 2.1 s
+  wall floor for the same files with resolution switched off entirely. A
+  `git.FileInfoCache` is now created once in `analyzer.AnalyzeWithProgress`,
+  before the worker pool starts, and shared by every worker and every file's
+  `parser.ReusablePatterns` — a cache on `ReusablePatterns` itself would only
+  ever dedupe within one page, since one is built per file. Concurrent lookups
+  of the same path collapse to a single subprocess, negative results (no
+  history, and git errors) are cached too, and paths are keyed on their
+  absolute symlink-resolved form so the several spellings one file arrives
+  under share an entry. The same tree now runs in 2.1 s wall / 5.3 s user /
+  8.7 s sys — a 5.4x speedup, and within 4% of that 2.1 s no-resolution floor.
+  Reports are unchanged: a run analyses one commit state, so every lookup in it
+  has exactly one right answer. Nothing is cached across runs or on disk, and
+  blame output is not cached.
 - **`hugo_root` is renamed `project_root`** (`--project-root`), and the Go
   field `Config.HugoRoot` is now `Config.ProjectRoot`. **Existing config files
   keep working**: `"hugo_root"` is still read as the project root, now with a
