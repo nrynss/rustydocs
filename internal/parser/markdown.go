@@ -300,11 +300,18 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 
 	if len(headers) == 0 {
 		// No headers found, parse by paragraphs
-		return parseParagraphs(contentLines, linesInfo, "(no header)", 0, rp)
+		return parseParagraphs(contentLines, linesInfo, noHeaderTitle, 0, rp)
 	}
 
 	// Create chunks from headers
 	var chunks []Chunk
+
+	// Anything above the first header is the page preamble: prose, a note, or
+	// a rendered include sitting under the frontmatter and before any heading.
+	// It used to be discarded outright, which hid its blame dates and, worse,
+	// every reusable referenced only there (#70).
+	chunks = append(chunks, parsePreamble(contentLines, linesInfo, headers[0].lineNum, paragraphLevel, rp)...)
+
 	for i, h := range headers {
 		// Determine end line (start of next header or end of file)
 		endLine := len(contentLines)
@@ -348,6 +355,112 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	}
 
 	return chunks
+}
+
+const (
+	// noHeaderTitle labels the chunks of a file that has no header at all.
+	noHeaderTitle = "(no header)"
+	// preambleTitle labels the chunk holding the content above the first
+	// header of a file that *does* have headers (#70).
+	//
+	// It is deliberately not "(no header)": in a file with headings that would
+	// read as a claim about the whole page, and it must also not borrow the
+	// first heading's text, which would put two rows with the same title and
+	// different line ranges next to each other in the report. The parenthesised
+	// lowercase form matches the existing convention, so neither title can
+	// collide with a real heading — a heading rendering as literal "(preamble)"
+	// is indistinguishable by design, and harmless.
+	preambleTitle = "(preamble)"
+)
+
+// parsePreamble chunks the span above a file's first header, which sits at
+// 1-indexed line firstHeaderLine. It returns nil when that span holds nothing
+// worth reporting: no lines at all, only blank lines, or only frontmatter.
+//
+// Frontmatter is skipped rather than chunked. A YAML (`---`) or TOML (`+++`)
+// block at the very top of the file is metadata — title, description, sidebar
+// weight — not prose, and folding it in would give a preamble chunk to
+// essentially every page in a docs tree while attributing a bulk metadata edit
+// to the page's prose. Skipping it costs nothing here, because a page with
+// headers is already represented in the report by those sections.
+//
+// The headerless path in ParseChunks deliberately keeps its existing behaviour
+// of chunking frontmatter along with everything else: there the chunks are the
+// page's only representation, so dropping the frontmatter of a frontmatter-only
+// stub would erase the file from the report entirely.
+func parsePreamble(contentLines []string, linesInfo []git.LineInfo, firstHeaderLine int, paragraphLevel bool, rp *ReusablePatterns) []Chunk {
+	start := frontmatterLines(contentLines) // 0-indexed start of the preamble
+	end := firstHeaderLine - 1              // exclusive, 0-indexed: the header line itself
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+	if start >= end {
+		return nil
+	}
+
+	preambleLines := contentLines[start:end]
+	if !hasContent(preambleLines) {
+		return nil
+	}
+
+	if paragraphLevel {
+		// Same treatment sections get under --paragraph-level: the preamble is
+		// split on blank lines, each paragraph titled "(preamble) (L<n>)" by
+		// createParagraphChunk. No chunk is marked IsHeader, because none of
+		// them starts with one.
+		return parseParagraphs(preambleLines, linesInfo, preambleTitle, start, rp)
+	}
+
+	startLine := start + 1 // 1-indexed, to match git.LineInfo.LineNumber
+	var chunkLines []git.LineInfo
+	for _, li := range linesInfo {
+		if li.LineNumber >= startLine && li.LineNumber <= end {
+			chunkLines = append(chunkLines, li)
+		}
+	}
+	return []Chunk{{
+		Title:     preambleTitle,
+		Level:     0,
+		StartLine: startLine,
+		EndLine:   end,
+		Lines:     chunkLines,
+		Reusables: FindReusables(strings.Join(preambleLines, "\n"), rp),
+		IsHeader:  false,
+	}}
+}
+
+// frontmatterLines returns the number of leading lines taken up by a YAML
+// (`---`) or TOML (`+++`) frontmatter block, including both delimiters, or 0
+// when the file does not open with one.
+//
+// The opening delimiter must be the very first line and the block must be
+// closed; an unterminated one is ordinary content — a lone `---` on line 1 is a
+// legal thematic break, and reading the rest of the file as metadata because of
+// it would be far worse than treating a genuinely broken block as prose.
+func frontmatterLines(contentLines []string) int {
+	if len(contentLines) == 0 {
+		return 0
+	}
+	delim := strings.TrimRight(contentLines[0], " \t")
+	if delim != "---" && delim != "+++" {
+		return 0
+	}
+	for i := 1; i < len(contentLines); i++ {
+		if strings.TrimRight(contentLines[i], " \t") == delim {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// hasContent reports whether any line is more than whitespace.
+func hasContent(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseParagraphs splits content into paragraph-level chunks.

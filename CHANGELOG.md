@@ -274,6 +274,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Content above the first header is analyzed instead of discarded** (#70).
+  When a file had any header, chunking started at that header and everything
+  above it was dropped, so a page preamble — the prose, note or rendered
+  include that sits under the frontmatter and before the first heading —
+  contributed no blame dates, and a reusable referenced only there was never
+  detected and, if broken, never flagged. On the 551-file Mintlify corpus this
+  hid **39 of 335 imported-snippet usages (12%)**, including every usage of
+  `McpHowItWorks`, `McpDocsMcpTip`, `TrustCaveats` and
+  `PrivatePackageManagerConfigure`; those four now appear, taking the corpus
+  from 75 detected reusables to 79. The preamble is emitted as a leading chunk
+  titled `(preamble)` (and `(preamble) (L<n>)` per paragraph under
+  `--paragraph-level`, matching the existing `(no header)` convention), with
+  level 0 and `IsHeader` false. Frontmatter is **not** part of it: a `---`/`+++`
+  block at the very top of the file is metadata, so its lines are skipped, and
+  a file whose only above-header content is frontmatter or blank lines produces
+  no preamble chunk at all. An unterminated opening delimiter is treated as
+  ordinary content, so a lone `---` thematic break does not swallow the page.
+  Files with no header at all keep going through the existing headerless path
+  unchanged, frontmatter included — there the chunks are the page's only
+  representation, and dropping the frontmatter of a frontmatter-only stub would
+  erase the file from the report.
+  **Note on the numbers:** this raises `total_sections` for every file that has
+  a preamble, and with it every summary percentage. On the same corpus sections
+  analyzed went 5,721 → 6,065 (+344) and stale sections 2,654 → 2,843 (+189),
+  46.4% → 46.9%. Those sections were always in the tree; they were being
+  dropped. A report generated before and after this release is not
+  section-for-section comparable.
 - Hugo shortcodes provided by a **theme** now resolve. Only
   `<project root>/layouts/shortcodes` was searched, so on a site whose layouts come
   from a theme (the shape the `themes/` marker detects) a shortcode was detected

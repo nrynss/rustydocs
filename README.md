@@ -476,7 +476,7 @@ Generated: 2025-12-10 | Threshold: 90 days
 ## How It Works
 
 1. **Resolves** a profile (`--profile`, or auto-detected from the content dir) and **scans** the files whose extensions it lists
-2. **Parses** content to identify sections by headers (`#`, `##`, `###`)
+2. **Parses** content to identify sections by headers (`#`, `##`, `###`); content above the first header is analyzed as a leading `(preamble)` section, with any `---`/`+++` frontmatter block skipped
 3. **Runs** `git blame` concurrently to get per-line modification dates
 4. **Detects** reusable components (Hugo shortcodes, JSX — `hugo` profile; `<Snippet file>` includes — `mintlify` profile) and checks their freshness
 5. **Calculates** section staleness based on the oldest line in each section
