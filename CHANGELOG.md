@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
+This release makes rustydocs tool-aware: it detects which documentation
+generator a tree belongs to and resolves that tool's includes, it scans
+documentation instead of the whole repository, and it no longer guesses
+silently when it cannot. On the production Mintlify site it was measured
+against, a run went from 4,032 files, 48.7 s and 1,078 pages it could say
+nothing about, to 552 files, 7.5 s and none — while resolving 79 reusable
+components, of which 0.4.0 found not one.
+
+**Behaviour changes to read before upgrading** (details under *Changed*):
+
+- Plain-Markdown repositories no longer get Hugo shortcode / MDX component
+  reusable detection by default; pass `--profile hugo` to keep it.
+- `.mdx` is no longer in the default extension allowlist. The `markdown`
+  profile scans `.md` and `.markdown`; `.mdx` is scanned under `hugo` and
+  `mintlify`, or with an explicit `--extensions`.
+- An explicitly supplied project root that does not exist is now an error:
+  a run that used to exit 0 now exits 1.
+- `hugo_root` is deprecated in favour of `project_root` / `--project-root`.
+  It still works, now with a deprecation warning.
+- `total_sections` rises on every page that has a preamble, so every summary
+  percentage shifts. Reports from before and after this release are not
+  section-for-section comparable.
+
 ### Added
 
 - **MDX import-map resolver** (#68). The `mintlify` profile resolved
@@ -37,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A **`mintlify` profile** and the **direct-path resolver** behind it (#7).
   Mintlify projects are auto-detected from a `docs.json` (current) or
   `mint.json` (legacy) file at or above `content_dir`; the profile scans `.md`
-  and `.mdx`, and detects exactly one kind of include —
+  and `.mdx`, and detected at this point exactly one kind of include —
   `<Snippet file="aws-config.mdx" />`, in either quote style
   (`file="…"` and `file='…'`), with `<SnippetGroup …>` deliberately excluded.
   Unlike the Hugo patterns, which
@@ -120,13 +145,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation-tool **profiles** (`internal/config/profile.go`), the scaffold
   for epic #10. A profile supplies the content extensions, project-root
   markers and reusable-reference patterns (plus a `Resolver` field, wired up in
-  #7 below); explicit user settings always win. Two built-ins: `markdown` (`.md`/`.markdown`, no include
-  mechanism, reusable detection off — the default) and `hugo` (`.md`/
-  `.markdown`/`.mdx`, shortcode + MDX component detection). Select with
+  #7 below); explicit user settings always win. This issue added two built-ins —
+  `markdown` (`.md`/`.markdown`, no include mechanism, reusable detection off —
+  the default) and `hugo` (`.md`/`.markdown`/`.mdx`, shortcode + MDX component
+  detection) — and #7 above added a third, `mintlify`. Select with
   `--profile NAME` / `"profile"` in `config.json`, or leave empty to
   auto-detect: a `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}`
   file, or a `config/_default/` Hugo config (`hugo.*` or `config.*` under it)
-  at or above `content_dir` selects `hugo`, otherwise `markdown`. The config-file and `themes/` markers keep detection
+  at or above `content_dir` selects `hugo`, a `docs.json` / `mint.json` selects
+  `mintlify`, otherwise `markdown`. The config-file and `themes/` markers keep detection
   working on a fresh clone of a site whose layouts come from a theme, where git
   has not recreated an empty `layouts/` directory. `--list-profiles` prints the
   built-ins and the run banner shows the resolved profile, e.g.
@@ -183,14 +210,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree — whose files git resolves against a *different* project (a **submodule**
   is not one: it belongs to the repository under analysis, so it is walked into
   and analyzed, with its files resolved against the submodule's own repository);
-  and files git itself ignores, batched through a single `git check-ignore --stdin -z`
+  and files git itself ignores, queried with `git check-ignore --stdin -z`
   (exact, cheap, and it honours nested `.gitignore` files, negations,
   `core.excludesFile` and the index, none of which a hand-rolled matcher gets
-  reliably right). A tree that is not a git repository degrades gracefully: the
+  reliably right) — batched, but one batch per owning repository, because
+  check-ignore refuses a pathspec that lies inside a submodule of the
+  repository it is asked from. A tree that is not a git repository degrades gracefully: the
   name rules still apply, the ignore query is skipped, and its files are
   reported *unknown* as before. A tracked file is never dropped, whatever the
   patterns say. Measured on a production Mintlify site, a run went from 4,032
-  files / 48.7 s / 1,078 files with no git history to **551 files / 7.5 s / 0**.
+  files / 48.7 s / 1,078 files with no git history to **552 files / 7.5 s / 0**,
+  about a 6.5x speedup.
   All of it is overridable with `--no-default-excludes` /
   `"no_default_excludes": true`, and `--exclude-dirs` / `exclude_patterns` keep
   working unchanged and additively on top — and `exclude_dirs` now prunes the
@@ -213,7 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history, and git errors) are cached too, and paths are keyed on their
   absolute symlink-resolved form so the several spellings one file arrives
   under share an entry. The same tree now runs in 2.1 s wall / 5.3 s user /
-  8.7 s sys — a 5.4x speedup, and within 4% of that 2.1 s no-resolution floor.
+  8.7 s sys — a 5.3x speedup, and within 4% of that 2.1 s no-resolution floor.
   Reports are unchanged: a run analyses one commit state, so every lookup in it
   has exactly one right answer. Nothing is cached across runs or on disk, and
   blame output is not cached.
@@ -244,11 +274,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A symlink to a real directory is fine; a dangling one is not. Auto-detected
   roots are unaffected — detection only ever returns a directory it just
   stat'ed (#7).
-- Plain-Markdown repositories (no `layouts/` or `themes/` directory, no
-  `hugo.{toml,yaml,json}` file and no `config/_default/` Hugo config above
-  `content_dir`) no longer get Hugo shortcode / MDX component reusable
-  detection by default, and `.mdx` files are only analyzed under the `hugo`
-  profile. Select `--profile hugo` or configure `reusables.patterns` to turn
+- **Plain-Markdown repositories lose Hugo detection, and `.mdx` leaves the
+  default allowlist.** A tree with no Hugo marker (no `layouts/` or `themes/`
+  directory, no `hugo.{toml,yaml,json}` file and no `config/_default/` Hugo
+  config above `content_dir`) resolves to the `markdown` profile, which has no
+  include mechanism: it no longer gets Hugo shortcode / MDX component reusable
+  detection by default, and it scans `.md` and `.markdown` only. `.mdx` is
+  still scanned under `hugo` and under the new `mintlify` profile, and an
+  explicit `--extensions` / `content_extensions` always wins.
+  Select `--profile hugo` or configure `reusables.patterns` to turn
   detection back on; Hugo sites that match none of these markers must pass
   `--profile hugo` to be treated as Hugo. Pointing at a reusables directory (`reusables.dir`, `reusables_dir`,
   `--reusables-dir`) without patterns still restores the Hugo defaults that
@@ -258,6 +292,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DefaultConfig`/`LoadConfig` no longer bake in
   extensions or patterns; `Config.ApplyProfile` fills them, and the analyzer
   calls it for configs built directly (#11).
+- **`total_sections` rises on every page that has a preamble, and with it every
+  summary percentage** (#70). Content above the first header is now analyzed
+  rather than discarded (see *Fixed* for the mechanism), so those sections join
+  the counts for the first time. On the 552-file Mintlify corpus, sections
+  analyzed went 5,721 → 6,065 (+344) and stale sections 2,654 → 2,843 (+189),
+  moving the stale-section rate from 46.4% to 46.9%. Those sections were always
+  in the tree; they were being dropped. A report generated before this release
+  is therefore not section-for-section comparable with one generated after it,
+  and a CI check pinned to an absolute section count needs rebaselining.
 - An uncompilable `reusables.patterns` entry now fails the run with an error
   naming the pattern instead of silently falling back to the Hugo pattern set
   (#11).
@@ -274,12 +317,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The HTML report now shows the reusables it already computed.** `html.go`
+  had always built the list of reusable components and the template never
+  referenced it, so the format this release is largely about was the one format
+  that said nothing about it: Markdown printed its `Reusable Components` table
+  and JSON its `reusables` array, while the HTML report dropped all 79 rows of
+  the production corpus on the floor. A `Reusable Components` table now renders
+  after the summary and legend and outside the per-file tab sections, since
+  reusables are global rather than per-tab, listing each component's path, last
+  commit date, fresh/stale/unknown status and last author. It reuses the
+  existing `sections-table` styling; a row with no resolvable date stays
+  *unknown*, matching the section rows and the other two formats. The section
+  is omitted entirely when a run resolves no reusables.
 - **Content above the first header is analyzed instead of discarded** (#70).
   When a file had any header, chunking started at that header and everything
   above it was dropped, so a page preamble — the prose, note or rendered
   include that sits under the frontmatter and before the first heading —
   contributed no blame dates, and a reusable referenced only there was never
-  detected and, if broken, never flagged. On the 551-file Mintlify corpus this
+  detected and, if broken, never flagged. On the 552-file Mintlify corpus this
   hid **39 of 335 imported-snippet usages (12%)**, including every usage of
   `McpHowItWorks`, `McpDocsMcpTip`, `TrustCaveats` and
   `PrivatePackageManagerConfigure`; those four now appear, taking the corpus
@@ -294,13 +349,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Files with no header at all keep going through the existing headerless path
   unchanged, frontmatter included — there the chunks are the page's only
   representation, and dropping the frontmatter of a frontmatter-only stub would
-  erase the file from the report.
-  **Note on the numbers:** this raises `total_sections` for every file that has
-  a preamble, and with it every summary percentage. On the same corpus sections
-  analyzed went 5,721 → 6,065 (+344) and stale sections 2,654 → 2,843 (+189),
-  46.4% → 46.9%. Those sections were always in the tree; they were being
-  dropped. A report generated before and after this release is not
-  section-for-section comparable.
+  erase the file from the report. This raises the section counts and every
+  summary percentage — see *Changed* for the figures.
 - Hugo shortcodes provided by a **theme** now resolve. Only
   `<project root>/layouts/shortcodes` was searched, so on a site whose layouts come
   from a theme (the shape the `themes/` marker detects) a shortcode was detected
@@ -337,6 +387,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The `show_reusables` config option (`Config.ShowReusables`). It was declared
+  and documented as "show reusables in report (default false)" but gated
+  nothing: Markdown has always printed its `Reusable Components` table and its
+  per-file `**Reusables:**` lines unconditionally, JSON has always emitted its
+  `reusables` array, and its only consumer was a template field the HTML
+  template never referenced. **Removing it changes no behaviour, and no config
+  file needs editing** — `encoding/json` ignores unknown keys, so a config
+  still carrying `"show_reusables"` keeps working exactly as before. It was
+  deliberately not turned into a real gate: switching it on would have to
+  default to off to mean anything, which would either remove output people
+  already depend on or hide the feature this release is about.
 - `config.DetectHugoRoot` and its short-lived replacement
   `config.DetectRoot(contentDir, markers)` — superseded by
   `Profile.DetectRoot(contentDir, warn)`, which walks the same way but applies
@@ -442,7 +503,8 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nrynss/rustydocs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nrynss/rustydocs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nrynss/rustydocs/releases/tag/v0.2.0

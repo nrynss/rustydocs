@@ -322,6 +322,19 @@
         .sections-table tr.caution { background: var(--caution-bg); }
         .sections-table tr.critical { background: var(--critical-bg); }
 
+        /*
+         * Reusable-components table. It reuses .sections-table for layout; the
+         * only extra rules are the two row states the reusables carry, which
+         * the staleness tiers (warning/caution/critical) do not cover: a
+         * reusable is fresh or stale against the threshold, not tiered. "stale"
+         * borrows --warning-bg because the threshold is exactly where the
+         * warning tier starts (Config.Normalize clamps it there), and an
+         * unknown date is deliberately left unstyled, matching the unstyled
+         * "unknown" section rows.
+         */
+        .reusables-table tr.fresh { background: var(--fresh-bg); }
+        .reusables-table tr.stale { background: var(--warning-bg); }
+
         .sections-table .line-num {
             font-family: monospace;
             font-size: 12px;
@@ -513,6 +526,32 @@
                 <span>Critical ({{.CriticalThreshold}}+ days)</span>
             </div>
         </div>
+
+        {{if .Reusables}}
+        <section class="summary">
+            <h2>Reusable Components ({{len .Reusables}})</h2>
+            <table class="sections-table reusables-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Last Updated</th>
+                        <th>Status</th>
+                        <th>Author</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Reusables}}
+                    <tr class="{{.StatusClass}}">
+                        <td class="file-path">{{.Name}}</td>
+                        <td>{{.DateStr}}</td>
+                        <td>{{.Status}}</td>
+                        <td>{{.Author}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </section>
+        {{end}}
 
         <div class="tabs">
             <button class="tab-btn active" data-tab="pending">

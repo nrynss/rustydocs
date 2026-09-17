@@ -32,7 +32,6 @@ type TemplateData struct {
 	OldestDays          int
 	Files               []FileData
 	Reusables           []ReusableTemplateData
-	ShowReusables       bool
 	WarningThreshold    int
 	CautionThreshold    int
 	CriticalThreshold   int
@@ -257,7 +256,6 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 		OldestDays:          oldestDays,
 		Files:               files,
 		Reusables:           reusables,
-		ShowReusables:       cfg.ShowReusables,
 		WarningThreshold:    cfg.StalenessLevels.Warning,
 		CautionThreshold:    cfg.StalenessLevels.Caution,
 		CriticalThreshold:   cfg.StalenessLevels.Critical,
