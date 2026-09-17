@@ -550,3 +550,200 @@ func TestAnalyze_NestedStandaloneRepoStillPruned(t *testing.T) {
 		t.Errorf("SkippedDirNames = %v, want %v", got, wantNames)
 	}
 }
+
+// TestAnalyze_GitIgnoreWithSubmodule is the regression test for the
+// interaction between the git-ignore filter and the decision to walk into
+// submodules (#69 / PR #71 review).
+//
+// `git check-ignore` refuses outright ("fatal: Pathspec 'x' is in submodule
+// 'y'") when any pathspec it is given lies inside a submodule of the
+// repository it is asked from. filterGitIgnored used to hand every file of the
+// run to one invocation rooted at the content directory, and treat an error as
+// "skip filtering" — so a single submodule anywhere under the content tree
+// silently turned the ignore filter off for the *whole* repository, and the
+// parent's own git-ignored files came back as "unknown" rows.
+//
+// Both repositories here ignore a file of their own. Both must be dropped, and
+// the tracked pages of both must survive.
+func TestAnalyze_GitIgnoreWithSubmodule(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	subDate := now.AddDate(0, 0, -200)
+	parentDate := now.AddDate(0, 0, -10)
+
+	sub := testutil.NewRepo(t)
+	sub.Commit(subDate, "shared content", map[string]string{
+		".gitignore": "sub-generated.md\n",
+		"sub1.md":    "# Sub one\n\nbody\n",
+	})
+	sub.Write("sub-generated.md", "# Sub generated\n")
+
+	parent := testutil.NewRepo(t)
+	parent.Commit(parentDate, "docs", map[string]string{
+		".gitignore":   "docs/generated.md\n",
+		"docs/real.md": "# Real\n\nbody\n",
+	})
+	parent.Write("docs/generated.md", "# Generated\n")
+
+	gitIn(t, parent.Dir, nil, "-c", "protocol.file.allow=always",
+		"submodule", "add", "-q", sub.Dir, "docs/content-sub")
+	stamp := parentDate.Format(time.RFC3339)
+	gitIn(t, parent.Dir, []string{"GIT_AUTHOR_DATE=" + stamp, "GIT_COMMITTER_DATE=" + stamp},
+		"commit", "-q", "-m", "add submodule")
+
+	// The submodule's ignored file lives in the checkout, which `submodule add`
+	// re-created by cloning; write it there rather than in the source repo.
+	if err := os.WriteFile(filepath.Join(parent.Dir, "docs", "content-sub", "sub-generated.md"),
+		[]byte("# Sub generated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dotGit := filepath.Join(parent.Dir, "docs", "content-sub", ".git")
+	info, err := os.Lstat(dotGit)
+	if err != nil || info.IsDir() {
+		t.Skipf("this git does not use a .git file for submodule checkouts (%v)", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = parent.Path("docs")
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	want := []string{"content-sub/sub1.md", "real.md"}
+	if got := paths(res); !reflect.DeepEqual(got, want) {
+		t.Fatalf("analyzed files = %v, want %v (both git-ignored files must be dropped)", got, want)
+	}
+	if res.FilesGitIgnored() != 2 {
+		t.Errorf("FilesGitIgnored = %d, want 2 (one per repository)", res.FilesGitIgnored())
+	}
+	if res.FilesMissingHistory() != 0 {
+		t.Errorf("FilesMissingHistory = %d, want 0", res.FilesMissingHistory())
+	}
+}
+
+// TestFilterGitIgnored_GroupErrorIsIsolated pins the second half of the
+// per-repository rule: a group git cannot answer for must lose its own
+// filtering only. The stray file below sits outside the repository entirely,
+// so the query that covers it fails; the repository's own ignored file must
+// still be dropped.
+func TestFilterGitIgnored_GroupErrorIsIsolated(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "docs", map[string]string{
+		".gitignore":   "docs/generated.md\n",
+		"docs/real.md": "# Real\n",
+	})
+	repo.Write("docs/generated.md", "# Generated\n")
+
+	outside := filepath.Join(t.TempDir(), "stray.md")
+	if err := os.WriteFile(outside, []byte("# Stray\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	base := repo.Path("docs")
+	files := []string{repo.Path("docs/real.md"), repo.Path("docs/generated.md"), outside}
+	kept, dropped := filterGitIgnored(base, files)
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	want := []string{repo.Path("docs/real.md"), outside}
+	if !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept = %v, want %v", kept, want)
+	}
+}
+
+// TestFilterGitIgnored_PlainRepo pins that the ordinary single-repository case
+// is unchanged by the per-root grouping.
+func TestFilterGitIgnored_PlainRepo(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "docs", map[string]string{
+		".gitignore":         "docs/generated.md\ndocs/sub/also.md\n",
+		"docs/real.md":       "# Real\n",
+		"docs/sub/nested.md": "# Nested\n",
+	})
+	repo.Write("docs/generated.md", "# Generated\n")
+	repo.Write("docs/sub/also.md", "# Also\n")
+
+	files := []string{
+		repo.Path("docs/generated.md"),
+		repo.Path("docs/real.md"),
+		repo.Path("docs/sub/also.md"),
+		repo.Path("docs/sub/nested.md"),
+	}
+	kept, dropped := filterGitIgnored(repo.Path("docs"), files)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want 2", dropped)
+	}
+	want := []string{repo.Path("docs/real.md"), repo.Path("docs/sub/nested.md")}
+	if !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept = %v, want %v", kept, want)
+	}
+}
+
+// TestAnalyze_NestedExcludeDirIsPruned covers the accounting half of
+// exclude_dirs (PR #71 review). A nested match — "drafts" occurring as
+// "guides/drafts" rather than at the content root — always excluded its files,
+// because matchesExcludeDirs saw "/drafts/" in each file's relative path. What
+// it did not do was match the *directory*, whose relative path merely ends in
+// "/drafts", so the walk descended into the subtree and filtered it a file at a
+// time: DirsExcluded stayed at 0 and the files landed in FilesExcluded, which
+// is the counter documented to mean exclude_patterns.
+//
+// The observable contract is the counts, so those are what this asserts: a
+// nested match now prunes exactly like a root-level one.
+func TestAnalyze_NestedExcludeDirIsPruned(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -10), "docs", map[string]string{
+		"docs/keep.md":                "# Keep\n\nbody\n",
+		"docs/guides/keep.md":         "# Keep\n\nbody\n",
+		"docs/guides/drafts/a.md":     "# A\n\nbody\n",
+		"docs/guides/drafts/b.md":     "# B\n\nbody\n",
+		"docs/guides/drafts/c/d.md":   "# D\n\nbody\n",
+		"docs/guides/drafts/note.txt": "not content\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ExcludeDirs = []string{"drafts"}
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	want := []string{"guides/keep.md", "keep.md"}
+	if got := paths(res); !reflect.DeepEqual(got, want) {
+		t.Fatalf("analyzed files = %v, want %v", got, want)
+	}
+	if got := res.DirsExcluded(); got != 1 {
+		t.Errorf("DirsExcluded = %d, want 1 (guides/drafts pruned as a subtree)", got)
+	}
+	if got := res.FilesExcluded(); got != 0 {
+		t.Errorf("FilesExcluded = %d, want 0: the subtree is pruned, not filtered file by file", got)
+	}
+}
+
+// TestMatchesExcludeDirs pins the four shapes an exclude_dirs entry has to
+// match, and the segment-boundary rule that keeps "docs" out of "mydocs".
+func TestMatchesExcludeDirs(t *testing.T) {
+	dirs := []string{"drafts"}
+	for _, rel := range []string{
+		"drafts", "drafts/a.md", "guides/drafts", "guides/drafts/a.md", "a/b/drafts/c/d.md",
+	} {
+		if !matchesExcludeDirs(rel, dirs) {
+			t.Errorf("matchesExcludeDirs(%q) = false, want true", rel)
+		}
+	}
+	for _, rel := range []string{
+		"mydrafts", "mydrafts/a.md", "guides/mydrafts", "draftsy/a.md", "guides/old-drafts",
+	} {
+		if matchesExcludeDirs(rel, dirs) {
+			t.Errorf("matchesExcludeDirs(%q) = true, want false", rel)
+		}
+	}
+}

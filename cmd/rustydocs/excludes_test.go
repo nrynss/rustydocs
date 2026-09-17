@@ -163,3 +163,65 @@ func TestRunArgs_NoDefaultExcludesConfigKey(t *testing.T) {
 		t.Errorf("no_default_excludes in config should scan the dot-directory too:\n%s", out.String())
 	}
 }
+
+// TestRunArgs_ZeroFilesUnderDefaultPrunedDirs pins the fourth branch of
+// describeNoFilesMatched (PR #71 review). When the only content lives under a
+// directory the *default* exclusions prune, every counter the warning used to
+// consult is zero: no file matched, none was excluded by the user's rules, none
+// was git-ignored. The warning therefore fell through to "no files matched the
+// extensions … use --extensions", which flatly contradicted the note printed
+// immediately above it ("default exclusions skipped 1 director(y/ies)
+// (node_modules)") and recommended the one knob that cannot help.
+//
+// It now defers to that note and names the flag that does help. The detail is
+// not repeated: two messages about one cause was the problem.
+func TestRunArgs_ZeroFilesUnderDefaultPrunedDirs(t *testing.T) {
+	// The output directory is deliberately outside the content tree: the
+	// reports are .md files, and the second run below would otherwise scan
+	// the ones the first run wrote.
+	dir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "out")
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node_modules", "pkg", "readme.md"),
+		[]byte("# Vendored\n\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{"--content-dir", dir, "--output-dir", outDir}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+	stderr := errb.String()
+
+	want := "Warning: nothing was scanned under " + dir +
+		`: the default exclusions pruned every directory that could hold ` +
+		`the "markdown" profile's extensions (.md, .markdown) (see the note above); ` +
+		"pass --no-default-excludes to scan them anyway."
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr missing %q, got:\n%s", want, stderr)
+	}
+	// The note it defers to must really be there, and the contradicted advice
+	// must be gone.
+	if !strings.Contains(stderr, "default exclusions skipped 1 director(y/ies) (node_modules)") {
+		t.Errorf("the preceding default-exclusions note is missing, got:\n%s", stderr)
+	}
+	for _, absent := range []string{"no files matched", "--extensions", "--list-profiles"} {
+		if strings.Contains(stderr, absent) {
+			t.Errorf("warning must not recommend %q when the cause is a pruned directory, got:\n%s",
+				absent, stderr)
+		}
+	}
+
+	// And --no-default-excludes, the remedy it names, really does scan the file.
+	out.Reset()
+	errb.Reset()
+	if err := runArgs([]string{"--content-dir", dir, "--output-dir", outDir,
+		"--no-default-excludes"}, &out, &errb); err != nil {
+		t.Fatalf("runArgs(--no-default-excludes): %v\nstderr: %s", err, errb.String())
+	}
+	if !strings.Contains(out.String(), "Files scanned: 1") {
+		t.Errorf("--no-default-excludes should scan the vendored page, got:\n%s", out.String())
+	}
+}

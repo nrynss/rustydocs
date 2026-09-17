@@ -233,7 +233,14 @@ func isMintlifyConfig(path string) (bool, error) {
 // profile with an import map it is a symbol that only counts when an import
 // introduced it (see Profile.ImportMap). The regex is the same either way, and
 // having one copy keeps the two from drifting (#68).
-const MDXComponentPattern = `<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`
+//
+// The tail of the name matches the same characters parser.identifierPattern
+// accepts for an import binding, "_" and "$" included. It used to stop at
+// [a-zA-Z0-9], so "<Foo_Bar />" captured "Foo" — a symbol no import ever
+// introduced, which the import-map lookup missed and then classified on the
+// wrong branch. The first character stays [A-Z]: a lowercase tag is an HTML
+// element, not a component (PR #71 review).
+const MDXComponentPattern = `<([A-Z][A-Za-z0-9_$]*)\s*[^>]*/?>`
 
 // hugoReusablePatterns is the single source of truth for the Hugo profile's
 // reusable-reference regexes (parser.DefaultReusablePatterns builds from it).

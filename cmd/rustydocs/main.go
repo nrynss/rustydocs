@@ -344,7 +344,8 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	// in silence. The exit code is unchanged (#11).
 	if results.TotalFiles() == 0 {
 		fmt.Fprintf(stderr, "\nWarning: %s\n", describeNoFilesMatched(cfg,
-			results.FilesExcluded(), results.DirsExcluded(), results.FilesGitIgnored()))
+			results.FilesExcluded(), results.DirsExcluded(), results.FilesGitIgnored(),
+			results.DirsSkipped()))
 		return nil
 	}
 
@@ -605,10 +606,17 @@ func describeSkippedDirNames(names []string) string {
 //     files matched the extensions" there was simply untrue — the extensions
 //     matched fine. The note printed just above this one already gives the
 //     detail, so this stays one clause (#69 review).
+//   - dirsSkipped > 0: the *default* exclusions pruned every directory that
+//     could have held content — a docs tree that lives entirely under, say,
+//     node_modules or a nested clone. Nothing was ever visited, so all the
+//     other counters are zero and the plain "no files matched the extensions"
+//     text both contradicted the note printed above it and recommended the one
+//     knob that cannot help. It defers to that note rather than repeating its
+//     detail, and names the flag that restores the subtrees (PR #71 review).
 //
 // With none of those, the allowlist really did match nothing, and the warning
 // points at the two knobs that widen it.
-func describeNoFilesMatched(cfg *config.Config, excluded, dirsExcluded, gitIgnored int) string {
+func describeNoFilesMatched(cfg *config.Config, excluded, dirsExcluded, gitIgnored, dirsSkipped int) string {
 	active, profileNote := describeActiveExtensions(cfg)
 	switch {
 	case excluded > 0:
@@ -624,6 +632,11 @@ func describeNoFilesMatched(cfg *config.Config, excluded, dirsExcluded, gitIgnor
 			"so none was analyzed; untrack the ignore rule, or pass --no-default-excludes "+
 			"to analyze them anyway.",
 			gitIgnored, active, cfg.ContentDir, profileNote)
+	case dirsSkipped > 0:
+		return fmt.Sprintf("nothing was scanned under %s%s: the default exclusions pruned "+
+			"every directory that could hold %s (see the note above); "+
+			"pass --no-default-excludes to scan them anyway.",
+			cfg.ContentDir, profileNote, active)
 	}
 	return fmt.Sprintf("no files matched %s under %s%s; "+
 		"use --extensions to widen the allowlist or --profile to pick another profile (see --list-profiles).",

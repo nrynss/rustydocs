@@ -340,36 +340,179 @@ func isDefaultExcludedDir(dirPath, name string) bool {
 }
 
 // filterGitIgnored returns the files git does not ignore, and how many it
-// dropped. Paths are handed to git relative to baseDir and matched back by that
-// exact spelling (see git.CheckIgnore). A tree git cannot answer for — not a
-// repository, no git on PATH — is returned unfiltered: rustydocs supports that
-// case and reports its files as unknown.
+// dropped. A tree git cannot answer for — not a repository, no git on PATH —
+// is returned unfiltered: rustydocs supports that case and reports its files
+// as unknown.
+//
+// The files are grouped by their owning repository first, and each group gets
+// its own `git check-ignore`. That is not an optimisation, it is the only
+// correct shape: check-ignore refuses outright ("fatal: Pathspec 'x' is in
+// submodule 'y'") when a pathspec it is handed lies inside a submodule of the
+// repository it is asked from. One invocation rooted at the content directory
+// therefore *errored* on any tree containing a submodule — and since an error
+// means "skip filtering", a single submodule silently disabled the ignore
+// filter for the whole repository, parent included. The walk descends into
+// submodules by design (#69), so the two features met head-on (PR #71 review).
+//
+// Grouping also confines the error rule: a repository git cannot answer for
+// loses its own filtering and nothing else.
+//
+// Paths are handed to git relative to the group's root and matched back by
+// that exact spelling (see git.CheckIgnore). The root git reports is the
+// *physical* path (`git rev-parse --show-toplevel` resolves symlinks), while
+// the walk carries logical paths, so each directory's own physical form is
+// resolved once and the pathspec built from that; a file whose physical path
+// does not sit under the root it was attributed to (a symlink out of the tree)
+// falls back to being asked about from the content directory, exactly as
+// before.
 func filterGitIgnored(baseDir string, files []string) (kept []string, dropped int) {
 	if len(files) == 0 {
 		return files, 0
 	}
-	rels := make([]string, len(files))
+
+	// One group per owning repository, in first-seen order so the subprocesses
+	// run deterministically. The zero key is the fallback group, asked from the
+	// content directory for the files no root could be derived for.
+	type group struct {
+		dir  string // directory git is asked from
+		idx  []int  // indices into files
+		rels []string
+	}
+	groups := make(map[string]*group)
+	var order []string
+	add := func(key, dir, rel string, i int) {
+		g := groups[key]
+		if g == nil {
+			g = &group{dir: dir}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.idx = append(g.idx, i)
+		g.rels = append(g.rels, rel)
+	}
+
+	dirs := resolveDirRoots(files)
+
 	for i, f := range files {
+		info := dirs[filepath.Dir(f)]
+		if rel, ok := relUnderRoot(info.root, info.phys, filepath.Base(f)); ok {
+			add(info.root, info.root, rel, i)
+			continue
+		}
 		rel, err := filepath.Rel(baseDir, f)
 		if err != nil {
 			// Nothing sensible to ask git about; keep the file.
 			rel = f
 		}
-		rels[i] = filepath.ToSlash(rel)
+		add("", baseDir, filepath.ToSlash(rel), i)
 	}
-	ignored, err := git.CheckIgnore(baseDir, rels)
-	if err != nil || len(ignored) == 0 {
-		return files, 0
-	}
-	kept = make([]string, 0, len(files))
-	for i, f := range files {
-		if ignored[rels[i]] {
-			dropped++
+
+	isIgnored := make([]bool, len(files))
+	for _, key := range order {
+		g := groups[key]
+		ignored, err := git.CheckIgnore(g.dir, g.rels)
+		if err != nil || len(ignored) == 0 {
+			// This repository keeps all its files; the others are unaffected.
 			continue
 		}
-		kept = append(kept, f)
+		for j, idx := range g.idx {
+			if ignored[g.rels[j]] {
+				isIgnored[idx] = true
+				dropped++
+			}
+		}
+	}
+	if dropped == 0 {
+		return files, 0
+	}
+
+	kept = make([]string, 0, len(files)-dropped)
+	for i, f := range files {
+		if !isIgnored[i] {
+			kept = append(kept, f)
+		}
 	}
 	return kept, dropped
+}
+
+// dirRoot is one directory's owning repository root and its own physical
+// (symlink-resolved) path, the two things filterGitIgnored needs to build a
+// pathspec. Either may be empty when it could not be determined.
+type dirRoot struct{ root, phys string }
+
+// resolveDirRoots resolves those two facts for every distinct directory the
+// files sit in, concurrently.
+//
+// Concurrently because each root costs a `git rev-parse` subprocess and a docs
+// corpus is wide: 552 files spread over 466 directories turned a 6-second run
+// into a 14-second one when they were spawned back to back. Nothing extra is
+// spawned overall — git.GetGitRootForPath's cache is per directory and
+// process-wide, so these are exactly the lookups the blame stage would make
+// later, only made earlier and in parallel.
+//
+// Each goroutine writes to its own pre-created entry, so the map itself is
+// never written concurrently.
+func resolveDirRoots(files []string) map[string]*dirRoot {
+	dirs := make(map[string]*dirRoot)
+	// A representative file per directory: GetGitRootForPath takes a file.
+	samples := make(map[string]string)
+	var order []string
+	for _, f := range files {
+		d := filepath.Dir(f)
+		if _, seen := dirs[d]; !seen {
+			dirs[d] = &dirRoot{}
+			samples[d] = f
+			order = append(order, d)
+		}
+	}
+
+	workers := min(runtime.NumCPU(), len(order))
+	ch := make(chan string, len(order))
+	for _, d := range order {
+		ch <- d
+	}
+	close(ch)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range ch {
+				info := dirs[d]
+				if root, err := git.GetGitRootForPath(samples[d]); err == nil {
+					info.root = root
+				}
+				if phys, err := filepath.EvalSymlinks(d); err == nil {
+					info.phys = phys
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return dirs
+}
+
+// relUnderRoot builds the slash-separated pathspec for a file whose directory
+// resolves to physDir, relative to the repository root. It reports false when
+// either path is unknown or when the result escapes the root, which is the
+// caller's cue to fall back to asking from the content directory.
+func relUnderRoot(root, physDir, base string) (string, bool) {
+	if root == "" || physDir == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, physDir)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	if rel == "." {
+		return base, true
+	}
+	return rel + "/" + base, true
 }
 
 func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
@@ -409,6 +552,15 @@ func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 // matchesExcludeDirs reports whether a slash-separated path, relative to the
 // content root, lies at or under one of the configured exclude_dirs. Matching
 // is on segment boundaries, so "docs" never matches "mydocs/...".
+//
+// The HasSuffix arm is what makes a *nested* match prunable. Without it the
+// path "guides/drafts" — the directory itself — matched nothing, because it
+// neither equals "drafts" nor contains "/drafts/", so isUserExcludedDir let
+// the walk descend and every file under it was filtered one at a time by
+// shouldExclude instead. The files were excluded either way (the Contains arm
+// catches "guides/drafts/x.md"), so this was never a correctness bug; what it
+// cost was the subtree prune and the DirsExcluded count that explains where
+// those files went (PR #71 review).
 func matchesExcludeDirs(relative string, excludeDirs []string) bool {
 	for _, dir := range excludeDirs {
 		dir = strings.Trim(filepath.ToSlash(dir), "/")
@@ -417,7 +569,8 @@ func matchesExcludeDirs(relative string, excludeDirs []string) bool {
 		}
 		if relative == dir ||
 			strings.HasPrefix(relative, dir+"/") ||
-			strings.Contains(relative, "/"+dir+"/") {
+			strings.Contains(relative, "/"+dir+"/") ||
+			strings.HasSuffix(relative, "/"+dir) {
 			return true
 		}
 	}

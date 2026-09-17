@@ -134,6 +134,10 @@ type ReusablePatterns struct {
 	// No locking, for the same reason importCache needs none: a
 	// ReusablePatterns belongs to one worker for the duration of one file.
 	includeCaptures map[string]struct{}
+	// dirEntries memoizes the directory listings caseExactUnder reads to check
+	// a candidate's spelling against the filesystem's. A nil entry records a
+	// directory that exists but could not be listed; see dirHasEntry.
+	dirEntries map[string]map[string]struct{}
 }
 
 // Resolution says what became of a reusable reference, so the caller can tell a
@@ -653,6 +657,14 @@ func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, b
 			if info, err := os.Stat(candidate); err != nil || info.IsDir() {
 				continue
 			}
+			if !rp.caseExactUnder(base, candidate) {
+				// A case-insensitive filesystem said yes to a spelling the
+				// file does not actually have — <Note /> finding
+				// snippets/note.mdx. Accepting it would make the report
+				// depend on which operating system ran rustydocs; see
+				// caseExactUnder.
+				continue
+			}
 			// The file exists; it is the answer, so no further candidate is
 			// tried.
 			return candidate, true
@@ -954,10 +966,16 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 	shortcodePath := ""
 	for _, layouts := range rp.layoutRoots() {
 		for _, candidate := range shortcodeCandidates(layouts, name) {
-			if _, err := os.Stat(candidate); err == nil {
-				shortcodePath = candidate
-				break
+			if _, err := os.Stat(candidate); err != nil {
+				continue
 			}
+			if !rp.caseExactUnder(rp.root, candidate) {
+				// {{< Note >}} must not pick up shortcodes/note.html on a
+				// case-insensitive filesystem; see caseExactUnder.
+				continue
+			}
+			shortcodePath = candidate
+			break
 		}
 		if shortcodePath != "" {
 			break
@@ -979,6 +997,9 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 }
 
 // parseShortcodeDataRefs parses a Hugo shortcode HTML for data file references.
+// Every path it derives from the template's text is case-exact-checked for the
+// same reason resolution is: the date it contributes must not depend on the
+// case-folding rules of the filesystem the run happened on.
 func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []string {
 	data, err := os.ReadFile(filepath.Clean(shortcodePath))
 	if err != nil {
@@ -993,7 +1014,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	for _, match := range readFileRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
 			fullPath := filepath.Join(rp.root, match[1])
-			if _, err := os.Stat(fullPath); err == nil {
+			if _, err := os.Stat(fullPath); err == nil && rp.caseExactUnder(rp.root, fullPath) {
 				dataFiles = append(dataFiles, fullPath)
 			}
 		}
@@ -1007,7 +1028,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 			if !strings.HasSuffix(partialPath, ".html") {
 				partialPath += ".html"
 			}
-			if _, err := os.Stat(partialPath); err == nil {
+			if _, err := os.Stat(partialPath); err == nil && rp.caseExactUnder(rp.root, partialPath) {
 				dataFiles = append(dataFiles, partialPath)
 			}
 		}
@@ -1021,7 +1042,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 			// Try common extensions
 			for _, ext := range []string{".yaml", ".yml", ".json", ".toml"} {
 				dataPath := filepath.Join(rp.root, "data", match[1]+ext)
-				if _, err := os.Stat(dataPath); err == nil {
+				if _, err := os.Stat(dataPath); err == nil && rp.caseExactUnder(rp.root, dataPath) {
 					dataFiles = append(dataFiles, dataPath)
 					break
 				}
@@ -1048,9 +1069,17 @@ func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
 }
 
 // lookupInDir tries to find a file in a directory by name.
+//
+// The candidate's spelling is checked against the filesystem's before git is
+// asked, for the reason caseExactUnder gives: on Windows the path git receives
+// has been case-normalised on the way, so a capture that differs from the file
+// name only in case resolves there and nowhere else.
 func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name+ext)
+		if !rp.caseExactUnder(dir, candidate) {
+			continue
+		}
 		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}
@@ -1058,6 +1087,9 @@ func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	// Try as subdirectory with index file
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name, "index"+ext)
+		if !rp.caseExactUnder(dir, candidate) {
+			continue
+		}
 		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}

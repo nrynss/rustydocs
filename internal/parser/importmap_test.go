@@ -85,6 +85,15 @@ func TestIsImportableContent(t *testing.T) {
 // importRepo builds a Mintlify-shaped repository: a root with snippets/, a
 // page directory, and distinct commit dates per file so a folded date is
 // attributable to exactly one of them.
+//
+// Naming rule for these fixtures: a test that asserts a symbol must NOT
+// resolve has to pick a symbol that cannot case-collide with any file below,
+// because "Shared" and snippets/shared.mdx are the same path on a
+// case-insensitive filesystem and such a test would then be asserting the
+// resolver's case rules rather than its own subject. Resolution is case-exact
+// on every platform (see caseExactUnder and TestResolveDirectPath_CaseExact),
+// so the collision no longer decides the outcome — but a test whose intent
+// depends on that second mechanism is a test that says two things at once.
 type importRepo struct {
 	repo        *testutil.Repo
 	root        string
@@ -264,7 +273,10 @@ func TestResolveReusable_SnippetAndImportTogether(t *testing.T) {
 // untouched.
 func TestResolveReusable_ImportMapOffKeepsOldBehaviour(t *testing.T) {
 	ir := newImportRepo(t)
-	page := ir.page("guides/off.mdx", "import Shared from \"/snippets/shared.mdx\";\n\n<Shared />\n")
+	// SharedPartial, not Shared: the symbol must not double as a file name in
+	// the fixture, or "stays unresolved" could pass for the wrong reason.
+	page := ir.page("guides/off.mdx",
+		"import SharedPartial from \"/snippets/shared.mdx\";\n\n<SharedPartial />\n")
 
 	rp, err := NewReusablePatternsFor(ReusableConfig{
 		Patterns:   mintlifyPatternStrings,
@@ -276,7 +288,7 @@ func TestResolveReusable_ImportMapOffKeepsOldBehaviour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, res := ResolveReusable("Shared", page, rp)
+	info, res := ResolveReusable("SharedPartial", page, rp)
 	if info != nil || res != ResolutionUnresolved {
 		t.Errorf("without the import map, a symbol must stay unresolved; got %v %+v", res, info)
 	}
@@ -348,7 +360,9 @@ func TestImportMap_UnreadablePageIsEmpty(t *testing.T) {
 		if got := ir.rp.importsFor(src); len(got) != 0 {
 			t.Errorf("importsFor(%q) = %v, want empty", src, got)
 		}
-		if _, res := ResolveReusable("Shared", src, ir.rp); res != ResolutionSkipped {
+		// SharedPartial for the same reason as above: no fixture file can be
+		// mistaken for it under any case-folding rule.
+		if _, res := ResolveReusable("SharedPartial", src, ir.rp); res != ResolutionSkipped {
 			t.Errorf("ResolveReusable with source %q = %v, want ResolutionSkipped", src, res)
 		}
 	}
@@ -583,4 +597,60 @@ func TestDisplayName_UnresolvedImportNamesItsPath(t *testing.T) {
 	if got := ir.rp.DisplayName("Card", pageC, nil); got != "Card" {
 		t.Errorf("DisplayName(escaping import) = %q, want the raw capture", got)
 	}
+}
+
+// TestFindReusables_UnderscoreAndDollarComponents is the regression test for
+// the component pattern's identifier class (PR #71 review).
+//
+// The import parser accepts any JavaScript binding name, "_" and "$" included,
+// so `import Shared_One from "…"` really does introduce the symbol
+// "Shared_One". config.MDXComponentPattern used to stop the capture at
+// [a-zA-Z0-9], so `<Shared_One />` was captured as "Shared" — a symbol the
+// import map has never heard of, which then took the unimported-component
+// branch and was silently skipped while the genuine include went unattributed.
+// The capture must be the whole binding, and it must resolve.
+func TestFindReusables_UnderscoreAndDollarComponents(t *testing.T) {
+	ir := newImportRepo(t)
+
+	page := ir.page("guides/underscore.mdx", `import Shared_One from "/snippets/shared.mdx";
+import { Other as Other$Two } from "/snippets/other.mdx";
+
+# Heading
+
+<Shared_One />
+<Other$Two />
+`)
+	body, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := FindReusables(string(body), ir.rp)
+	for _, want := range []string{"Shared_One", "Other$Two"} {
+		if !slicesContains(got, want) {
+			t.Errorf("FindReusables() = %v, want it to contain %q", got, want)
+		}
+	}
+
+	for ref, wantDate := range map[string]time.Time{
+		"Shared_One": ir.snippetDate,
+		"Other$Two":  ir.otherDate,
+	} {
+		info, res := ResolveReusable(ref, page, ir.rp)
+		if res != ResolutionResolved {
+			t.Fatalf("ResolveReusable(%q) = %v, want resolved", ref, res)
+		}
+		if !info.LastModified.Equal(wantDate) {
+			t.Errorf("ResolveReusable(%q) date = %s, want %s", ref, info.LastModified, wantDate)
+		}
+	}
+}
+
+func slicesContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

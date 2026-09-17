@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ResolverPath` machinery, so a leading `/` is project-root relative, `./` and
   `../` are relative to the importing page, and the containment and symlink
   checks apply unchanged; `<Snippet file="…" />` keeps resolving alongside
-  imports on the same page. **Only `.md` and `.mdx` imports are followed.** A
+  imports on the same page. **Only content imports are followed** — `.md`, `.mdx`,
+  and an extensionless path such as `./intro`, which is what a content import
+  looks like in an MDX tree and which the resolver's extension fallback tries
+  `.mdx`/`.md` (and `index.*`) against. A
   `.jsx`, `.js` or `.css` import, and any bare package specifier
   (`@mintlify/components`), is detected and deliberately skipped — freshness
   folding only ever makes a section look *fresher*, so resolving a React

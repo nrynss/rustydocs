@@ -329,9 +329,11 @@ paths: a leading `/` against the project root, `./` and `../` against the
 importing page, with the same containment and symlink checks. Both forms work on
 the same page.
 
-**Only `.md` and `.mdx` imports are followed.** A `.jsx`, `.js` or `.css`
-import, or one of a package (`@mintlify/components`), is detected and
-deliberately **skipped**. This is not an oversight — folding an include's date
+**Only content imports are followed** — `.md` and `.mdx`, plus an extensionless
+path such as `./intro`, which is what a content import looks like in an MDX tree
+and which the resolver's extension fallback tries `.mdx`/`.md` (and `index.*`)
+against. A `.jsx`, `.js` or `.css` import, or one of a package
+(`@mintlify/components`), is detected and deliberately **skipped**. This is not an oversight — folding an include's date
 in only ever makes a section look *fresher*, so resolving a shared React
 component would mark every page importing it as recently updated the next time
 someone changed its styling, destroying the signal precisely where the tool is
