@@ -10,7 +10,7 @@ Find stale documentation using git history. Analyzes your documentation at the s
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
 - **Tool profiles**: `hugo` and `mintlify` profiles (both auto-detected) add MDX support and include tracking — Hugo shortcodes / JSX components, and Mintlify snippets resolved by path; more profiles are on the way (see [Profiles](#profiles))
 - **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
-- **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is an 8x speedup and 1,078 fewer spurious *unknown* rows
+- **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is about a 6.5x speedup (48.7 s to 7.5 s) and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
 - **Dual output**: Generates both Markdown and HTML reports
 - **Zero dependencies**: Uses only Go standard library
@@ -60,7 +60,7 @@ wins.
 | Profile    | Extensions                 | Root marker         | Reusable detection                                   |
 | ---------- | -------------------------- | ------------------- | ---------------------------------------------------- |
 | `markdown` | `.md`, `.markdown`         | none                | **off** (plain CommonMark/GFM has no include mechanism) |
-| `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style), resolved as a **path** under `snippets/` / `_snippets/` or the project root |
+| `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style) and MDX imports rendered as `<X />`, resolved as a **path** under `snippets/` / `_snippets/` or the project root; `.jsx`/`.js`/`.css` imports are skipped |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
 
 **Auto-detection.** When no profile is named, rustydocs walks up from
