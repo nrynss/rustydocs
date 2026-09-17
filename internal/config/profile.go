@@ -100,6 +100,21 @@ type Profile struct {
 	// lookup is independent of it and still applies whenever a reusables
 	// directory is configured.
 	Resolver Resolver
+	// ImportMap turns on the MDX import-map layer: the parser reads each page's
+	// `import X from "…"` / `import { A, B } from "…"` statements, resolves the
+	// paths with this profile's Resolver, and attributes a section's use of
+	// <X /> to the imported file's freshness. It is a layer on top of
+	// ResolverPath, not a replacement — <Snippet file="…" /> keeps resolving
+	// alongside it.
+	//
+	// Only .md and .mdx imports are followed. A .jsx / .js / .css import is
+	// detected and deliberately skipped, and so is a capitalised tag that no
+	// import introduced: neither is an unresolved include, both are out of
+	// scope by design. Folding a React component's commit date into a section
+	// would only ever make the section look *fresher*, so restyling one shared
+	// component would mark every page importing it as recently updated — the
+	// precise signal this tool exists to protect (#68).
+	ImportMap bool
 }
 
 // markerPredicate reports whether the file found at a marker's path really is
@@ -208,33 +223,50 @@ func isMintlifyConfig(path string) (bool, error) {
 	return false, nil
 }
 
+// MDXComponentPattern captures the tag name of an MDX/JSX component usage:
+// <Component>, <Component />, <Component prop="val">. Closing tags do not match
+// (the "<" is followed by "/"), which is what is wanted — one capture per
+// element is enough.
+//
+// It is shared by every profile that reads component usage. What a capture
+// *means* differs by profile: to hugo it is a shortcode name to look up, to a
+// profile with an import map it is a symbol that only counts when an import
+// introduced it (see Profile.ImportMap). The regex is the same either way, and
+// having one copy keeps the two from drifting (#68).
+const MDXComponentPattern = `<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`
+
 // hugoReusablePatterns is the single source of truth for the Hugo profile's
 // reusable-reference regexes (parser.DefaultReusablePatterns builds from it).
 var hugoReusablePatterns = []string{
 	// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
 	`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-	// MDX/JSX components: <Component>, <Component />, <Component prop="val">
-	`<([A-Z][a-zA-Z0-9]*)\s*[^>]*/?>`,
+	MDXComponentPattern,
 }
 
-// mintlifyReusablePatterns captures the *path* in Mintlify's snippet include,
-// <Snippet file="aws-config.mdx" />, which the path resolver looks up under
-// the project's snippets directory (or against the project root when the
-// capture is root-absolute). Deliberately narrow: the hugo profile's generic
-// MDX-component pattern would capture the component *name* of every <Card />
-// and <Tabs> on the page, none of which names a file, so it must not leak in
-// here. Imported snippets (import X from '/snippets/x.mdx' used as <X />) need
-// an import map and are a follow-up (#13/#18/#19).
+// mintlifyReusablePatterns captures the two ways a Mintlify page includes
+// shared content.
 //
-// Both MDX quote styles are legal, so there are two patterns rather than one
-// with two alternatives: reusable detection reads capture group 1 of each
-// pattern, and an alternation would leave one group empty on every match.
-// "<Snippet\b" (rather than a bare "<Snippet") keeps a hypothetical
-// <SnippetGroup file="…"> — a different element with different semantics —
-// from being read as a snippet include.
+// The first two capture the *path* in <Snippet file="aws-config.mdx" />, which
+// the path resolver looks up under the project's snippets directory (or against
+// the project root when the capture is root-absolute). Both MDX quote styles
+// are legal, so there are two patterns rather than one with two alternatives:
+// reusable detection reads capture group 1 of each pattern, and an alternation
+// would leave one group empty on every match. "<Snippet\b" (rather than a bare
+// "<Snippet") keeps a hypothetical <SnippetGroup file="…"> — a different
+// element with different semantics — from being read as a snippet include.
+//
+// The third captures component usage, for the import map (see ImportMap). It is
+// the form that actually appears in the wild: measured over a production
+// Mintlify site, <Snippet file=…> occurred zero times and every reusable
+// reference was an MDX import rendered as <X /> (#68). It could not be enabled
+// before the import map existed, because on its own it captures the name of
+// every <Card /> and <Tabs> on the page, none of which names a file; with the
+// map, a capture that no import introduced is *skipped* rather than reported
+// unresolved (see parser.ResolveReusable).
 var mintlifyReusablePatterns = []string{
 	`<Snippet\b[^>]*\bfile="([^"]+)"`,
 	`<Snippet\b[^>]*\bfile='([^']+)'`,
+	MDXComponentPattern,
 }
 
 // builtinProfiles is the profile registry. Order matters for auto-detection
@@ -290,8 +322,9 @@ var builtinProfiles = []Profile{
 	{
 		Name: ProfileMintlify,
 		Description: "Mintlify docs: .md and .mdx content, ATX '#' headers, snippet includes " +
-			"(<Snippet file=\"foo.mdx\" />) resolved as paths under snippets/ or _snippets/ at " +
-			"the project root. " +
+			"(<Snippet file=\"foo.mdx\" />) and MDX imports (import X from \"/snippets/foo.mdx\", " +
+			"used as <X />) resolved as paths under snippets/ or _snippets/ at " +
+			"the project root; .jsx/.js/.css imports are deliberately skipped. " +
 			"Auto-detected from a docs.json (current) or mint.json (legacy) file whose contents " +
 			"look like a Mintlify config, at or above content_dir, searching no further than the " +
 			"enclosing git repository.",
@@ -310,6 +343,7 @@ var builtinProfiles = []Profile{
 		ReusablePatterns:   mintlifyReusablePatterns,
 		ReusableExtensions: []string{".mdx", ".md"},
 		Resolver:           ResolverPath,
+		ImportMap:          true,
 	},
 }
 
@@ -392,7 +426,7 @@ func mustProfile(name string) Profile {
 // the levels above it are skipped. A submodule checkout is deliberately not a
 // bound - the walk continues up into the parent repository, because a Hugo site
 // whose content/ is a submodule keeps its layouts/ and hugo.toml one level up
-// (see isRepoRoot). When no .git exists anywhere up the chain the walk reaches
+// (see IsRepoRoot). When no .git exists anywhere up the chain the walk reaches
 // the filesystem root, as it always has.
 func walkUp(contentDir string, visit func(dir string) bool) {
 	dir := filepath.Clean(contentDir)
@@ -403,7 +437,7 @@ func walkUp(contentDir string, visit func(dir string) bool) {
 		if visit(dir) {
 			return
 		}
-		if isRepoRoot(dir) {
+		if IsRepoRoot(dir) {
 			// Do not search outside the enclosing repository.
 			return
 		}
@@ -416,24 +450,31 @@ func walkUp(contentDir string, visit func(dir string) bool) {
 	}
 }
 
-// isRepoRoot reports whether dir is a repository root the walk must not leave.
+// IsRepoRoot reports whether dir is the root of a repository of its own — a
+// boundary neither the profile root walk nor the content walk may cross.
 //
 // A .git *directory* (a normal clone) always is. A .git *file* is a pointer of
 // the form "gitdir: <path>" and has two very different meanings:
 //
 //   - a linked worktree, <repo>/.git/worktrees/<name>, where dir really is a
-//     checkout root and the walk must stop; and
+//     checkout root; and
 //   - a submodule checkout, <parent>/.git/modules/<path>, where dir is only a
 //     subdirectory of the parent repository. Hugo sites commonly keep content/
 //     as a submodule, and the site's layouts/ and hugo.toml live one level up,
 //     so the walk has to continue through it.
 //
-// Anything that cannot be read or parsed stops the walk (conservative: an
+// Both walks want the same answer, which is why this is exported rather than
+// copied: walkUp continues up through a submodule to find the enclosing
+// project's root, and analyzer's content walk descends into one because a
+// submodule full of documentation is documentation this run should analyze
+// (#69 review). A standalone nested repository is a boundary for both.
+//
+// Anything that cannot be read or parsed counts as a root (conservative: an
 // unreadable pointer is treated as a checkout root rather than an invitation to
-// walk out into unrelated directories). Lstat is used first so a symlinked .git
-// counts too: when it points at a directory the read below fails and the walk
-// stops.
-func isRepoRoot(dir string) bool {
+// walk out into, or down into, unrelated directories). Lstat is used first so a
+// symlinked .git counts too: when it points at a directory the read below fails
+// and the answer is "root".
+func IsRepoRoot(dir string) bool {
 	path := filepath.Join(dir, ".git")
 	info, err := os.Lstat(path)
 	if err != nil {

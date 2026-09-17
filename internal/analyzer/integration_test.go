@@ -175,10 +175,15 @@ func TestAnalyze_ProfilesControlReusableDetection(t *testing.T) {
 	}
 }
 
-// TestAnalyze_FilesExcluded pins the diagnostic count behind the zero-files
-// warning (#11): files whose extension matched the allowlist but which
-// exclude_dirs / exclude_patterns dropped are counted in FilesExcluded, while
-// files of other extensions are not (they never matched to begin with).
+// TestAnalyze_FilesExcluded pins the diagnostic counts behind the zero-files
+// warning (#11): a file whose extension matched the allowlist but which
+// exclude_patterns dropped is counted in FilesExcluded, while files of other
+// extensions are not (they never matched to begin with).
+//
+// exclude_dirs is the other half: it prunes the subtree, so its files are never
+// visited and never reach FilesExcluded — the pruned *directories* are counted
+// by DirsExcluded instead (#69 review). Both counts are asserted together so a
+// file cannot go missing from both.
 func TestAnalyze_FilesExcluded(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)
@@ -204,12 +209,15 @@ func TestAnalyze_FilesExcluded(t *testing.T) {
 	if res.TotalFiles() != 1 {
 		t.Errorf("TotalFiles = %d, want 1 (keep.md)", res.TotalFiles())
 	}
-	if got := res.FilesExcluded(); got != 3 {
-		t.Errorf("FilesExcluded = %d, want 3 (drafts/a.md, drafts/b.markdown, CHANGELOG.md)", got)
+	if got := res.FilesExcluded(); got != 1 {
+		t.Errorf("FilesExcluded = %d, want 1 (CHANGELOG.md; drafts/ is pruned, not filtered)", got)
+	}
+	if got := res.DirsExcluded(); got != 1 {
+		t.Errorf("DirsExcluded = %d, want 1 (drafts/)", got)
 	}
 
 	// Everything excluded (dir rule plus a glob on the rest): zero analyzed,
-	// every extension match counted.
+	// every extension match either counted or accounted for by the prune.
 	cfg = config.DefaultConfig()
 	cfg.ContentDir = repo.Path("docs")
 	cfg.ExcludeDirs = []string{"drafts"}
@@ -218,19 +226,21 @@ func TestAnalyze_FilesExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Analyze(all excluded): %v", err)
 	}
-	if res.TotalFiles() != 0 || res.FilesExcluded() != 4 {
-		t.Errorf("all excluded: TotalFiles=%d FilesExcluded=%d, want 0 and 4", res.TotalFiles(), res.FilesExcluded())
+	if res.TotalFiles() != 0 || res.FilesExcluded() != 2 || res.DirsExcluded() != 1 {
+		t.Errorf("all excluded: TotalFiles=%d FilesExcluded=%d DirsExcluded=%d, want 0, 2 and 1",
+			res.TotalFiles(), res.FilesExcluded(), res.DirsExcluded())
 	}
 
-	// No exclusions: nothing is counted as excluded.
+	// No exclusions: nothing is counted as excluded, and nothing is pruned.
 	cfg = config.DefaultConfig()
 	cfg.ContentDir = repo.Path("docs")
 	res, err = Analyze(cfg)
 	if err != nil {
 		t.Fatalf("Analyze(no exclusions): %v", err)
 	}
-	if res.TotalFiles() != 4 || res.FilesExcluded() != 0 {
-		t.Errorf("no exclusions: TotalFiles=%d FilesExcluded=%d, want 4 and 0", res.TotalFiles(), res.FilesExcluded())
+	if res.TotalFiles() != 4 || res.FilesExcluded() != 0 || res.DirsExcluded() != 0 {
+		t.Errorf("no exclusions: TotalFiles=%d FilesExcluded=%d DirsExcluded=%d, want 4, 0 and 0",
+			res.TotalFiles(), res.FilesExcluded(), res.DirsExcluded())
 	}
 }
 

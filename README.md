@@ -8,8 +8,9 @@ Find stale documentation using git history. Analyzes your documentation at the s
 
 - **Section-level analysis**: Uses `git blame` to analyze staleness per section, not just per file
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
-- **Tool profiles**: `hugo` and `mintlify` profiles (both auto-detected) add MDX support and include tracking — Hugo shortcodes / JSX components, and Mintlify `<Snippet file="…" />` snippets resolved by path; more profiles are on the way (see [Profiles](#profiles))
-- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, `<Snippet file="foo.mdx" />` includes — and folds their freshness into the section that uses them
+- **Tool profiles**: `hugo` and `mintlify` profiles (both auto-detected) add MDX support and include tracking — Hugo shortcodes / JSX components, and Mintlify snippets resolved by path; more profiles are on the way (see [Profiles](#profiles))
+- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
+- **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is an 8x speedup and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
 - **Dual output**: Generates both Markdown and HTML reports
 - **Zero dependencies**: Uses only Go standard library
@@ -183,11 +184,47 @@ Create a `config.json` file:
 | `hugo_root`            | **Deprecated** spelling of `project_root`. On its own it still supplies the root, with a deprecation warning telling you to rename it; when `project_root` (or `--project-root`) is set too, that one wins and `hugo_root` is *ignored*, with a warning saying so. Unlike `project_root` it keeps its legacy side effect: it selects the `hugo` profile when no marker is found | (auto-detect)          |
 | `output_dir`           | Output directory for reports                       | `./reports`                  |
 | `reusables.dir`        | Directory containing reusable component files      | (optional)                   |
-| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `mintlify`: `<Snippet file>`; `markdown`: none) |
-| `exclude_patterns`     | Glob patterns to exclude files                     | `[]`                         |
-| `exclude_dirs`         | Directory names to exclude entirely                | `[]`                         |
+| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `mintlify`: `<Snippet file>` + imported components; `markdown`: none) |
+| `exclude_patterns`     | Glob patterns to exclude files (additive on top of the default exclusions) | `[]`                         |
+| `exclude_dirs`         | Directory names to exclude entirely — the whole subtree is pruned from the walk, like the default exclusions (additive on top of them) | `[]`                         |
+| `no_default_excludes`  | Turn off the default exclusions (dot-directories, `node_modules`/`vendor`/`dist`/`build`, nested standalone repositories, and git-ignored files) and scan everything. CLI: `--no-default-excludes` | false |
 | `staleness_levels`     | Thresholds for warning/caution/critical            | 90/180/365                   |
 | `paragraph_level`      | Analyze at paragraph level (more granular)         | false                        |
+
+### Default Exclusions
+
+The content walk prunes three kinds of directory and one kind of file before
+anything is blamed, because a real docs repo is mostly not documentation:
+
+1. **Dot-directories** (`.git/`, `.claude/`, `.cursor/`, `.github/`, …) and the
+   usual vendored and build trees (`node_modules/`, `vendor/`, `dist/`,
+   `build/`).
+2. **Any nested standalone repository** — a clone or a linked worktree checked
+   out inside the tree. Those files belong to a *different* project, so their
+   dates describe someone else's history. A **submodule** is deliberately not
+   one of these: it is part of the repository under analysis, docs sites use it
+   to share a content tree, and it is walked into and analyzed like any other
+   directory (its files resolve against the submodule's own repository, which
+   is where their history lives).
+3. **Files git ignores.** rustydocs asks git itself, in one batched
+   `git check-ignore` for the whole run, so nested `.gitignore` files,
+   negations, `core.excludesFile` and the index are all honoured exactly. A
+   *tracked* file is never dropped, however the patterns read.
+
+A content tree that is not a git repository still works: the name rules apply,
+the ignore query is skipped, and its files are reported *unknown* as they always
+were. The content root itself is never pruned, so `--content-dir .` at a
+repository root, or pointing straight at a dot-directory, does what you meant.
+
+Measured on a production Mintlify site, this took a run from 4,032 files in
+48.7 s with 1,078 files reported as having no git history, to 551 files in 7.5 s
+with none.
+
+When the defaults remove anything, rustydocs prints a note on stderr naming the
+count, the directories and the flag that puts them back. Pass
+`--no-default-excludes` (or set `"no_default_excludes": true`) to scan
+everything; `--exclude-dirs` and `exclude_patterns` are unaffected by it and
+always apply on top.
 
 ### Hugo Shortcode Tracing
 
@@ -260,15 +297,56 @@ comes from resolving the reference, not from git — so two pages that both writ
 when neither file has been committed yet.
 
 Both quote styles are recognised (`file="…"` and `file='…'`), in any attribute
-position. Only `<Snippet …>` itself counts: a bare `<Card />`, a `<Tabs>`, or a
-`<SnippetGroup file="…">` on a Mintlify page is **not** a reusable, because its
-name does not identify a snippet file. Snippets
-brought in with an `import` statement and used as `<X />` need an import map and
-are not resolved yet (#13/#18/#19).
+position. Only `<Snippet …>` itself counts as a snippet include: a
+`<SnippetGroup file="…">` is a different element and is **not** one, because its
+`file=` does not identify a snippet the same way.
+
+#### MDX imports
+
+Most Mintlify projects do not write `<Snippet file="…" />` at all — they import
+the snippet and render it as a component:
+
+```mdx
+import Prerequisites from "/snippets/prerequisites.mdx";
+import { StepOne, StepTwo } from "./setup-steps.mdx";
+import { YamlTable } from "/snippets/yaml-table.jsx";
+
+# Getting started
+
+<Prerequisites />
+<StepOne />
+<YamlTable rows={rows} />
+<Card title="not an include" />
+```
+
+rustydocs reads the imports at the top of each page — default, named, aliased
+(`A as B`), namespace and combined forms, written over one line or several —
+and builds a symbol-to-path map for the whole file before attributing anything,
+because imports sit above the sections that use them. A section's `<X />` then
+folds the imported file's commit date into that section's freshness, exactly as
+a `<Snippet file="…" />` does. Import paths resolve the same way as snippet
+paths: a leading `/` against the project root, `./` and `../` against the
+importing page, with the same containment and symlink checks. Both forms work on
+the same page.
+
+**Only `.md` and `.mdx` imports are followed.** A `.jsx`, `.js` or `.css`
+import, or one of a package (`@mintlify/components`), is detected and
+deliberately **skipped**. This is not an oversight — folding an include's date
+in only ever makes a section look *fresher*, so resolving a shared React
+component would mark every page importing it as recently updated the next time
+someone changed its styling, destroying the signal precisely where the tool is
+supposed to provide it. Under-reporting freshness is the safe direction.
+
+A skipped import is **not** reported as an unresolved reusable, and neither is a
+capitalised tag that no import introduced (`<Card />`, `<Tabs>`, `<Accordion>`):
+those are layout components, not includes, and are out of scope by design rather
+than broken. An import of an `.mdx` file that does not exist, or that exists but
+has never been committed, *is* still reported *unknown* and counted in the
+stderr note.
 
 ### Default Component Patterns
 
-The `hugo` profile detects (the `markdown` profile detects nothing unless you set `reusables.patterns`; the `mintlify` profile detects only `<Snippet file="…" />`, see above):
+The `hugo` profile detects (the `markdown` profile detects nothing unless you set `reusables.patterns`; the `mintlify` profile detects `<Snippet file="…" />` and imported components, see above):
 
 **Hugo shortcodes** (all styles):
 - `{{< shortcode >}}`
@@ -291,7 +369,13 @@ Options:
   --reusables-dir PATH    Directory containing reusable components
   --output-dir PATH       Output directory for reports
   --threshold-days INT    Days before content is considered stale (default: 90)
-  --exclude-dirs STRING   Comma-separated directories to exclude
+  --exclude-dirs STRING   Comma-separated directories to exclude (additive on top of
+                          the default exclusions)
+  --no-default-excludes   Scan everything: turn off the default exclusions
+                          (dot-directories, build/dist/node_modules/vendor, directories
+                          holding their own .git, and files git ignores).
+                          --exclude-dirs / --exclude-patterns still apply.
+                          Config-file spelling: "no_default_excludes"
   --extensions STRING     Comma-separated documentation extensions to analyze (default: from profile)
   --profile NAME          Documentation profile: hugo, markdown, mintlify (default: auto-detect)
   --project-root PATH     Project root that reusable references resolve against (Hugo site

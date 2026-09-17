@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MDX import-map resolver** (#68). The `mintlify` profile resolved
+  `<Snippet file="…" />`, a syntax that did not occur once on the production
+  site it was built for: every reusable reference there is an MDX import.
+  rustydocs now reads each page's `import X from "/snippets/x.mdx"` and
+  `import { A, B } from "…"` statements — default, named, aliased (`A as B`),
+  namespace and combined forms, over one line or several — builds a
+  symbol-to-path map for the whole file, and attributes a section's `<X />` to
+  that file's freshness. Import paths resolve through the existing
+  `ResolverPath` machinery, so a leading `/` is project-root relative, `./` and
+  `../` are relative to the importing page, and the containment and symlink
+  checks apply unchanged; `<Snippet file="…" />` keeps resolving alongside
+  imports on the same page. **Only `.md` and `.mdx` imports are followed.** A
+  `.jsx`, `.js` or `.css` import, and any bare package specifier
+  (`@mintlify/components`), is detected and deliberately skipped — freshness
+  folding only ever makes a section look *fresher*, so resolving a React
+  component would mark all 650 pages importing `yaml-table.jsx` as recently
+  updated the next time someone restyled it. A skipped import is **not**
+  reported as an unresolved reusable, and neither is a capitalised tag no
+  import introduced (`<Card />`, `<Tabs>`): both are out of scope by design
+  rather than broken. A content import that names no file still is, and is
+  still counted. The layer is opt-in per profile (`Profile.ImportMap`), built to
+  be reused by #13, #18 and #19.
 - A **`mintlify` profile** and the **direct-path resolver** behind it (#7).
   Mintlify projects are auto-detected from a `docs.json` (current) or
   `mint.json` (legacy) file at or above `content_dir`; the profile scans `.md`
@@ -34,9 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shortcodes do, and the reports name it by its path relative to the project
   root, so two pages' same-named relative snippets stay distinct rows. A bare
   `<Card />` or `{{< shortcode >}}` on a Mintlify page is
-  deliberately **not** a reusable; imported snippets (`import X from
-  '/snippets/x.mdx'` used as `<X />`) need an import map and remain a follow-up
-  (#13/#18/#19). Select with `--profile mintlify` / `"profile": "mintlify"`, or
+  deliberately **not** a reusable. (Imported snippets — `import X from
+  '/snippets/x.mdx'` used as `<X />` — were a follow-up at the time and landed
+  in #68, above.) Select with `--profile mintlify` / `"profile": "mintlify"`, or
   let auto-detection find it: the nearest marker wins, so a Mintlify docs tree
   nested inside a repo that also has a Hugo `layouts/` selects `mintlify`. The
   `docs.json` / `mint.json` markers are validated by content as well as by
@@ -149,6 +171,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Default exclusions for the content walk** (#69). The walk used to filter on
+  the extension allowlist alone, so a real docs repo mostly scanned things that
+  are not documentation. Three rules now prune it, all on by default:
+  dot-directories (`.git/`, `.claude/`, `.cursor/`, …) and the usual vendored
+  and build trees (`node_modules/`, `vendor/`, `dist/`, `build/`); any nested
+  *standalone* repository — a clone or a linked worktree checked out inside the
+  tree — whose files git resolves against a *different* project (a **submodule**
+  is not one: it belongs to the repository under analysis, so it is walked into
+  and analyzed, with its files resolved against the submodule's own repository);
+  and files git itself ignores, batched through a single `git check-ignore --stdin -z`
+  (exact, cheap, and it honours nested `.gitignore` files, negations,
+  `core.excludesFile` and the index, none of which a hand-rolled matcher gets
+  reliably right). A tree that is not a git repository degrades gracefully: the
+  name rules still apply, the ignore query is skipped, and its files are
+  reported *unknown* as before. A tracked file is never dropped, whatever the
+  patterns say. Measured on a production Mintlify site, a run went from 4,032
+  files / 48.7 s / 1,078 files with no git history to **551 files / 7.5 s / 0**.
+  All of it is overridable with `--no-default-excludes` /
+  `"no_default_excludes": true`, and `--exclude-dirs` / `exclude_patterns` keep
+  working unchanged and additively on top — and `exclude_dirs` now prunes the
+  whole subtree the way the built-in rules do, rather than walking it and
+  filtering per file. When the defaults remove anything,
+  a stderr note — in the same shape as the skipped-extensions note — says how
+  many directories were pruned, names them, counts the git-ignored files, and
+  names the flag that puts them back. The exit code is unchanged.
 - **Reusable resolution now memoizes its `git log` lookups for the duration of
   a run** (#65). A snippet or shortcode referenced from many pages used to cost
   one `git log` subprocess *per referencing page*: on a 300-page x 3-snippet

@@ -108,7 +108,60 @@ type ReusablePatterns struct {
 	// one is built per file (see analyzer.analyzeFile), so a cache living here
 	// would only ever dedupe within a single page. Nil means no caching.
 	cache *git.FileInfoCache
+	// importMap enables the MDX import-map layer (config.Profile.ImportMap):
+	// a component capture is looked up among the symbols the referencing page
+	// imported before it is treated as a path. importCache holds the built map
+	// per source file; see importsFor.
+	importMap   bool
+	importCache map[string]map[string]importTarget
+	// componentPattern records, per entry of patterns, whether it is the
+	// shared component pattern (config.MDXComponentPattern) rather than a
+	// pattern that only ever matches an include. It is what gives a capture a
+	// provenance; see includeCaptures.
+	componentPattern []bool
+	// includeCaptures holds the captures FindReusables saw come out of an
+	// *include* pattern — <Snippet file="…" /> today. Such a capture is an
+	// include by construction and must resolve or be counted unresolved, so it
+	// is never classified ResolutionSkipped, however component-shaped it looks
+	// (a capitalised, extensionless "AlsoMissing" is a perfectly ordinary
+	// snippet name, and the path resolver supports exactly that spelling
+	// through its .mdx/.md/index.* fallback).
+	//
+	// A capture that is not in here carries no provenance — resolution was
+	// asked about a name FindReusables never produced — and falls back to the
+	// shape heuristic, which is the pre-#68 behaviour.
+	//
+	// No locking, for the same reason importCache needs none: a
+	// ReusablePatterns belongs to one worker for the duration of one file.
+	includeCaptures map[string]struct{}
 }
+
+// Resolution says what became of a reusable reference, so the caller can tell a
+// broken include from one that is out of scope by design.
+//
+// The distinction exists for the import map (#68). A Mintlify page renders
+// <Card>, <Tabs> and <Accordion> — capitalised tags that the component pattern
+// captures and that name no file at all — and imports React components whose
+// dates must never be folded in. Reporting either as an unresolved include
+// would bury the handful of genuinely broken snippet references among thousands
+// of non-problems, which is the failure the unresolved-reusables note was added
+// to prevent in the first place.
+type Resolution int
+
+const (
+	// ResolutionResolved: the reference named a file with git history, which
+	// the caller folds into the section's freshness.
+	ResolutionResolved Resolution = iota
+	// ResolutionUnresolved: the reference should have named a file and did
+	// not — it is missing, or it exists but has never been committed. Reported
+	// as unknown and counted, since it is a defect a reader can act on.
+	ResolutionUnresolved
+	// ResolutionSkipped: the reference is deliberately out of scope. Under the
+	// import map that is a capitalised tag no import introduced (a built-in or
+	// layout component) or an import of something that is not documentation
+	// (.jsx, .js, .css). Not a failure, not counted, and not reported at all.
+	ResolutionSkipped
+)
 
 // ReusableConfig describes reusable detection and resolution for one run: the
 // patterns to compile, the extensions tried when a reference carries none, the
@@ -120,6 +173,9 @@ type ReusableConfig struct {
 	ReusablesDir string
 	Root         string
 	Resolver     config.Resolver
+	// ImportMap enables the MDX import-map layer on top of the resolver; see
+	// config.Profile.ImportMap (#68).
+	ImportMap bool
 	// Cache, when non-nil, memoizes the git lookups resolution performs. It is
 	// created once per analysis run and shared by every file's
 	// ReusablePatterns; nil disables caching (#65).
@@ -137,6 +193,7 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 		filePaths:      make(map[string]string),
 		shortcodeCache: make(map[string][]string),
 		cache:          rc.Cache,
+		importMap:      rc.ImportMap,
 	}
 	for _, p := range rc.Patterns {
 		re, err := regexp.Compile(p)
@@ -144,6 +201,11 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 			return nil, fmt.Errorf("invalid reusable pattern %q: %w", p, err)
 		}
 		rp.patterns = append(rp.patterns, re)
+		// Provenance is decided by pattern identity rather than by inspecting
+		// the capture: a profile lists config.MDXComponentPattern verbatim when
+		// it wants component usage read, and anything else it lists is an
+		// include form.
+		rp.componentPattern = append(rp.componentPattern, p == config.MDXComponentPattern)
 	}
 	return rp, nil
 }
@@ -380,16 +442,54 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	}
 	var reusables []string
 	seen := make(map[string]bool)
-	for _, pattern := range rp.patterns {
+	for i, pattern := range rp.patterns {
 		matches := pattern.FindAllStringSubmatch(content, -1)
 		for _, match := range matches {
-			if len(match) > 1 && !seen[match[1]] {
+			if len(match) <= 1 {
+				continue
+			}
+			// Record provenance before the de-duplication, not after: a
+			// capture first seen from the component pattern and then from an
+			// include pattern is an include, and the second sighting is the
+			// one that says so.
+			if !rp.isComponentPattern(i) {
+				rp.noteIncludeCapture(match[1])
+			}
+			if !seen[match[1]] {
 				reusables = append(reusables, match[1])
 				seen[match[1]] = true
 			}
 		}
 	}
 	return reusables
+}
+
+// isComponentPattern reports whether patterns[i] is the shared component
+// pattern. A ReusablePatterns built before componentPattern existed (or by a
+// caller that bypassed NewReusablePatternsFor) has a short slice; treating the
+// missing entries as component patterns keeps the pre-provenance behaviour.
+func (rp *ReusablePatterns) isComponentPattern(i int) bool {
+	if i >= len(rp.componentPattern) {
+		return true
+	}
+	return rp.componentPattern[i]
+}
+
+// noteIncludeCapture records that this capture came out of an include pattern,
+// so ResolveReusable will never write it off as a component (#68 regression
+// against #7).
+func (rp *ReusablePatterns) noteIncludeCapture(ref string) {
+	if rp.includeCaptures == nil {
+		rp.includeCaptures = make(map[string]struct{})
+	}
+	rp.includeCaptures[ref] = struct{}{}
+}
+
+// fromIncludePattern reports whether FindReusables produced this capture from
+// an include pattern on this run.
+func (rp *ReusablePatterns) fromIncludePattern(ref string) bool {
+	_, ok := rp.includeCaptures[ref]
+	return ok
 }
 
 // GetReusableInfo returns git metadata for a reusable component referenced by
@@ -399,10 +499,80 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 // when nothing resolves — a reusable with no info is reported as unknown, never
 // as fresh.
 func GetReusableInfo(reusableName, sourceFile string, rp *ReusablePatterns) *git.FileInfo {
+	info, _ := ResolveReusable(reusableName, sourceFile, rp)
+	return info
+}
+
+// ResolveReusable is GetReusableInfo plus the reason there is no info: see
+// Resolution. Callers that report on failures (the analyzer's unresolved count,
+// and through it the CLI note) must use this form, because a nil info alone
+// cannot distinguish a broken include from a reference that was never meant to
+// resolve.
+//
+// The import map is consulted first when the profile enables it, because a
+// symbol the page imported is unambiguous evidence of what the capture means —
+// more so than any path heuristic. A capture that no import introduced falls
+// through to the ordinary resolution below, so <Snippet file="…" /> keeps
+// working on the same page as imports; only if that also finds nothing is a
+// component-shaped capture called skipped rather than unresolved (#68).
+func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*git.FileInfo, Resolution) {
 	if rp == nil {
-		return nil
+		return nil, ResolutionUnresolved
 	}
 
+	// The map answers questions about *symbols*. A capture an include pattern
+	// produced is a path, not a symbol, so it is resolved as one even on a page
+	// that happens to bind the same name (#68).
+	if rp.importMap && !rp.fromIncludePattern(reusableName) {
+		if target, ok := rp.importsFor(sourceFile)[reusableName]; ok {
+			if target.skipped {
+				return nil, ResolutionSkipped
+			}
+			if target.path != "" {
+				if info := rp.mostRecentFile([]string{target.path}); info != nil {
+					return info, ResolutionResolved
+				}
+			}
+			// A content import that named no file, or one that exists but has
+			// never been committed: a real defect, reported unknown.
+			return nil, ResolutionUnresolved
+		}
+	}
+
+	if info := rp.resolveExisting(reusableName, sourceFile); info != nil {
+		return info, ResolutionResolved
+	}
+
+	// Under the import map, a capitalised tag that resolved to nothing is a
+	// component the page renders rather than an include it is missing — the
+	// overwhelming majority of captures on a real MDX page. Out of scope, not a
+	// failure.
+	//
+	// Only a capture the *component* pattern produced qualifies. A capture from
+	// an include pattern — <Snippet file="AlsoMissing" /> — is an include by
+	// construction, and "capitalised and extensionless" is a shape the path
+	// resolver explicitly supports, so classifying it skipped made a broken
+	// snippet vanish from the report, the unresolved count and the stderr note
+	// alike (#68 regression against #7).
+	if rp.importMap && isComponentSymbol(reusableName) && !rp.fromIncludePattern(reusableName) {
+		return nil, ResolutionSkipped
+	}
+	return nil, ResolutionUnresolved
+}
+
+// componentSymbolPattern matches a capture that can only be a JSX component
+// name: capitalised, and carrying neither an extension nor a path separator, so
+// it can never be mistaken for the file path a ResolverPath capture usually is.
+var componentSymbolPattern = regexp.MustCompile(`^[A-Z][A-Za-z0-9_$]*$`)
+
+func isComponentSymbol(ref string) bool {
+	return componentSymbolPattern.MatchString(ref)
+}
+
+// resolveExisting performs the pre-import-map resolution: the path resolver,
+// then the legacy reusables directory, the Hugo shortcode lookup and the cached
+// path lookup. Returns nil when nothing resolves.
+func (rp *ReusablePatterns) resolveExisting(reusableName, sourceFile string) *git.FileInfo {
 	// The path resolver takes the capture literally: it is a file path, not a
 	// name to look up by convention, so it is resolved on its own terms and
 	// first. See lookupDirectPath.
@@ -662,7 +832,12 @@ func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileIn
 	case info != nil && info.Path != "":
 		target = info.Path
 	default:
-		resolved, ok := rp.resolveDirectPath(ref, sourceFile)
+		// No history, so the display path has to come from resolution. An
+		// imported symbol resolves through the map — otherwise a snippet that
+		// is imported but not yet committed would be reported under its bare
+		// symbol name, which is exactly the collapsing this function exists to
+		// prevent.
+		resolved, ok := rp.displayTarget(ref, sourceFile)
 		if !ok {
 			return ref
 		}
@@ -681,6 +856,30 @@ func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileIn
 		return ref
 	}
 	return filepath.ToSlash(rel)
+}
+
+// displayTarget returns the file a reference names, for labelling purposes: the
+// import map's answer when the profile has one and the symbol was imported,
+// otherwise the ordinary path resolution. A deliberately skipped import (a
+// .jsx component) has no file to name and reports false.
+//
+// An import that resolved to nothing still names a file, and that name is what
+// is reported: a broken "import Card from '/snippets/Card.mdx'" belongs in the
+// table under snippets/Card.mdx, not under "Card", which every other page's
+// unrelated Card would share (#68 review). See importTarget.named.
+func (rp *ReusablePatterns) displayTarget(ref, sourceFile string) (string, bool) {
+	if rp.importMap && !rp.fromIncludePattern(ref) {
+		if target, ok := rp.importsFor(sourceFile)[ref]; ok {
+			if target.skipped {
+				return "", false
+			}
+			if target.path != "" {
+				return target.path, true
+			}
+			return target.named, target.named != ""
+		}
+	}
+	return rp.resolveDirectPath(ref, sourceFile)
 }
 
 // layoutRoots returns the layouts directories searched for shortcode

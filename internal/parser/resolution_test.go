@@ -664,9 +664,9 @@ var mintlifyPatternStrings = func() []string {
 	return p.ReusablePatterns
 }()
 
-// newPathRP builds a ReusablePatterns wired for the Mintlify profile: snippet
-// pattern, .mdx/.md reusable extensions, the given project root and the path
-// resolver.
+// newPathRP builds a ReusablePatterns wired exactly as the Mintlify profile is:
+// snippet and component patterns, .mdx/.md reusable extensions, the given
+// project root, the path resolver and the import map (#68).
 func newPathRP(t *testing.T, root string) *ReusablePatterns {
 	t.Helper()
 	rp, err := NewReusablePatternsFor(ReusableConfig{
@@ -674,6 +674,7 @@ func newPathRP(t *testing.T, root string) *ReusablePatterns {
 		Extensions: []string{".mdx", ".md"},
 		Root:       root,
 		Resolver:   config.ResolverPath,
+		ImportMap:  true,
 	})
 	if err != nil {
 		t.Fatalf("NewReusablePatternsFor: %v", err)
@@ -681,9 +682,12 @@ func newPathRP(t *testing.T, root string) *ReusablePatterns {
 	return rp
 }
 
-// TestFindReusables_MintlifyPattern checks the parser side of the narrow
-// Mintlify pattern: the capture is the snippet *path*, and neither an MDX
-// component nor a Hugo shortcode is picked up (#7).
+// TestFindReusables_MintlifyPattern checks the parser side of the Mintlify
+// patterns: a <Snippet file="…"> capture is the snippet *path*, a Hugo
+// shortcode is not picked up at all, and a capitalised tag is captured as a
+// symbol for the import map — which is a different kind of capture, resolved
+// (and here, skipped) separately. See TestResolveReusable_ImportMap for the
+// half of the contract that keeps <Card /> out of the report (#7, #68).
 func TestFindReusables_MintlifyPattern(t *testing.T) {
 	rp := newPathRP(t, t.TempDir())
 	content := "# Title\n\n" +
@@ -693,9 +697,17 @@ func TestFindReusables_MintlifyPattern(t *testing.T) {
 		`<Snippet file="./local.mdx" />` + "\n"
 
 	got := FindReusables(content, rp)
-	want := []string{"/snippets/foo.mdx", "./local.mdx"}
+	// Paths first (the snippet patterns run first), then component symbols.
+	// "Snippet" is the tag of the include itself; it names no import, so it is
+	// skipped at resolution just as "Card" is.
+	want := []string{"/snippets/foo.mdx", "./local.mdx", "Snippet", "Card"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("FindReusables = %v, want %v", got, want)
+	}
+	for _, sym := range []string{"Snippet", "Card"} {
+		if _, res := ResolveReusable(sym, "", rp); res != ResolutionSkipped {
+			t.Errorf("ResolveReusable(%q) = %v, want ResolutionSkipped", sym, res)
+		}
 	}
 }
 
@@ -1176,9 +1188,18 @@ func TestFindReusables_MintlifyQuoteStyles(t *testing.T) {
 
 	got := append([]string(nil), FindReusables(content, rp)...)
 	sort.Strings(got)
-	want := []string{"/snippets/attrs-before.mdx", "/snippets/double.mdx", "/snippets/single.mdx"}
+	// The tag names are captured as import-map symbols (#68) and are skipped at
+	// resolution; what matters here is that no <SnippetGroup> *path* leaked in.
+	want := []string{"/snippets/attrs-before.mdx", "/snippets/double.mdx", "/snippets/single.mdx",
+		"Snippet", "SnippetGroup"}
+	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("FindReusables = %v, want %v", got, want)
+	}
+	for _, ref := range got {
+		if ref == "/snippets/group.mdx" {
+			t.Error("<SnippetGroup file=…> leaked a snippet path capture")
+		}
 	}
 }
 
