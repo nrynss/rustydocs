@@ -99,11 +99,23 @@ type Config struct {
 	OutputDir       string          `json:"output_dir"`
 	ExcludePatterns []string        `json:"exclude_patterns"`
 	ExcludeDirs     []string        `json:"exclude_dirs"`
-	StalenessLevels StalenessLevels `json:"staleness_levels"`
-	FileLevelOnly   bool            `json:"file_level_only"`
-	ParagraphLevel  bool            `json:"paragraph_level"`
-	Workers         int             `json:"workers"`
-	ShowReusables   bool            `json:"show_reusables"` // Show reusables in report (default false)
+	// NoDefaultExcludes turns off the built-in exclusions the content walk
+	// applies on top of exclude_dirs / exclude_patterns: dot-directories and
+	// the vendored/build trees of DefaultExcludeDirNames, nested standalone
+	// repositories (a clone or a linked worktree, which blame would resolve
+	// against a different repository — a submodule is not one and is scanned),
+	// and files git itself ignores.
+	// exclude_dirs / exclude_patterns are unaffected by it and always apply —
+	// the defaults are additive, and this flag only removes the defaults.
+	//
+	// The defaults exist because a real docs repo is mostly not documentation:
+	// see DefaultExcludeDirNames for the measurement (#69).
+	NoDefaultExcludes bool            `json:"no_default_excludes"`
+	StalenessLevels   StalenessLevels `json:"staleness_levels"`
+	FileLevelOnly     bool            `json:"file_level_only"`
+	ParagraphLevel    bool            `json:"paragraph_level"`
+	Workers           int             `json:"workers"`
+	ShowReusables     bool            `json:"show_reusables"` // Show reusables in report (default false)
 }
 
 // DefaultConfig returns a new Config with default values. Profile-dependent

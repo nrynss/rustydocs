@@ -108,7 +108,64 @@ type ReusablePatterns struct {
 	// one is built per file (see analyzer.analyzeFile), so a cache living here
 	// would only ever dedupe within a single page. Nil means no caching.
 	cache *git.FileInfoCache
+	// importMap enables the MDX import-map layer (config.Profile.ImportMap):
+	// a component capture is looked up among the symbols the referencing page
+	// imported before it is treated as a path. importCache holds the built map
+	// per source file; see importsFor.
+	importMap   bool
+	importCache map[string]map[string]importTarget
+	// componentPattern records, per entry of patterns, whether it is the
+	// shared component pattern (config.MDXComponentPattern) rather than a
+	// pattern that only ever matches an include. It is what gives a capture a
+	// provenance; see includeCaptures.
+	componentPattern []bool
+	// includeCaptures holds the captures FindReusables saw come out of an
+	// *include* pattern — <Snippet file="…" /> today. Such a capture is an
+	// include by construction and must resolve or be counted unresolved, so it
+	// is never classified ResolutionSkipped, however component-shaped it looks
+	// (a capitalised, extensionless "AlsoMissing" is a perfectly ordinary
+	// snippet name, and the path resolver supports exactly that spelling
+	// through its .mdx/.md/index.* fallback).
+	//
+	// A capture that is not in here carries no provenance — resolution was
+	// asked about a name FindReusables never produced — and falls back to the
+	// shape heuristic, which is the pre-#68 behaviour.
+	//
+	// No locking, for the same reason importCache needs none: a
+	// ReusablePatterns belongs to one worker for the duration of one file.
+	includeCaptures map[string]struct{}
+	// dirEntries memoizes the directory listings caseExactUnder reads to check
+	// a candidate's spelling against the filesystem's. A nil entry records a
+	// directory that exists but could not be listed; see dirHasEntry.
+	dirEntries map[string]map[string]struct{}
 }
+
+// Resolution says what became of a reusable reference, so the caller can tell a
+// broken include from one that is out of scope by design.
+//
+// The distinction exists for the import map (#68). A Mintlify page renders
+// <Card>, <Tabs> and <Accordion> — capitalised tags that the component pattern
+// captures and that name no file at all — and imports React components whose
+// dates must never be folded in. Reporting either as an unresolved include
+// would bury the handful of genuinely broken snippet references among thousands
+// of non-problems, which is the failure the unresolved-reusables note was added
+// to prevent in the first place.
+type Resolution int
+
+const (
+	// ResolutionResolved: the reference named a file with git history, which
+	// the caller folds into the section's freshness.
+	ResolutionResolved Resolution = iota
+	// ResolutionUnresolved: the reference should have named a file and did
+	// not — it is missing, or it exists but has never been committed. Reported
+	// as unknown and counted, since it is a defect a reader can act on.
+	ResolutionUnresolved
+	// ResolutionSkipped: the reference is deliberately out of scope. Under the
+	// import map that is a capitalised tag no import introduced (a built-in or
+	// layout component) or an import of something that is not documentation
+	// (.jsx, .js, .css). Not a failure, not counted, and not reported at all.
+	ResolutionSkipped
+)
 
 // ReusableConfig describes reusable detection and resolution for one run: the
 // patterns to compile, the extensions tried when a reference carries none, the
@@ -120,6 +177,9 @@ type ReusableConfig struct {
 	ReusablesDir string
 	Root         string
 	Resolver     config.Resolver
+	// ImportMap enables the MDX import-map layer on top of the resolver; see
+	// config.Profile.ImportMap (#68).
+	ImportMap bool
 	// Cache, when non-nil, memoizes the git lookups resolution performs. It is
 	// created once per analysis run and shared by every file's
 	// ReusablePatterns; nil disables caching (#65).
@@ -137,6 +197,7 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 		filePaths:      make(map[string]string),
 		shortcodeCache: make(map[string][]string),
 		cache:          rc.Cache,
+		importMap:      rc.ImportMap,
 	}
 	for _, p := range rc.Patterns {
 		re, err := regexp.Compile(p)
@@ -144,6 +205,11 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 			return nil, fmt.Errorf("invalid reusable pattern %q: %w", p, err)
 		}
 		rp.patterns = append(rp.patterns, re)
+		// Provenance is decided by pattern identity rather than by inspecting
+		// the capture: a profile lists config.MDXComponentPattern verbatim when
+		// it wants component usage read, and anything else it lists is an
+		// include form.
+		rp.componentPattern = append(rp.componentPattern, p == config.MDXComponentPattern)
 	}
 	return rp, nil
 }
@@ -234,11 +300,18 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 
 	if len(headers) == 0 {
 		// No headers found, parse by paragraphs
-		return parseParagraphs(contentLines, linesInfo, "(no header)", 0, rp)
+		return parseParagraphs(contentLines, linesInfo, noHeaderTitle, 0, rp)
 	}
 
 	// Create chunks from headers
 	var chunks []Chunk
+
+	// Anything above the first header is the page preamble: prose, a note, or
+	// a rendered include sitting under the frontmatter and before any heading.
+	// It used to be discarded outright, which hid its blame dates and, worse,
+	// every reusable referenced only there (#70).
+	chunks = append(chunks, parsePreamble(contentLines, linesInfo, headers[0].lineNum, paragraphLevel, rp)...)
+
 	for i, h := range headers {
 		// Determine end line (start of next header or end of file)
 		endLine := len(contentLines)
@@ -282,6 +355,112 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	}
 
 	return chunks
+}
+
+const (
+	// noHeaderTitle labels the chunks of a file that has no header at all.
+	noHeaderTitle = "(no header)"
+	// preambleTitle labels the chunk holding the content above the first
+	// header of a file that *does* have headers (#70).
+	//
+	// It is deliberately not "(no header)": in a file with headings that would
+	// read as a claim about the whole page, and it must also not borrow the
+	// first heading's text, which would put two rows with the same title and
+	// different line ranges next to each other in the report. The parenthesised
+	// lowercase form matches the existing convention, so neither title can
+	// collide with a real heading — a heading rendering as literal "(preamble)"
+	// is indistinguishable by design, and harmless.
+	preambleTitle = "(preamble)"
+)
+
+// parsePreamble chunks the span above a file's first header, which sits at
+// 1-indexed line firstHeaderLine. It returns nil when that span holds nothing
+// worth reporting: no lines at all, only blank lines, or only frontmatter.
+//
+// Frontmatter is skipped rather than chunked. A YAML (`---`) or TOML (`+++`)
+// block at the very top of the file is metadata — title, description, sidebar
+// weight — not prose, and folding it in would give a preamble chunk to
+// essentially every page in a docs tree while attributing a bulk metadata edit
+// to the page's prose. Skipping it costs nothing here, because a page with
+// headers is already represented in the report by those sections.
+//
+// The headerless path in ParseChunks deliberately keeps its existing behaviour
+// of chunking frontmatter along with everything else: there the chunks are the
+// page's only representation, so dropping the frontmatter of a frontmatter-only
+// stub would erase the file from the report entirely.
+func parsePreamble(contentLines []string, linesInfo []git.LineInfo, firstHeaderLine int, paragraphLevel bool, rp *ReusablePatterns) []Chunk {
+	start := frontmatterLines(contentLines) // 0-indexed start of the preamble
+	end := firstHeaderLine - 1              // exclusive, 0-indexed: the header line itself
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+	if start >= end {
+		return nil
+	}
+
+	preambleLines := contentLines[start:end]
+	if !hasContent(preambleLines) {
+		return nil
+	}
+
+	if paragraphLevel {
+		// Same treatment sections get under --paragraph-level: the preamble is
+		// split on blank lines, each paragraph titled "(preamble) (L<n>)" by
+		// createParagraphChunk. No chunk is marked IsHeader, because none of
+		// them starts with one.
+		return parseParagraphs(preambleLines, linesInfo, preambleTitle, start, rp)
+	}
+
+	startLine := start + 1 // 1-indexed, to match git.LineInfo.LineNumber
+	var chunkLines []git.LineInfo
+	for _, li := range linesInfo {
+		if li.LineNumber >= startLine && li.LineNumber <= end {
+			chunkLines = append(chunkLines, li)
+		}
+	}
+	return []Chunk{{
+		Title:     preambleTitle,
+		Level:     0,
+		StartLine: startLine,
+		EndLine:   end,
+		Lines:     chunkLines,
+		Reusables: FindReusables(strings.Join(preambleLines, "\n"), rp),
+		IsHeader:  false,
+	}}
+}
+
+// frontmatterLines returns the number of leading lines taken up by a YAML
+// (`---`) or TOML (`+++`) frontmatter block, including both delimiters, or 0
+// when the file does not open with one.
+//
+// The opening delimiter must be the very first line and the block must be
+// closed; an unterminated one is ordinary content — a lone `---` on line 1 is a
+// legal thematic break, and reading the rest of the file as metadata because of
+// it would be far worse than treating a genuinely broken block as prose.
+func frontmatterLines(contentLines []string) int {
+	if len(contentLines) == 0 {
+		return 0
+	}
+	delim := strings.TrimRight(contentLines[0], " \t")
+	if delim != "---" && delim != "+++" {
+		return 0
+	}
+	for i := 1; i < len(contentLines); i++ {
+		if strings.TrimRight(contentLines[i], " \t") == delim {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// hasContent reports whether any line is more than whitespace.
+func hasContent(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseParagraphs splits content into paragraph-level chunks.
@@ -380,16 +559,54 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	}
 	var reusables []string
 	seen := make(map[string]bool)
-	for _, pattern := range rp.patterns {
+	for i, pattern := range rp.patterns {
 		matches := pattern.FindAllStringSubmatch(content, -1)
 		for _, match := range matches {
-			if len(match) > 1 && !seen[match[1]] {
+			if len(match) <= 1 {
+				continue
+			}
+			// Record provenance before the de-duplication, not after: a
+			// capture first seen from the component pattern and then from an
+			// include pattern is an include, and the second sighting is the
+			// one that says so.
+			if !rp.isComponentPattern(i) {
+				rp.noteIncludeCapture(match[1])
+			}
+			if !seen[match[1]] {
 				reusables = append(reusables, match[1])
 				seen[match[1]] = true
 			}
 		}
 	}
 	return reusables
+}
+
+// isComponentPattern reports whether patterns[i] is the shared component
+// pattern. A ReusablePatterns built before componentPattern existed (or by a
+// caller that bypassed NewReusablePatternsFor) has a short slice; treating the
+// missing entries as component patterns keeps the pre-provenance behaviour.
+func (rp *ReusablePatterns) isComponentPattern(i int) bool {
+	if i >= len(rp.componentPattern) {
+		return true
+	}
+	return rp.componentPattern[i]
+}
+
+// noteIncludeCapture records that this capture came out of an include pattern,
+// so ResolveReusable will never write it off as a component (#68 regression
+// against #7).
+func (rp *ReusablePatterns) noteIncludeCapture(ref string) {
+	if rp.includeCaptures == nil {
+		rp.includeCaptures = make(map[string]struct{})
+	}
+	rp.includeCaptures[ref] = struct{}{}
+}
+
+// fromIncludePattern reports whether FindReusables produced this capture from
+// an include pattern on this run.
+func (rp *ReusablePatterns) fromIncludePattern(ref string) bool {
+	_, ok := rp.includeCaptures[ref]
+	return ok
 }
 
 // GetReusableInfo returns git metadata for a reusable component referenced by
@@ -399,10 +616,80 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 // when nothing resolves — a reusable with no info is reported as unknown, never
 // as fresh.
 func GetReusableInfo(reusableName, sourceFile string, rp *ReusablePatterns) *git.FileInfo {
+	info, _ := ResolveReusable(reusableName, sourceFile, rp)
+	return info
+}
+
+// ResolveReusable is GetReusableInfo plus the reason there is no info: see
+// Resolution. Callers that report on failures (the analyzer's unresolved count,
+// and through it the CLI note) must use this form, because a nil info alone
+// cannot distinguish a broken include from a reference that was never meant to
+// resolve.
+//
+// The import map is consulted first when the profile enables it, because a
+// symbol the page imported is unambiguous evidence of what the capture means —
+// more so than any path heuristic. A capture that no import introduced falls
+// through to the ordinary resolution below, so <Snippet file="…" /> keeps
+// working on the same page as imports; only if that also finds nothing is a
+// component-shaped capture called skipped rather than unresolved (#68).
+func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*git.FileInfo, Resolution) {
 	if rp == nil {
-		return nil
+		return nil, ResolutionUnresolved
 	}
 
+	// The map answers questions about *symbols*. A capture an include pattern
+	// produced is a path, not a symbol, so it is resolved as one even on a page
+	// that happens to bind the same name (#68).
+	if rp.importMap && !rp.fromIncludePattern(reusableName) {
+		if target, ok := rp.importsFor(sourceFile)[reusableName]; ok {
+			if target.skipped {
+				return nil, ResolutionSkipped
+			}
+			if target.path != "" {
+				if info := rp.mostRecentFile([]string{target.path}); info != nil {
+					return info, ResolutionResolved
+				}
+			}
+			// A content import that named no file, or one that exists but has
+			// never been committed: a real defect, reported unknown.
+			return nil, ResolutionUnresolved
+		}
+	}
+
+	if info := rp.resolveExisting(reusableName, sourceFile); info != nil {
+		return info, ResolutionResolved
+	}
+
+	// Under the import map, a capitalised tag that resolved to nothing is a
+	// component the page renders rather than an include it is missing — the
+	// overwhelming majority of captures on a real MDX page. Out of scope, not a
+	// failure.
+	//
+	// Only a capture the *component* pattern produced qualifies. A capture from
+	// an include pattern — <Snippet file="AlsoMissing" /> — is an include by
+	// construction, and "capitalised and extensionless" is a shape the path
+	// resolver explicitly supports, so classifying it skipped made a broken
+	// snippet vanish from the report, the unresolved count and the stderr note
+	// alike (#68 regression against #7).
+	if rp.importMap && isComponentSymbol(reusableName) && !rp.fromIncludePattern(reusableName) {
+		return nil, ResolutionSkipped
+	}
+	return nil, ResolutionUnresolved
+}
+
+// componentSymbolPattern matches a capture that can only be a JSX component
+// name: capitalised, and carrying neither an extension nor a path separator, so
+// it can never be mistaken for the file path a ResolverPath capture usually is.
+var componentSymbolPattern = regexp.MustCompile(`^[A-Z][A-Za-z0-9_$]*$`)
+
+func isComponentSymbol(ref string) bool {
+	return componentSymbolPattern.MatchString(ref)
+}
+
+// resolveExisting performs the pre-import-map resolution: the path resolver,
+// then the legacy reusables directory, the Hugo shortcode lookup and the cached
+// path lookup. Returns nil when nothing resolves.
+func (rp *ReusablePatterns) resolveExisting(reusableName, sourceFile string) *git.FileInfo {
 	// The path resolver takes the capture literally: it is a file path, not a
 	// name to look up by convention, so it is resolved on its own terms and
 	// first. See lookupDirectPath.
@@ -481,6 +768,20 @@ func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, b
 				continue
 			}
 			if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+				continue
+			}
+			// Check from the project root, not from base: for a page-relative
+			// "../Snippets/note.mdx" the candidate climbs out of the page's
+			// directory, and caseExactUnder would then verify only the file
+			// name — letting a mis-cased *directory* through, which is the
+			// same defect this gate exists to close. withinRoot has already
+			// established the candidate is under the root.
+			if !rp.caseExactUnder(rp.root, candidate) {
+				// A case-insensitive filesystem said yes to a spelling the
+				// file does not actually have — <Note /> finding
+				// snippets/note.mdx. Accepting it would make the report
+				// depend on which operating system ran rustydocs; see
+				// caseExactUnder.
 				continue
 			}
 			// The file exists; it is the answer, so no further candidate is
@@ -662,7 +963,12 @@ func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileIn
 	case info != nil && info.Path != "":
 		target = info.Path
 	default:
-		resolved, ok := rp.resolveDirectPath(ref, sourceFile)
+		// No history, so the display path has to come from resolution. An
+		// imported symbol resolves through the map — otherwise a snippet that
+		// is imported but not yet committed would be reported under its bare
+		// symbol name, which is exactly the collapsing this function exists to
+		// prevent.
+		resolved, ok := rp.displayTarget(ref, sourceFile)
 		if !ok {
 			return ref
 		}
@@ -673,14 +979,81 @@ func (rp *ReusablePatterns) DisplayName(ref, sourceFile string, info *git.FileIn
 	if a, err := filepath.Abs(abs); err == nil {
 		abs = a
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
+
+	// Containment is decided on the symlink-resolved form, so a path reached
+	// through a symlinked tree is still recognised as inside the project. The
+	// *label*, though, is built from the spelling the reference actually used:
+	// filepath.EvalSymlinks case-normalises on Windows and nowhere else, so
+	// resolving the label would relabel a broken "/snippets/Note.mdx" as the
+	// neighbouring "snippets/note.mdx" that happens to exist — pointing the
+	// reader at the wrong file for a reference that did not resolve, and
+	// reporting a different name per platform for one repository.
+	checked := abs
+	if resolved, err := filepath.EvalSymlinks(checked); err == nil {
+		checked = resolved
 	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !relWithin(root, checked) {
 		return ref
 	}
-	return filepath.ToSlash(rel)
+
+	// Prefer the unresolved spelling; fall back to the resolved one when the
+	// two roots disagree (an unresolved path under a symlinked root will not
+	// be relative to the resolved root at all).
+	if rel, ok := relUnder(rp.root, abs); ok {
+		return rel
+	}
+	rel, ok := relUnder(root, checked)
+	if !ok {
+		return ref
+	}
+	return rel
+}
+
+// relWithin reports whether path sits inside base.
+func relWithin(base, path string) bool {
+	_, ok := relUnder(base, path)
+	return ok
+}
+
+// relUnder returns path relative to base in slash form, and whether it is
+// inside base at all. base is made absolute first so a relative project root
+// still works.
+func relUnder(base, path string) (string, bool) {
+	if base == "" {
+		return "", false
+	}
+	if a, err := filepath.Abs(base); err == nil {
+		base = a
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// displayTarget returns the file a reference names, for labelling purposes: the
+// import map's answer when the profile has one and the symbol was imported,
+// otherwise the ordinary path resolution. A deliberately skipped import (a
+// .jsx component) has no file to name and reports false.
+//
+// An import that resolved to nothing still names a file, and that name is what
+// is reported: a broken "import Card from '/snippets/Card.mdx'" belongs in the
+// table under snippets/Card.mdx, not under "Card", which every other page's
+// unrelated Card would share (#68 review). See importTarget.named.
+func (rp *ReusablePatterns) displayTarget(ref, sourceFile string) (string, bool) {
+	if rp.importMap && !rp.fromIncludePattern(ref) {
+		if target, ok := rp.importsFor(sourceFile)[ref]; ok {
+			if target.skipped {
+				return "", false
+			}
+			if target.path != "" {
+				return target.path, true
+			}
+			return target.named, target.named != ""
+		}
+	}
+	return rp.resolveDirectPath(ref, sourceFile)
 }
 
 // layoutRoots returns the layouts directories searched for shortcode
@@ -755,10 +1128,16 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 	shortcodePath := ""
 	for _, layouts := range rp.layoutRoots() {
 		for _, candidate := range shortcodeCandidates(layouts, name) {
-			if _, err := os.Stat(candidate); err == nil {
-				shortcodePath = candidate
-				break
+			if _, err := os.Stat(candidate); err != nil {
+				continue
 			}
+			if !rp.caseExactUnder(rp.root, candidate) {
+				// {{< Note >}} must not pick up shortcodes/note.html on a
+				// case-insensitive filesystem; see caseExactUnder.
+				continue
+			}
+			shortcodePath = candidate
+			break
 		}
 		if shortcodePath != "" {
 			break
@@ -780,6 +1159,9 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 }
 
 // parseShortcodeDataRefs parses a Hugo shortcode HTML for data file references.
+// Every path it derives from the template's text is case-exact-checked for the
+// same reason resolution is: the date it contributes must not depend on the
+// case-folding rules of the filesystem the run happened on.
 func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []string {
 	data, err := os.ReadFile(filepath.Clean(shortcodePath))
 	if err != nil {
@@ -794,7 +1176,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	for _, match := range readFileRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
 			fullPath := filepath.Join(rp.root, match[1])
-			if _, err := os.Stat(fullPath); err == nil {
+			if _, err := os.Stat(fullPath); err == nil && rp.caseExactUnder(rp.root, fullPath) {
 				dataFiles = append(dataFiles, fullPath)
 			}
 		}
@@ -808,7 +1190,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 			if !strings.HasSuffix(partialPath, ".html") {
 				partialPath += ".html"
 			}
-			if _, err := os.Stat(partialPath); err == nil {
+			if _, err := os.Stat(partialPath); err == nil && rp.caseExactUnder(rp.root, partialPath) {
 				dataFiles = append(dataFiles, partialPath)
 			}
 		}
@@ -822,7 +1204,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 			// Try common extensions
 			for _, ext := range []string{".yaml", ".yml", ".json", ".toml"} {
 				dataPath := filepath.Join(rp.root, "data", match[1]+ext)
-				if _, err := os.Stat(dataPath); err == nil {
+				if _, err := os.Stat(dataPath); err == nil && rp.caseExactUnder(rp.root, dataPath) {
 					dataFiles = append(dataFiles, dataPath)
 					break
 				}
@@ -849,9 +1231,17 @@ func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
 }
 
 // lookupInDir tries to find a file in a directory by name.
+//
+// The candidate's spelling is checked against the filesystem's before git is
+// asked, for the reason caseExactUnder gives: on Windows the path git receives
+// has been case-normalised on the way, so a capture that differs from the file
+// name only in case resolves there and nowhere else.
 func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name+ext)
+		if !rp.caseExactUnder(dir, candidate) {
+			continue
+		}
 		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}
@@ -859,6 +1249,9 @@ func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	// Try as subdirectory with index file
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name, "index"+ext)
+		if !rp.caseExactUnder(dir, candidate) {
+			continue
+		}
 		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
 			return info
 		}

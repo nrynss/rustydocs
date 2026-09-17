@@ -110,6 +110,28 @@ type Results struct {
 	filesSkippedExt int
 	skippedExts     map[string]struct{}
 
+	// dirsSkipped counts directories the *default* exclusions pruned from the
+	// walk (dot-directories, vendored/build trees, and directories holding
+	// their own .git); skippedDirs holds their distinct base names. Files under
+	// them are never visited, so they contribute to no other count — which is
+	// the point: this is the only number that explains where they went.
+	// Diagnostic only (see DirsSkipped / SkippedDirNames), not part of any
+	// report.
+	dirsSkipped int
+	skippedDirs map[string]struct{}
+
+	// dirsExcluded counts directories the *user's* exclude_dirs pruned from the
+	// walk. Like dirsSkipped it is the only trace they leave — their files are
+	// never visited, so they are not in filesExcluded either. Diagnostic only
+	// (see DirsExcluded), not part of any report.
+	dirsExcluded int
+
+	// filesGitIgnored counts files that matched the content allowlist, survived
+	// every directory exclusion, and were then dropped because git itself
+	// ignores them. Diagnostic only (see FilesGitIgnored), not part of any
+	// report.
+	filesGitIgnored int
+
 	// unresolvedReusables counts reusable references (once per file per
 	// distinct capture) that resolved to nothing with git history and were
 	// therefore reported "unknown"; unresolvedRefs holds the distinct raw
@@ -177,6 +199,47 @@ func (r *Results) SkippedExtensions() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// DirsSkipped returns the number of directories the default exclusions pruned
+// from the content walk: dot-directories (.git, .claude, .cursor), the
+// vendored/build trees of config.DefaultExcludeDirNames, and nested standalone
+// repositories — a clone or a linked worktree, whose files
+// git.GetGitRootForPath would resolve against a different project. A submodule
+// is not counted here: it belongs to the repository under analysis and is
+// scanned (see isDefaultExcludedDir).
+//
+// It exists so a user can see why the file count dropped. Files under a pruned
+// directory are never visited, so they appear in no other counter (#69).
+func (r *Results) DirsSkipped() int {
+	return r.dirsSkipped
+}
+
+// SkippedDirNames returns the distinct base names of the directories counted by
+// DirsSkipped, sorted.
+func (r *Results) SkippedDirNames() []string {
+	out := make([]string, 0, len(r.skippedDirs))
+	for name := range r.skippedDirs {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DirsExcluded returns the number of directories the user's exclude_dirs
+// pruned from the content walk. Their files are never visited, so — exactly as
+// with DirsSkipped — they contribute to no other counter, and this is the only
+// number that explains where they went (#69 review).
+func (r *Results) DirsExcluded() int {
+	return r.dirsExcluded
+}
+
+// FilesGitIgnored returns the number of files that matched the content
+// allowlist and survived every directory exclusion, but that git ignores. An
+// ignored file is not tracked documentation and blame can say nothing useful
+// about it, so analyzing it only manufactures "unknown" rows (#69).
+func (r *Results) FilesGitIgnored() int {
+	return r.filesGitIgnored
 }
 
 // UnresolvedReusables returns the number of reusable references that resolved
@@ -248,6 +311,210 @@ func (r *Results) OldestFile() *FileAnalysis {
 	return oldest
 }
 
+// isDefaultExcludedDir reports whether the default exclusions prune this
+// directory from the walk. Two rules, in the order they are cheap:
+//
+//   - its base name is a dot-directory or one of config.DefaultExcludeDirNames;
+//   - it is the root of a standalone repository of its own (config.IsRepoRoot).
+//
+// The nested-repository rule is the one that cannot be expressed as a name. A
+// Claude Code worktree or a vendored checkout is a *different* project:
+// git.GetGitRootForPath resolves its files against that repository, so their
+// dates describe someone else's history, and on the measured corpus they were
+// the bulk of the 1,078 files reported with no history at all.
+//
+// A submodule is not such a project. Its checkout is a subdirectory of the
+// repository under analysis, listed in its .gitmodules and pinned by its
+// commits, and a docs site that keeps a shared content tree there means every
+// word of it to be part of the documentation. Pruning it dropped that content
+// silently, with --no-default-excludes (which also switches off the dot-dir,
+// vendored and gitignore rules) as the only way back. It is walked *through*
+// instead, and the per-directory git-root cache resolves its files against its
+// own repository, which is where their history genuinely lives — the same
+// answer config.walkUp gives, so the two walks no longer disagree (#69).
+func isDefaultExcludedDir(dirPath, name string) bool {
+	if config.IsDefaultExcludedDir(name) {
+		return true
+	}
+	return config.IsRepoRoot(dirPath)
+}
+
+// filterGitIgnored returns the files git does not ignore, and how many it
+// dropped. A tree git cannot answer for — not a repository, no git on PATH —
+// is returned unfiltered: rustydocs supports that case and reports its files
+// as unknown.
+//
+// The files are grouped by their owning repository first, and each group gets
+// its own `git check-ignore`. That is not an optimisation, it is the only
+// correct shape: check-ignore refuses outright ("fatal: Pathspec 'x' is in
+// submodule 'y'") when a pathspec it is handed lies inside a submodule of the
+// repository it is asked from. One invocation rooted at the content directory
+// therefore *errored* on any tree containing a submodule — and since an error
+// means "skip filtering", a single submodule silently disabled the ignore
+// filter for the whole repository, parent included. The walk descends into
+// submodules by design (#69), so the two features met head-on (PR #71 review).
+//
+// Grouping also confines the error rule: a repository git cannot answer for
+// loses its own filtering and nothing else.
+//
+// Paths are handed to git relative to the group's root and matched back by
+// that exact spelling (see git.CheckIgnore). The root git reports is the
+// *physical* path (`git rev-parse --show-toplevel` resolves symlinks), while
+// the walk carries logical paths, so each directory's own physical form is
+// resolved once and the pathspec built from that; a file whose physical path
+// does not sit under the root it was attributed to (a symlink out of the tree)
+// falls back to being asked about from the content directory, exactly as
+// before.
+func filterGitIgnored(baseDir string, files []string) (kept []string, dropped int) {
+	if len(files) == 0 {
+		return files, 0
+	}
+
+	// One group per owning repository, in first-seen order so the subprocesses
+	// run deterministically. The zero key is the fallback group, asked from the
+	// content directory for the files no root could be derived for.
+	type group struct {
+		dir  string // directory git is asked from
+		idx  []int  // indices into files
+		rels []string
+	}
+	groups := make(map[string]*group)
+	var order []string
+	add := func(key, dir, rel string, i int) {
+		g := groups[key]
+		if g == nil {
+			g = &group{dir: dir}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.idx = append(g.idx, i)
+		g.rels = append(g.rels, rel)
+	}
+
+	dirs := resolveDirRoots(files)
+
+	for i, f := range files {
+		info := dirs[filepath.Dir(f)]
+		if rel, ok := relUnderRoot(info.root, info.phys, filepath.Base(f)); ok {
+			add(info.root, info.root, rel, i)
+			continue
+		}
+		rel, err := filepath.Rel(baseDir, f)
+		if err != nil {
+			// Nothing sensible to ask git about; keep the file.
+			rel = f
+		}
+		add("", baseDir, filepath.ToSlash(rel), i)
+	}
+
+	isIgnored := make([]bool, len(files))
+	for _, key := range order {
+		g := groups[key]
+		ignored, err := git.CheckIgnore(g.dir, g.rels)
+		if err != nil || len(ignored) == 0 {
+			// This repository keeps all its files; the others are unaffected.
+			continue
+		}
+		for j, idx := range g.idx {
+			if ignored[g.rels[j]] {
+				isIgnored[idx] = true
+				dropped++
+			}
+		}
+	}
+	if dropped == 0 {
+		return files, 0
+	}
+
+	kept = make([]string, 0, len(files)-dropped)
+	for i, f := range files {
+		if !isIgnored[i] {
+			kept = append(kept, f)
+		}
+	}
+	return kept, dropped
+}
+
+// dirRoot is one directory's owning repository root and its own physical
+// (symlink-resolved) path, the two things filterGitIgnored needs to build a
+// pathspec. Either may be empty when it could not be determined.
+type dirRoot struct{ root, phys string }
+
+// resolveDirRoots resolves those two facts for every distinct directory the
+// files sit in, concurrently.
+//
+// Concurrently because each root costs a `git rev-parse` subprocess and a docs
+// corpus is wide: 552 files spread over 466 directories turned a 6-second run
+// into a 14-second one when they were spawned back to back. Nothing extra is
+// spawned overall — git.GetGitRootForPath's cache is per directory and
+// process-wide, so these are exactly the lookups the blame stage would make
+// later, only made earlier and in parallel.
+//
+// Each goroutine writes to its own pre-created entry, so the map itself is
+// never written concurrently.
+func resolveDirRoots(files []string) map[string]*dirRoot {
+	dirs := make(map[string]*dirRoot)
+	// A representative file per directory: GetGitRootForPath takes a file.
+	samples := make(map[string]string)
+	var order []string
+	for _, f := range files {
+		d := filepath.Dir(f)
+		if _, seen := dirs[d]; !seen {
+			dirs[d] = &dirRoot{}
+			samples[d] = f
+			order = append(order, d)
+		}
+	}
+
+	workers := min(runtime.NumCPU(), len(order))
+	ch := make(chan string, len(order))
+	for _, d := range order {
+		ch <- d
+	}
+	close(ch)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range ch {
+				info := dirs[d]
+				if root, err := git.GetGitRootForPath(samples[d]); err == nil {
+					info.root = root
+				}
+				if phys, err := filepath.EvalSymlinks(d); err == nil {
+					info.phys = phys
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return dirs
+}
+
+// relUnderRoot builds the slash-separated pathspec for a file whose directory
+// resolves to physDir, relative to the repository root. It reports false when
+// either path is unknown or when the result escapes the root, which is the
+// caller's cue to fall back to asking from the content directory.
+func relUnderRoot(root, physDir, base string) (string, bool) {
+	if root == "" || physDir == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, physDir)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	if rel == "." {
+		return base, true
+	}
+	return rel + "/" + base, true
+}
+
 func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 	relative, err := filepath.Rel(baseDir, filePath)
 	if err != nil {
@@ -279,19 +546,56 @@ func shouldExclude(filePath string, cfg *config.Config, baseDir string) bool {
 	}
 
 	// Excluded directory names, matched on segment boundaries.
-	for _, dir := range cfg.ExcludeDirs {
+	return matchesExcludeDirs(relative, cfg.ExcludeDirs)
+}
+
+// matchesExcludeDirs reports whether a slash-separated path, relative to the
+// content root, lies at or under one of the configured exclude_dirs. Matching
+// is on segment boundaries, so "docs" never matches "mydocs/...".
+//
+// The HasSuffix arm is what makes a *nested* match prunable. Without it the
+// path "guides/drafts" — the directory itself — matched nothing, because it
+// neither equals "drafts" nor contains "/drafts/", so isUserExcludedDir let
+// the walk descend and every file under it was filtered one at a time by
+// shouldExclude instead. The files were excluded either way (the Contains arm
+// catches "guides/drafts/x.md"), so this was never a correctness bug; what it
+// cost was the subtree prune and the DirsExcluded count that explains where
+// those files went (PR #71 review).
+func matchesExcludeDirs(relative string, excludeDirs []string) bool {
+	for _, dir := range excludeDirs {
 		dir = strings.Trim(filepath.ToSlash(dir), "/")
 		if dir == "" {
 			continue
 		}
 		if relative == dir ||
 			strings.HasPrefix(relative, dir+"/") ||
-			strings.Contains(relative, "/"+dir+"/") {
+			strings.Contains(relative, "/"+dir+"/") ||
+			strings.HasSuffix(relative, "/"+dir) {
 			return true
 		}
 	}
-
 	return false
+}
+
+// isUserExcludedDir reports whether exclude_dirs prunes this directory from the
+// walk. It is deliberately exclude_dirs only: that list names directories, so
+// every file beneath a match is excluded too and the subtree can be skipped
+// whole. exclude_patterns cannot be used this way — "a*" matches the directory
+// "api" but not the file "api/x.md" underneath it — so patterns stay a per-file
+// filter in shouldExclude.
+//
+// The user's list gets the same cheap SkipDir prune the default exclusions
+// already had. It is the list they went to the trouble of typing, which usually
+// means the subtree behind it is one they know is big (#69 review).
+func isUserExcludedDir(dirPath string, cfg *config.Config, baseDir string) bool {
+	if len(cfg.ExcludeDirs) == 0 {
+		return false
+	}
+	relative, err := filepath.Rel(baseDir, dirPath)
+	if err != nil {
+		relative = dirPath
+	}
+	return matchesExcludeDirs(filepath.ToSlash(relative), cfg.ExcludeDirs)
 }
 
 // analyzeFile analyzes one documentation file. It returns an error only when
@@ -362,6 +666,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		ReusablesDir: reusablesDir,
 		Root:         root,
 		Resolver:     cfg.ResolvedProfile.Resolver,
+		ImportMap:    cfg.ResolvedProfile.ImportMap,
 		Cache:        cache,
 	})
 	if err != nil {
@@ -389,6 +694,8 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 	// Analyze each section for staleness
 	var staleSections []parser.Section
 	allReusables := make(map[string]ReusableInfo)
+	// Captures parser.ResolveReusable called out of scope; see the loop below.
+	skippedRefs := make(map[string]struct{})
 	var unresolvedReusableRefs []string
 	var oldestSectionDate *time.Time
 
@@ -414,8 +721,20 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		// makes the cross-file aggregate correct: two pages in different
 		// directories can both write "./shared.mdx" and mean different files.
 		for _, reusableName := range section.Reusables {
+			if _, skipped := skippedRefs[reusableName]; skipped {
+				continue
+			}
 			if _, exists := allReusables[reusableName]; !exists {
-				reusableInfo := parser.GetReusableInfo(reusableName, filePath, rp)
+				reusableInfo, resolution := parser.ResolveReusable(reusableName, filePath, rp)
+				if resolution == parser.ResolutionSkipped {
+					// Deliberately out of scope: a component the page renders
+					// but never imported, or an import of something that is not
+					// documentation. Not an include at all, so it earns neither
+					// a row in the reusables table nor an unresolved count —
+					// remembered so the next section does not re-ask (#68).
+					skippedRefs[reusableName] = struct{}{}
+					continue
+				}
 				var lastUpdated *time.Time
 				var lastAuthor string
 				if reusableInfo != nil {
@@ -583,16 +902,44 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 	// the matches the exclusion rules drop so a zero-file run can say why, and
 	// the documentation files the allowlist itself dropped (#11).
 	var (
-		mdFiles     []string
-		excluded    int
-		skippedExt  int
-		skippedExts = make(map[string]struct{})
+		mdFiles      []string
+		excluded     int
+		skippedExt   int
+		skippedExts  = make(map[string]struct{})
+		dirsSkipped  int
+		skippedDirs  = make(map[string]struct{})
+		dirsExcluded int
+		gitIgnored   int
 	)
 	err := filepath.WalkDir(baseDir, func(filePath string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			// Exclusions prune whole subtrees, which is what makes them worth
+			// having: the cost of a junk directory is one lstat, not a
+			// git-blame per file inside it. The content root is never pruned —
+			// it is the tree the user asked for, and it legitimately may be a
+			// dot-directory, or (the common case) the repository root itself,
+			// which holds the .git that would otherwise match (#69).
+			if filePath == baseDir {
+				return nil
+			}
+			// The user's exclude_dirs prunes first and regardless of
+			// --no-default-excludes: that flag turns off the *built-in* rules,
+			// never the list the user typed.
+			if isUserExcludedDir(filePath, cfg, baseDir) {
+				dirsExcluded++
+				return filepath.SkipDir
+			}
+			if cfg.NoDefaultExcludes {
+				return nil
+			}
+			if isDefaultExcludedDir(filePath, d.Name()) {
+				dirsSkipped++
+				skippedDirs[d.Name()] = struct{}{}
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if isContentFile(filePath, extSet) {
@@ -615,6 +962,15 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Drop the files git itself ignores, in one subprocess for the whole run.
+	// An ignored file is not tracked documentation, so blame has nothing to say
+	// about it and analyzing it only manufactures an "unknown" row. A tree that
+	// is not a git repository (a supported case, reported as unknown) answers
+	// with an error and is simply not filtered (#69).
+	if !cfg.NoDefaultExcludes {
+		mdFiles, gitIgnored = filterGitIgnored(baseDir, mdFiles)
 	}
 
 	// One git-lookup cache for the whole run, created before the pool starts
@@ -755,6 +1111,10 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		filesExcluded:   excluded,
 		filesSkippedExt: skippedExt,
 		skippedExts:     skippedExts,
+		dirsSkipped:     dirsSkipped,
+		skippedDirs:     skippedDirs,
+		filesGitIgnored: gitIgnored,
+		dirsExcluded:    dirsExcluded,
 
 		unresolvedReusables: unresolved,
 		unresolvedRefs:      unresolvedRefs,

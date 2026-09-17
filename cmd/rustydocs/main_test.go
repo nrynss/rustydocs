@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -627,8 +628,8 @@ func TestRunArgs_WarnsWhenNoFilesMatch(t *testing.T) {
 		t.Errorf("stdout should report zero files scanned, got:\n%s", out.String())
 	}
 	stderr = errb.String()
-	want := `Warning: all 1 file(s) matching the "markdown" profile's extensions (.md, .markdown) under ` + exclDir +
-		" were skipped by exclude_dirs / exclude_patterns; relax the exclusions to analyze them."
+	want := `Warning: every directory holding the "markdown" profile's extensions (.md, .markdown) under ` + exclDir +
+		" was pruned by exclude_dirs (1 pruned); relax the exclusions to analyze them."
 	if !strings.Contains(stderr, want) {
 		t.Errorf("stderr missing %q, got:\n%s", want, stderr)
 	}
@@ -1585,5 +1586,56 @@ func makeUnreadable(t *testing.T, path string) {
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 	if _, err := os.ReadFile(path); err == nil {
 		t.Skipf("%s is still readable after chmod 000 (Windows, or running as root)", path)
+	}
+}
+
+// TestRunArgs_ExtensionlessBrokenSnippetNote checks that a broken extensionless
+// <Snippet file="…" /> reaches the user. Its capture is capitalised and
+// separator-free, so the import map's component rule swallowed it whole: no
+// report row, no unresolved count, and — the part a CI user actually sees —
+// empty stderr on a run with a genuinely broken include (#68 review).
+func TestRunArgs_ExtensionlessBrokenSnippetNote(t *testing.T) {
+	now := time.Now()
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "docs", map[string]string{
+		"docs.json":           `{"name":"docs","navigation":[]}`,
+		"snippets/shared.mdx": "shared\n",
+		"docs/page.mdx": `# Page
+
+<Snippet file="shared" />
+<Snippet file="AlsoMissing" />
+<Card title="x" />
+`,
+	})
+
+	outDir := filepath.Join(t.TempDir(), "reports")
+	var out, errb bytes.Buffer
+	if err := runArgs([]string{
+		"--content-dir", repo.Path("docs"), "--output-dir", outDir,
+	}, &out, &errb); err != nil {
+		t.Fatalf("runArgs: %v\nstderr: %s", err, errb.String())
+	}
+
+	stderr := errb.String()
+	if !strings.Contains(stderr, `profile "mintlify": `) {
+		t.Fatalf("stderr missing the unresolved-reusables note:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "1 reusable reference(s) resolved to no file with git history") {
+		t.Errorf("the note should count the one broken include:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "AlsoMissing") {
+		t.Errorf("the note should name the broken capture:\n%s", stderr)
+	}
+
+	rep := readJSONReport(t, outDir)
+	var names []string
+	for _, r := range rep.Reusables {
+		names = append(names, r.Name)
+	}
+	if !slices.Contains(names, "AlsoMissing") {
+		t.Errorf("reusables = %v, want a row for the broken include", names)
+	}
+	if slices.Contains(names, "Card") {
+		t.Errorf("reusables = %v, a built-in component must not earn a row", names)
 	}
 }

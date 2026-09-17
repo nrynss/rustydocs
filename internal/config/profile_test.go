@@ -102,9 +102,13 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 	if !reflect.DeepEqual(mint.RootMarkers, []string{"docs.json", "mint.json"}) || mint.Resolver != ResolverPath {
 		t.Errorf("mintlify profile root markers/resolver wrong: %+v", mint)
 	}
+	// Two snippet patterns (one per quote style) plus the shared MDX component
+	// pattern, which only means anything because the profile carries an import
+	// map to say which captures are includes (#68).
 	wantMintPatterns := []string{
 		`<Snippet\b[^>]*\bfile="([^"]+)"`,
 		`<Snippet\b[^>]*\bfile='([^']+)'`,
+		MDXComponentPattern,
 	}
 	if !reflect.DeepEqual(mint.ReusablePatterns, wantMintPatterns) {
 		t.Errorf("mintlify patterns = %v", mint.ReusablePatterns)
@@ -112,20 +116,44 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 	if !reflect.DeepEqual(mint.ReusableExtensions, []string{".mdx", ".md"}) {
 		t.Errorf("mintlify reusable extensions = %v", mint.ReusableExtensions)
 	}
+	if !mint.ImportMap {
+		t.Error("mintlify profile should enable the MDX import map (#68)")
+	}
+
+	// The import map is opt-in per profile: hugo resolves a component capture
+	// as a shortcode name and must not start reading imports instead.
+	if hugo.ImportMap {
+		t.Error("hugo profile should not enable the MDX import map")
+	}
+	if md, _ := LookupProfile(ProfileMarkdown); md.ImportMap {
+		t.Error("markdown profile should not enable the MDX import map")
+	}
 }
 
 // TestMintlifyPattern_NoComponentLeak pins the narrowness of the Mintlify
-// reusable pattern: only <Snippet file="…"> is a reusable, and what it captures
-// is the path, not the component name. A bare MDX component or a Hugo shortcode
-// on a Mintlify page must not be reported as a reusable (#7).
+// *snippet* patterns: what <Snippet file="…"> captures is the path, and nothing
+// else on the page captures a path. A bare MDX component or a Hugo shortcode
+// must never reach the path resolver as if it named a file (#7).
+//
+// The profile also carries the shared MDX component pattern (#68), which by
+// design captures every capitalised tag. That is a different capture with a
+// different meaning — a symbol, resolved through the page's import map, and
+// skipped outright when no import introduced it — so it is deliberately
+// excluded here and covered by the import-map tests instead.
 func TestMintlifyPattern_NoComponentLeak(t *testing.T) {
 	mint, _ := LookupProfile(ProfileMintlify)
-	// One pattern per quote style; both capture the path in group 1.
-	if len(mint.ReusablePatterns) != 2 {
-		t.Fatalf("mintlify should have two patterns (one per quote style), got %v", mint.ReusablePatterns)
+	// One snippet pattern per quote style, then the component pattern.
+	if len(mint.ReusablePatterns) != 3 {
+		t.Fatalf("mintlify should have two snippet patterns plus the component pattern, got %v",
+			mint.ReusablePatterns)
 	}
-	res := make([]*regexp.Regexp, 0, len(mint.ReusablePatterns))
-	for _, p := range mint.ReusablePatterns {
+	if mint.ReusablePatterns[2] != MDXComponentPattern {
+		t.Fatalf("mintlify pattern 3 should be the shared component pattern, got %q",
+			mint.ReusablePatterns[2])
+	}
+	snippetPatterns := mint.ReusablePatterns[:2]
+	res := make([]*regexp.Regexp, 0, len(snippetPatterns))
+	for _, p := range snippetPatterns {
 		res = append(res, regexp.MustCompile(p))
 	}
 
@@ -1585,32 +1613,32 @@ func TestIsRepoRoot(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if !isRepoRoot(dir) {
-			t.Error("isRepoRoot = false, want true for a .git directory")
+		if !IsRepoRoot(dir) {
+			t.Error("IsRepoRoot = false, want true for a .git directory")
 		}
 	})
 
 	t.Run("no dot-git does not stop", func(t *testing.T) {
-		if isRepoRoot(t.TempDir()) {
-			t.Error("isRepoRoot = true, want false with no .git entry")
+		if IsRepoRoot(t.TempDir()) {
+			t.Error("IsRepoRoot = true, want false with no .git entry")
 		}
 	})
 
 	t.Run("worktree file stops", func(t *testing.T) {
-		if !isRepoRoot(writeGit(t, "gitdir: /x/.git/worktrees/w\n")) {
-			t.Error("isRepoRoot = false, want true for a linked worktree")
+		if !IsRepoRoot(writeGit(t, "gitdir: /x/.git/worktrees/w\n")) {
+			t.Error("IsRepoRoot = false, want true for a linked worktree")
 		}
 	})
 
 	t.Run("submodule file does not stop", func(t *testing.T) {
-		if isRepoRoot(writeGit(t, "gitdir: /x/.git/modules/content\n")) {
-			t.Error("isRepoRoot = true, want false for a submodule checkout")
+		if IsRepoRoot(writeGit(t, "gitdir: /x/.git/modules/content\n")) {
+			t.Error("IsRepoRoot = true, want false for a submodule checkout")
 		}
 	})
 
 	t.Run("garbage file stops", func(t *testing.T) {
-		if !isRepoRoot(writeGit(t, "\x00 not a pointer\n")) {
-			t.Error("isRepoRoot = false, want true for an unparsable .git file")
+		if !IsRepoRoot(writeGit(t, "\x00 not a pointer\n")) {
+			t.Error("IsRepoRoot = false, want true for an unparsable .git file")
 		}
 	})
 
@@ -1627,8 +1655,8 @@ func TestIsRepoRoot(t *testing.T) {
 		if err := os.Symlink(real, filepath.Join(dir, ".git")); err != nil {
 			t.Skipf("symlinks unsupported: %v", err)
 		}
-		if !isRepoRoot(dir) {
-			t.Error("isRepoRoot = false, want true for a symlinked .git directory")
+		if !IsRepoRoot(dir) {
+			t.Error("IsRepoRoot = false, want true for a symlinked .git directory")
 		}
 	})
 }

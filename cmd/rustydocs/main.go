@@ -127,10 +127,15 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		thresholdDays  = fs.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
 		fileLevelOnly  = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
 		paragraphLevel = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
-		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images)")
-		extensions     = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: from profile)")
-		profile        = fs.String("profile", "", "Documentation profile: "+strings.Join(config.Profiles(), ", ")+" (default: auto-detect)")
-		projectRoot    = fs.String("project-root", "", "Project root that reusable references resolve against "+
+		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images); "+
+			"additive on top of the default exclusions")
+		noDefaultExcludes = fs.Bool("no-default-excludes", false, "Scan everything: turn off the default exclusions "+
+			"(dot-directories, "+strings.Join(config.DefaultExcludeDirNames(), "/")+", directories holding their own .git, "+
+			"and files git ignores). --exclude-dirs / --exclude-patterns still apply. "+
+			"Config-file spelling: \"no_default_excludes\"")
+		extensions  = fs.String("extensions", "", "Comma-separated documentation extensions to analyze (default: from profile)")
+		profile     = fs.String("profile", "", "Documentation profile: "+strings.Join(config.Profiles(), ", ")+" (default: auto-detect)")
+		projectRoot = fs.String("project-root", "", "Project root that reusable references resolve against "+
 			"(Hugo site root, Mintlify docs root); default: detected from the profile's markers. "+
 			"It never selects a profile on its own, so pair it with --profile on a project whose "+
 			"markers are absent. Config-file spelling: \"project_root\" (deprecated: \"hugo_root\")")
@@ -205,6 +210,9 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 				cfg.ExcludeDirs = append(cfg.ExcludeDirs, d)
 			}
 		}
+	}
+	if *noDefaultExcludes {
+		cfg.NoDefaultExcludes = true
 	}
 	if *extensions != "" {
 		var exts []string
@@ -319,13 +327,25 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 			"they are reported as unknown, not fresh. Ensure a full clone (fetch-depth: 0).\n", missing)
 	}
 
+	// What the default exclusions removed. Printed before the zero-files
+	// warning rather than after it — unlike the skipped-extensions note, which
+	// is suppressed there — because when a run scans nothing the exclusions are
+	// a likelier cause than the allowlist, and the reader needs to see both
+	// (#69).
+	if note := describeDefaultExcludes(results.DirsSkipped(), results.SkippedDirNames(),
+		results.FilesGitIgnored()); note != "" {
+		fmt.Fprintf(stderr, "\nNote: %s\n", note)
+	}
+
 	// Zero files scanned almost always means the extension allowlist did not
 	// match the tree (e.g. an .mdx-only site under the markdown profile) or the
 	// exclusions removed every match, so say which profile and extensions were
 	// in force — or that exclusions did it — instead of reporting a clean run
 	// in silence. The exit code is unchanged (#11).
 	if results.TotalFiles() == 0 {
-		fmt.Fprintf(stderr, "\nWarning: %s\n", describeNoFilesMatched(cfg, results.FilesExcluded()))
+		fmt.Fprintf(stderr, "\nWarning: %s\n", describeNoFilesMatched(cfg,
+			results.FilesExcluded(), results.DirsExcluded(), results.FilesGitIgnored(),
+			results.DirsSkipped()))
 		return nil
 	}
 
@@ -525,18 +545,98 @@ func describeSkippedExtensions(cfg *config.Config, skipped int, exts []string) s
 		skipped, strings.Join(exts, ", "), active, profileNote)
 }
 
+// skippedDirNamesShown caps how many directory names describeDefaultExcludes
+// lists before it summarises the rest, for the same reason
+// unresolvedRefsShown does: a repo full of nested checkouts must not turn one
+// stderr line into a wall of text.
+const skippedDirNamesShown = 5
+
+// describeDefaultExcludes builds the note naming what the default exclusions
+// removed from the walk: how many directories were pruned and which names they
+// had, and how many files git ignores. "" when they removed nothing — including
+// every run under --no-default-excludes, which can only produce zeroes.
+//
+// It exists because the defaults change the headline number. A user who saw
+// 4,032 files yesterday and 494 today is owed an explanation on the same
+// stderr, in the same shape, as the skipped-extensions note; and the way back
+// is one flag, so the note names it (#69).
+func describeDefaultExcludes(dirs int, names []string, ignored int) string {
+	if dirs == 0 && ignored == 0 {
+		return ""
+	}
+	var parts []string
+	if dirs > 0 {
+		parts = append(parts, fmt.Sprintf("%d director(y/ies) %s",
+			dirs, describeSkippedDirNames(names)))
+	}
+	if ignored > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s) ignored by git", ignored))
+	}
+	return fmt.Sprintf("default exclusions skipped %s. "+
+		"Dot-directories, %s, nested standalone repositories (a clone or a linked worktree, "+
+		"whose history is a different project's; a submodule is not one and is scanned) and "+
+		"git-ignored files are excluded by default; pass --no-default-excludes to scan them "+
+		"anyway.",
+		strings.Join(parts, " and "), strings.Join(config.DefaultExcludeDirNames(), ", "))
+}
+
+// describeSkippedDirNames renders the pruned directories' distinct base names,
+// truncated. Callers embed it mid-sentence, so it never ends one.
+func describeSkippedDirNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	shown, more := names, ""
+	if len(names) > skippedDirNamesShown {
+		shown = names[:skippedDirNamesShown]
+		more = fmt.Sprintf(" and %d more", len(names)-skippedDirNamesShown)
+	}
+	return fmt.Sprintf("(%s%s)", strings.Join(shown, ", "), more)
+}
+
 // describeNoFilesMatched builds the zero-files-scanned warning, naming the
 // extensions that were in force and where they came from (see
-// describeActiveExtensions). When excluded > 0 every file that matched those
-// extensions was dropped by exclude_dirs / exclude_patterns, so the warning
-// blames the exclusions; otherwise it points at the two knobs that change the
-// extensions.
-func describeNoFilesMatched(cfg *config.Config, excluded int) string {
+// describeActiveExtensions). It has to say which of three things emptied the
+// list, because only the last of them is fixed by changing the extensions:
+//
+//   - excluded > 0: every match was dropped by exclude_dirs / exclude_patterns;
+//   - dirsExcluded > 0: exclude_dirs pruned whole subtrees, so the matches were
+//     never counted as files at all (see analyzer.Results.DirsExcluded);
+//   - gitIgnored > 0: the matches exist but git ignores them. Claiming "no
+//     files matched the extensions" there was simply untrue — the extensions
+//     matched fine. The note printed just above this one already gives the
+//     detail, so this stays one clause (#69 review).
+//   - dirsSkipped > 0: the *default* exclusions pruned every directory that
+//     could have held content — a docs tree that lives entirely under, say,
+//     node_modules or a nested clone. Nothing was ever visited, so all the
+//     other counters are zero and the plain "no files matched the extensions"
+//     text both contradicted the note printed above it and recommended the one
+//     knob that cannot help. It defers to that note rather than repeating its
+//     detail, and names the flag that restores the subtrees (PR #71 review).
+//
+// With none of those, the allowlist really did match nothing, and the warning
+// points at the two knobs that widen it.
+func describeNoFilesMatched(cfg *config.Config, excluded, dirsExcluded, gitIgnored, dirsSkipped int) string {
 	active, profileNote := describeActiveExtensions(cfg)
-	if excluded > 0 {
+	switch {
+	case excluded > 0:
 		return fmt.Sprintf("all %d file(s) matching %s under %s%s were skipped by "+
 			"exclude_dirs / exclude_patterns; relax the exclusions to analyze them.",
 			excluded, active, cfg.ContentDir, profileNote)
+	case dirsExcluded > 0:
+		return fmt.Sprintf("every directory holding %s under %s%s was pruned by "+
+			"exclude_dirs (%d pruned); relax the exclusions to analyze them.",
+			active, cfg.ContentDir, profileNote, dirsExcluded)
+	case gitIgnored > 0:
+		return fmt.Sprintf("all %d file(s) matching %s under %s%s are ignored by git, "+
+			"so none was analyzed; untrack the ignore rule, or pass --no-default-excludes "+
+			"to analyze them anyway.",
+			gitIgnored, active, cfg.ContentDir, profileNote)
+	case dirsSkipped > 0:
+		return fmt.Sprintf("nothing was scanned under %s%s: the default exclusions pruned "+
+			"every directory that could hold %s (see the note above); "+
+			"pass --no-default-excludes to scan them anyway.",
+			cfg.ContentDir, profileNote, active)
 	}
 	return fmt.Sprintf("no files matched %s under %s%s; "+
 		"use --extensions to widen the allowlist or --profile to pick another profile (see --list-profiles).",
