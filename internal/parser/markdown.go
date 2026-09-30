@@ -280,10 +280,18 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	// "\n"), so git-blame line-number alignment is preserved.
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	if rp != nil && rp.profile == config.ProfileGitBook {
+		// Keep nonblank fenced lines nonblank so paragraph chunks retain
+		// their blame history, while hiding headings and references.
 		masked := []byte(content)
 		for _, span := range fencedSpans(content) {
+			lineHasContent := false
 			for i := span[0]; i < span[1]; i++ {
-				if masked[i] != '\n' {
+				if masked[i] == '\n' {
+					lineHasContent = false
+				} else if !lineHasContent && masked[i] != ' ' && masked[i] != '\t' {
+					masked[i] = 'x'
+					lineHasContent = true
+				} else {
 					masked[i] = ' '
 				}
 			}

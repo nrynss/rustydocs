@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -712,6 +713,34 @@ func TestGitBookPaths(t *testing.T) {
 		}
 		if !reflect.DeepEqual(refs, []string{"shared.md"}) {
 			t.Errorf("fenced chunks (paragraphs=%v) captured %v", paragraphs, refs)
+		}
+	}
+	for _, paragraphs := range []bool{false, true} {
+		body := "```md\ncode\n```\n# Page\nprose\n```md\nnew code\n```\n"
+		old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		recent := old.AddDate(1, 0, 0)
+		var lines []git.LineInfo
+		for i := range strings.Split(body, "\n") {
+			ts := old
+			if i+1 == 7 {
+				ts = recent
+			}
+			lines = append(lines, mkLine(i+1, ts, "author"))
+		}
+		chunks := ParseChunks(body, lines, paragraphs, rp)
+		foundPreamble, foundCode := false, false
+		for _, chunk := range chunks {
+			if chunk.Title == preambleTitle || strings.HasPrefix(chunk.Title, preambleTitle+" (L") {
+				foundPreamble = true
+			}
+			for _, li := range chunk.Lines {
+				if li.LineNumber == 7 && chunk.LastUpdated().Equal(recent) {
+					foundCode = true
+				}
+			}
+		}
+		if !foundPreamble || !foundCode {
+			t.Errorf("fenced blame lost (paragraphs=%v): preamble=%v code=%v chunks=%+v", paragraphs, foundPreamble, foundCode, chunks)
 		}
 	}
 	for _, tc := range []struct{ ref, want string }{
