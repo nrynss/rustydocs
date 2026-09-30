@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A `gitbook` profile (#20) for git-synced `.md` documentation, auto-detected
+  from `.gitbook.yaml` or `SUMMARY.md` or selected with `--profile gitbook`.
+  GitBook content-ref and include paths resolve within the project root;
+  referenced Markdown history contributes to the referring section's freshness.
+
 - **MDX import-map resolver** (#68). The `mintlify` profile resolved
   `<Snippet file="…" />`, a syntax that did not occur once on the production
   site it was built for: every reusable reference there is an MDX import.
