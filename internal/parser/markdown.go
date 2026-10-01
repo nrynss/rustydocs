@@ -720,6 +720,12 @@ func isComponentSymbol(ref string) bool {
 // then the legacy reusables directory, the Hugo shortcode lookup and the cached
 // path lookup. Returns nil when nothing resolves.
 func (rp *ReusablePatterns) resolveExisting(reusableName, sourceFile string) *git.FileInfo {
+	// GitBook captures are page-relative paths, never legacy reusable names.
+	// Falling back after a missing, uncommitted, or rejected target would
+	// bypass the direct resolver's project-root boundary.
+	if rp.profile == config.ProfileGitBook {
+		return rp.lookupDirectPath(reusableName, sourceFile)
+	}
 	// The path resolver takes the capture literally: it is a file path, not a
 	// name to look up by convention, so it is resolved on its own terms and
 	// first. See lookupDirectPath.

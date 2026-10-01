@@ -159,6 +159,85 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 // optional info string ("```mdx").
 var fenceLinePattern = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 
+// A container prefix is consumed on the opening line and then required on
+// each continuation line. List markers become indentation on continuation;
+// blockquote markers remain literal. Keep offsets in the original source.
+type fenceContainer struct {
+	quote  bool
+	indent int
+}
+
+var fenceContainerPattern = regexp.MustCompile(`^ {0,3}(?:> ?|(?:[-+*]|[0-9]{1,9}[.)])([ \t]+))`)
+
+func openingFenceLine(line string) (string, []fenceContainer) {
+	var containers []fenceContainer
+	for {
+		m := fenceContainerPattern.FindStringSubmatchIndex(line)
+		if m == nil {
+			return line, containers
+		}
+		prefix := line[:m[1]]
+		if strings.Contains(prefix, ">") {
+			containers = append(containers, fenceContainer{quote: true})
+		} else {
+			// More than four spaces after a marker mean indented code;
+			// only the first space belongs to the list prefix then.
+			if m[2] >= 0 && m[3]-m[2] > 4 {
+				prefix = prefix[:m[2]+1]
+			}
+			width := 0
+			for _, ch := range prefix {
+				if ch == '\t' {
+					width += 4 - width%4
+				} else {
+					width++
+				}
+			}
+			containers = append(containers, fenceContainer{indent: width})
+		}
+		line = line[len(prefix):]
+	}
+}
+
+func continuedFenceLine(line string, containers []fenceContainer) (string, bool) {
+	for _, c := range containers {
+		if c.quote {
+			i := 0
+			for i < len(line) && i < 3 && line[i] == ' ' {
+				i++
+			}
+			if i == len(line) || line[i] != '>' {
+				return line, false
+			}
+			line = line[i+1:]
+			if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+				line = line[1:]
+			}
+		} else {
+			if strings.TrimSpace(line) == "" {
+				return "", true
+			}
+			i, width := 0, 0
+			for i < len(line) && width < c.indent {
+				switch line[i] {
+				case ' ':
+					width++
+				case '\t':
+					width += 4 - width%4
+				default:
+					return line, false
+				}
+				i++
+			}
+			if width < c.indent {
+				return line, false
+			}
+			line = strings.Repeat(" ", width-c.indent) + line[i:]
+		}
+	}
+	return line, true
+}
+
 // fencedSpans returns the byte ranges of content that sit inside a fenced code
 // block, fence lines included, in ascending order.
 //
@@ -169,24 +248,24 @@ var fenceLinePattern = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 // first import of a symbol wins, a decoy in a fence also shadows the real
 // import below it.
 //
-// Scope: this is the import scanner's blind spot only. The header regex has the
-// same one (a "#" line inside a fence read as a heading) and it is NOT fixed
-// here — that is #27, whose answer is to replace the regex with a real
-// CommonMark parser rather than to grow a second ad-hoc fence tracker.
+// GitBook also uses these spans to hide example directives and headings while
+// preserving their original blame lines. General Markdown section parsing is
+// still handled by the header regex; replacing it with a parser is #27.
 //
 // The rules implemented are CommonMark's, minus what cannot matter to an import
 // on its own line: an opening fence is three or more backticks or tildes with
 // at most three spaces of indent; a backtick fence's info string may not itself
 // contain a backtick; a closing fence is the same character, at least as long,
-// and carries no info string; and a fence that is never closed runs to the end
-// of the document.
+// and carries no info string. Blockquote and list prefixes are tracked, so a
+// fence ends at its container boundary or, at top level, the document's end.
 func fencedSpans(content string) [][2]int {
 	var (
-		spans     [][2]int
-		open      bool
-		fenceChar byte
-		fenceLen  int
-		spanStart int
+		spans      [][2]int
+		open       bool
+		fenceChar  byte
+		fenceLen   int
+		spanStart  int
+		containers []fenceContainer
 	)
 	for pos := 0; pos < len(content); {
 		lineEnd, next := len(content), len(content)
@@ -194,7 +273,25 @@ func fencedSpans(content string) [][2]int {
 			lineEnd = pos + nl
 			next = lineEnd + 1
 		}
-		if m := fenceLinePattern.FindStringSubmatch(content[pos:lineEnd]); m != nil {
+		line := content[pos:lineEnd]
+		if open || len(containers) > 0 {
+			var inside bool
+			line, inside = continuedFenceLine(line, containers)
+			if !inside {
+				if open {
+					spans = append(spans, [2]int{spanStart, pos})
+				}
+				open = false
+				containers = nil
+				line = content[pos:lineEnd]
+			}
+		}
+		if !open {
+			var added []fenceContainer
+			line, added = openingFenceLine(line)
+			containers = append(containers, added...)
+		}
+		if m := fenceLinePattern.FindStringSubmatch(line); m != nil {
 			char, length := m[1][0], len(m[1])
 			info := strings.TrimSpace(m[2])
 			switch {

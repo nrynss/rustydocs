@@ -91,6 +91,45 @@ func TestAnalyze_GitBookReferences(t *testing.T) {
 	}
 }
 
+func TestAnalyze_GitBookLegacyDirectoryAndExamples(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "old pages", map[string]string{
+		"docs/.gitbook.yaml": "root: ./\n",
+		"docs/missing.md":    "# Missing\n\n{% include \"absent\" %}\n",
+		"docs/quoted.md":     "# Example\n\n> ```md\n> {% include \"shared.md\" %}\n> ```\n",
+		"docs/listed.md":     "# Example\n\n10. ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/shared.md":     "# Shared\n\nold\n",
+	})
+	repo.Commit(now.AddDate(0, 0, -5), "fresh targets", map[string]string{
+		"outside/absent.md": "legacy target\n",
+		"docs/shared.md":    "# Shared\n\nnew\n",
+	})
+	for _, paragraphs := range []bool{false, true} {
+		cfg := config.DefaultConfig()
+		cfg.ContentDir = repo.Path("docs")
+		cfg.Reusables.Dir = repo.Path("outside")
+		cfg.ThresholdDays = 90
+		cfg.ParagraphLevel = paragraphs
+		res, err := Analyze(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ResolvedProfile.Name != config.ProfileGitBook || cfg.ProjectRoot != repo.Path("docs") {
+			t.Fatalf("profile/root = %q/%q", cfg.ResolvedProfile.Name, cfg.ProjectRoot)
+		}
+		if res.UnresolvedReusables() != 1 || len(res.AllReusables) != 1 || res.AllReusables[0].LastUpdated != nil {
+			t.Errorf("paragraphs=%v: references = %+v", paragraphs, res.AllReusables)
+		}
+		for _, file := range res.Files {
+			if file.RelativePath != "shared.md" && len(file.StaleSections) == 0 {
+				t.Errorf("paragraphs=%v: %s freshened by fallback/example", paragraphs, file.RelativePath)
+			}
+		}
+	}
+}
+
 func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)

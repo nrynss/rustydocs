@@ -467,6 +467,16 @@ func TestBuildImportMap_FencedCodeIsNotAnImport(t *testing.T) {
 			want: map[string]string{},
 		},
 		{
+			name: "list continuation fence does not hide import after container",
+			body: "- Example\n\n    ```mdx\n    import Decoy from \"/snippets/other.mdx\";\n    ```\n\nimport Shared from \"/snippets/shared.mdx\";\n",
+			want: map[string]string{"Shared": "snippets/shared.mdx"},
+		},
+		{
+			name: "unclosed quote fence ends with quote container",
+			body: "> ```mdx\n> example\nimport Shared from \"/snippets/shared.mdx\";\n",
+			want: map[string]string{"Shared": "snippets/shared.mdx"},
+		},
+		{
 			name: "indented fence",
 			body: "Text:\n\n   ```\n   import Shared from \"/snippets/shared.mdx\";\n   ```\n",
 			want: map[string]string{},

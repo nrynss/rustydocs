@@ -665,6 +665,109 @@ var mintlifyPatternStrings = func() []string {
 	return p.ReusablePatterns
 }()
 
+func TestResolveReusable_GitBookDoesNotFallBack(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	when := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	repo.Commit(when, "targets", map[string]string{
+		"docs/page.md":          "# Page\n",
+		"outside/missing.md":    "legacy target\n",
+		"outside/draft.md":      "legacy target\n",
+		"outside/shared.mdx.md": "legacy target for rejected extension\n",
+		"outside/secret.md":     "outside root\n",
+	})
+	if err := os.WriteFile(repo.Path("docs/draft.md"), []byte("uncommitted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := config.LookupProfile(config.ProfileGitBook)
+	rp, err := NewReusablePatternsFor(ReusableConfig{
+		Patterns: p.ReusablePatterns, Extensions: p.ReusableExtensions,
+		Root: repo.Path("docs"), ReusablesDir: repo.Path("outside"),
+		Resolver: p.Resolver, Profile: p.Name,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"missing", "draft", "../outside/secret.md", "shared.mdx"} {
+		if info, resolution := ResolveReusable(ref, repo.Path("docs/page.md"), rp); info != nil || resolution != ResolutionUnresolved {
+			t.Errorf("ResolveReusable(%q) = %+v, %v, want unresolved", ref, info, resolution)
+		}
+	}
+	if err := os.Symlink(repo.Path("outside/secret.md"), repo.Path("docs/secret.md")); err == nil {
+		if info, resolution := ResolveReusable("secret", repo.Path("docs/page.md"), rp); info != nil || resolution != ResolutionUnresolved {
+			t.Errorf("symlink escape fell back: %+v, %v", info, resolution)
+		}
+	} else {
+		t.Logf("symlink regression unavailable: %v", err)
+	}
+	// The legacy lookup remains available to the other profiles.
+	rp.profile = config.ProfileMintlify
+	if info, resolution := ResolveReusable("missing", repo.Path("docs/page.md"), rp); info == nil || resolution != ResolutionResolved {
+		t.Errorf("legacy fallback = %+v, %v, want resolved", info, resolution)
+	}
+}
+
+func TestGitBookContainerFences(t *testing.T) {
+	p, _ := config.LookupProfile(config.ProfileGitBook)
+	rp, err := NewReusablePatternsFor(ReusableConfig{Patterns: p.ReusablePatterns, Profile: p.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, start, prefix, end string }{
+		{"blockquote", "> ```md", "> ", "> ```"},
+		{"nested blockquote", "> > ~~~md", "> > ", "> > ~~~"},
+		{"list", "- ```md", "  ", "  ```"},
+		{"ordered list", "10. ```md", "    ", "    ```"},
+		{"quoted list", "> - ```md", ">   ", ">   ```"},
+		{"list quote", "- > ```md", "  > ", "  > ```"},
+		{"nested list", "- - ```md", "    ", "    ```"},
+		{"list continuation", "- Example\n\n    ```md", "    ", "    ```"},
+		{"quoted list continuation", "> - Example\n>\n>     ```md", ">     ", ">     ```"},
+		{"unclosed quote", "> ```md", "> ", ""},
+		{"unclosed list", "- ```md", "  ", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "# Page\n\n" + tc.start + "\n" + tc.prefix + `{% include "example.md" %}` + "\n" + tc.prefix + "# Example heading\n"
+			if tc.end != "" {
+				body += tc.end + "\n"
+			}
+			body += "\n- {% include \"sibling.md\" %}\n\n{% include \"live.md\" %}\n"
+			want := []string{"sibling.md", "live.md"}
+			if got := FindReusables(body, rp); !reflect.DeepEqual(got, want) {
+				t.Errorf("FindReusables = %v, want %v", got, want)
+			}
+			old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+			recent := old.AddDate(1, 0, 0)
+			var lines []git.LineInfo
+			for i, text := range strings.Split(body, "\n") {
+				li := mkLine(i+1, old, "author")
+				li.Content = text
+				if strings.Contains(text, "example.md") {
+					li.Timestamp = recent
+				}
+				lines = append(lines, li)
+			}
+			for _, paragraphs := range []bool{false, true} {
+				var refs []string
+				foundBlame := false
+				for _, chunk := range ParseChunks(body, lines, paragraphs, rp) {
+					refs = append(refs, chunk.Reusables...)
+					if chunk.Title == "Example heading" {
+						t.Error("example heading became section")
+					}
+					for _, li := range chunk.Lines {
+						if li.Content == lines[li.LineNumber-1].Content && strings.Contains(li.Content, "example.md") && chunk.LastUpdated().Equal(recent) {
+							foundBlame = true
+						}
+					}
+				}
+				if !foundBlame || !reflect.DeepEqual(refs, want) {
+					t.Errorf("paragraphs=%v: blame=%v refs=%v", paragraphs, foundBlame, refs)
+				}
+			}
+		})
+	}
+}
+
 func TestGitBookPaths(t *testing.T) {
 	root := t.TempDir()
 	for name, text := range map[string]string{
