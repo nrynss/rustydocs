@@ -8,7 +8,7 @@ Find stale documentation using git history. Analyzes your documentation at the s
 
 - **Section-level analysis**: Uses `git blame` to analyze staleness per section, not just per file
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
-- **Tool profiles**: `hugo` and `mintlify` profiles (both auto-detected) add MDX support and include tracking — Hugo shortcodes / JSX components, and Mintlify snippets resolved by path; more profiles are on the way (see [Profiles](#profiles))
+- **Tool profiles**: `hugo`, `mintlify`, and `gitbook` profiles add tool-specific include tracking; see [Profiles](#profiles)
 - **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
 - **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is about a 6.5x speedup (48.7 s to 7.5 s) and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
@@ -60,12 +60,14 @@ wins.
 | Profile    | Extensions                 | Root marker         | Reusable detection                                   |
 | ---------- | -------------------------- | ------------------- | ---------------------------------------------------- |
 | `markdown` | `.md`, `.markdown`         | none                | **off** (plain CommonMark/GFM has no include mechanism) |
+| `gitbook`  | `.md`                      | `.gitbook.yaml` or `SUMMARY.md` | `{% content-ref url="…" %}` and `{% include "…" %}` paths |
 | `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style) and MDX imports rendered as `<X />`, resolved as a **path** under `snippets/` / `_snippets/` or the project root; `.jsx`/`.js`/`.css` imports are skipped |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
 
 **Auto-detection.** When no profile is named, rustydocs walks up from
 `content_dir` one directory at a time looking for the profiles' root markers;
-the marker nearest to `content_dir` wins. A `docs.json` or `mint.json` file
+the marker nearest to `content_dir` wins. `.gitbook.yaml` or `SUMMARY.md`
+selects `gitbook`; a `docs.json` or `mint.json` file
 selects `mintlify`; a `layouts/` or `themes/` directory, a
 `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config — `hugo.*`
 or `config.*` under that directory — selects `hugo` (the config-file and
@@ -137,12 +139,29 @@ rustydocs --content-dir ./docs --profile mintlify  # or name it explicitly
 # snippet paths have nothing to resolve against.
 rustydocs --content-dir ./docs --profile mintlify --project-root .
 
+# GitBook: .gitbook.yaml or a GitBook-style SUMMARY.md selects it automatically.
+rustydocs --content-dir ./docs --profile gitbook
+
 # --project-root alone never changes the profile: on a repo with a docs.json
 # this is still a mintlify run.
 rustydocs --content-dir ./docs --project-root .
 ```
 
 Or in `config.json`: `"profile": "hugo"` (empty string = auto-detect).
+
+GitBook references resolve relative to the containing page, including bare
+include paths; paths beginning with `/` use the project root. There is no
+implicit project-root fallback for relative includes. Directory references
+try `README.md` before `index.md` as a compatibility heuristic, not a
+documented GitBook rule. Both single- and double-quoted directives are
+supported as a compatibility heuristic, including `content-ref` with attributes
+before `url`. Only in-root Markdown files with Git history contribute to section
+freshness. Missing, uncommitted, or outside-root references are reported unknown;
+other GitBook directives and remote URLs are not resolved. Set `--project-root`
+when selecting `gitbook` explicitly without a marker; GitBook's `SUMMARY.md`
+is a marker, not a navigation filter. Auto-detection from `SUMMARY.md` requires
+a `# Summary` heading and at least one Markdown navigation link; other summary
+files fall back to `markdown`. Directives in fenced code examples are ignored.
 
 Backward compatibility: pointing at a reusables directory (`reusables.dir`,
 `reusables_dir`, or `--reusables-dir`) without setting `reusables.patterns`
@@ -177,14 +196,14 @@ Create a `config.json` file:
 | Option                 | Description                                        | Default                      |
 | ---------------------- | -------------------------------------------------- | ---------------------------- |
 | `threshold_days`       | Days before content is considered stale            | 90                           |
-| `profile`              | Documentation profile (`markdown`, `mintlify`, `hugo`); empty = auto-detect | (auto-detect)   |
+| `profile`              | Documentation profile (`markdown`, `gitbook`, `mintlify`, `hugo`); empty = auto-detect | (auto-detect)   |
 | `content_dir`          | Directory containing documentation files           | (required)                   |
 | `content_extensions`   | File extensions to analyze                         | from profile                 |
-| `project_root`         | Project root reusables resolve against — the Hugo site root, or the Mintlify project root snippet paths are relative to (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
+| `project_root`         | Project root reusables resolve against — the Hugo site root, the Mintlify snippet root, or the GitBook root bounding page-relative includes and content references (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
 | `hugo_root`            | **Deprecated** spelling of `project_root`. On its own it still supplies the root, with a deprecation warning telling you to rename it; when `project_root` (or `--project-root`) is set too, that one wins and `hugo_root` is *ignored*, with a warning saying so. Unlike `project_root` it keeps its legacy side effect: it selects the `hugo` profile when no marker is found | (auto-detect)          |
 | `output_dir`           | Output directory for reports                       | `./reports`                  |
 | `reusables.dir`        | Directory containing reusable component files      | (optional)                   |
-| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `mintlify`: `<Snippet file>` + imported components; `markdown`: none) |
+| `reusables.patterns`   | Regex patterns to detect reusables (capture group) | from profile (`hugo`: shortcodes + JSX; `gitbook`: content-ref + include; `mintlify`: `<Snippet file>` + imported components; `markdown`: none) |
 | `exclude_patterns`     | Glob patterns to exclude files (additive on top of the default exclusions) | `[]`                         |
 | `exclude_dirs`         | Directory names to exclude entirely — the whole subtree is pruned from the walk, like the default exclusions (additive on top of them) | `[]`                         |
 | `no_default_excludes`  | Turn off the default exclusions (dot-directories, `node_modules`/`vendor`/`dist`/`build`, nested standalone repositories, and git-ignored files) and scan everything. CLI: `--no-default-excludes` | false |

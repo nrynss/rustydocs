@@ -666,6 +666,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		ReusablesDir: reusablesDir,
 		Root:         root,
 		Resolver:     cfg.ResolvedProfile.Resolver,
+		Profile:      cfg.ResolvedProfile.Name,
 		ImportMap:    cfg.ResolvedProfile.ImportMap,
 		Cache:        cache,
 	})

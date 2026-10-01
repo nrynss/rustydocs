@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -24,14 +25,11 @@ const (
 	ResolverHugo Resolver = "hugo"
 	// ResolverPath treats the capture as a filesystem path rather than a name.
 	// A capture starting with "/" is resolved against the project root; one
-	// starting with "./" or "../" against the directory of the referencing
-	// file first; and a bare name or bare relative path — the form Mintlify
-	// projects actually use — against the project's snippets directory
-	// ("snippets/", then "_snippets/"), then the root, then the referencing
-	// file's directory. A path that escapes the root is ignored, and a capture
-	// with no extension is tried against ReusableExtensions in order. Used by
-	// the Mintlify profile, whose <Snippet file="…" /> carries the path
-	// outright with no indirection to trace (#7). See
+	// starting with "./" or "../" against the referencing file's directory
+	// first; a bare path uses profile-specific bases. Mintlify searches
+	// snippets/, _snippets/, root, then page directory; GitBook searches page
+	// directory only. Paths escaping the root are ignored; extensionless
+	// captures try ReusableExtensions in order. Used by Mintlify and GitBook. See
 	// parser.ReusablePatterns.directPathBases for the full order.
 	ResolverPath Resolver = "path"
 )
@@ -45,6 +43,8 @@ const (
 	ProfileHugo = "hugo"
 	// ProfileMintlify is the Mintlify docs profile (<Snippet file="…" />).
 	ProfileMintlify = "mintlify"
+	// ProfileGitBook is the GitBook git-synced Markdown profile.
+	ProfileGitBook = "gitbook"
 )
 
 // Profile describes how a documentation tool lays out its content: which
@@ -301,6 +301,25 @@ var builtinProfiles = []Profile{
 		Resolver:          ResolverNone,
 	},
 	{
+		Name: ProfileGitBook,
+		Description: "GitBook git-synced docs: .md content with ATX '#' headers, " +
+			"content-ref and include paths resolved within the project root. " +
+			"Auto-detected from .gitbook.yaml or SUMMARY.md at or above content_dir.",
+		ContentExtensions: []string{".md"},
+		RootMarkers:       []string{".gitbook.yaml", "SUMMARY.md"},
+		markerPredicates: map[string]markerPredicate{
+			"SUMMARY.md": isGitBookSummary,
+		},
+		ReusablePatterns: []string{
+			`\{%\s*content-ref\b[^{}]*\burl\s*=\s*"([^"]+)"`,
+			`\{%\s*content-ref\b[^{}]*\burl\s*=\s*'([^']+)'`,
+			`\{%\s*include\s+"([^"]+)"`,
+			`\{%\s*include\s+'([^']+)'`,
+		},
+		ReusableExtensions: []string{".md"},
+		Resolver:           ResolverPath,
+	},
+	{
 		Name: ProfileHugo,
 		Description: "Hugo site: .md, .markdown and .mdx content, Hugo shortcode and MDX component " +
 			"detection, shortcodes resolved from layouts/shortcodes and each " +
@@ -352,6 +371,19 @@ var builtinProfiles = []Profile{
 		Resolver:           ResolverPath,
 		ImportMap:          true,
 	},
+}
+
+var gitBookSummaryLink = regexp.MustCompile(`(?m)^\s*[-*+]\s+\[[^]]+\]\([^\n)]*\.md(?:#[^\n)]*)?\)`)
+var gitBookSummaryHeading = regexp.MustCompile(`(?im)^#[ \t]+summary[ \t]*\r?$`)
+
+// A generic SUMMARY.md is not enough to identify GitBook. Require its
+// conventional navigation heading and at least one Markdown page entry.
+func isGitBookSummary(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return gitBookSummaryHeading.Match(data) && gitBookSummaryLink.Match(data), nil
 }
 
 // clone returns a deep copy so callers can mutate slices without touching the

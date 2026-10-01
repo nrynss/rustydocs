@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-09-18
+## [0.5.0] - Unreleased
 
 This release makes rustydocs tool-aware: it detects which documentation
 generator a tree belongs to and resolves that tool's includes, it scans
@@ -33,6 +33,11 @@ components, of which 0.4.0 found not one.
   section-for-section comparable.
 
 ### Added
+
+- A `gitbook` profile (#20) for git-synced `.md` documentation, auto-detected
+  from `.gitbook.yaml` or `SUMMARY.md` or selected with `--profile gitbook`.
+  GitBook content-ref and include paths resolve within the project root;
+  referenced Markdown history contributes to the referring section's freshness.
 
 - **MDX import-map resolver** (#68). The `mintlify` profile resolved
   `<Snippet file="…" />`, a syntax that did not occur once on the production
@@ -101,7 +106,7 @@ components, of which 0.4.0 found not one.
   shortcode tracing off. Pass `--profile mintlify` to override that.
 - A **`--project-root PATH`** flag and its `"project_root"` config key, naming
   the directory reusable references resolve against (the Hugo site root, the
-  Mintlify docs root). It is the profile-neutral replacement for `hugo_root` —
+  Mintlify or GitBook docs root). It is the profile-neutral replacement for `hugo_root` —
   see *Changed* for the rename and the deprecation (#7).
 - A stderr **note whenever reusable references produced no resolved history**,
   naming the profile, counting them and naming the first three captures (then
@@ -110,7 +115,7 @@ components, of which 0.4.0 found not one.
   is gated on the count (`Results.UnresolvedReusables`), so a run whose
   includes all resolve — including through a legacy `reusables_dir` — and a run
   with no reusable references at all stay quiet. It is also scoped to the
-  direct-path resolver (`mintlify` today), where the capture *is* a path and
+  direct-path resolver (`mintlify` and `gitbook`), where the capture *is* a path and
   every failure is a real defect; under `hugo` the profile's generic
   MDX-component pattern captures every capitalised tag (`<Tabs>`, `<Card>`,
   `<Badge>`), so the note's population there was overwhelmingly noise — those
@@ -148,12 +153,16 @@ components, of which 0.4.0 found not one.
   #7 below); explicit user settings always win. This issue added two built-ins —
   `markdown` (`.md`/`.markdown`, no include mechanism, reusable detection off —
   the default) and `hugo` (`.md`/`.markdown`/`.mdx`, shortcode + MDX component
-  detection) — and #7 above added a third, `mintlify`. Select with
+  detection) — and #7 and #20 above added `mintlify` and `gitbook`, for four
+  built-in profiles. Select with
   `--profile NAME` / `"profile"` in `config.json`, or leave empty to
   auto-detect: a `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}`
   file, or a `config/_default/` Hugo config (`hugo.*` or `config.*` under it)
   at or above `content_dir` selects `hugo`, a `docs.json` / `mint.json` selects
-  `mintlify`, otherwise `markdown`. The config-file and `themes/` markers keep detection
+  `mintlify`, and `.gitbook.yaml` or a GitBook-style `SUMMARY.md` selects
+  `gitbook`; with no recognized profile marker it selects `markdown`.
+  The nearest marker wins; registry order breaks ties at the same directory.
+  The config-file and `themes/` markers keep detection
   working on a fresh clone of a site whose layouts come from a theme, where git
   has not recreated an empty `layouts/` directory. `--list-profiles` prints the
   built-ins and the run banner shows the resolved profile, e.g.
@@ -275,9 +284,8 @@ components, of which 0.4.0 found not one.
   roots are unaffected — detection only ever returns a directory it just
   stat'ed (#7).
 - **Plain-Markdown repositories lose Hugo detection, and `.mdx` leaves the
-  default allowlist.** A tree with no Hugo marker (no `layouts/` or `themes/`
-  directory, no `hugo.{toml,yaml,json}` file and no `config/_default/` Hugo
-  config above `content_dir`) resolves to the `markdown` profile, which has no
+  default allowlist.** A tree with no recognized profile marker above
+  `content_dir` resolves to the `markdown` profile, which has no
   include mechanism: it no longer gets Hugo shortcode / MDX component reusable
   detection by default, and it scans `.md` and `.markdown` only. `.mdx` is
   still scanned under `hugo` and under the new `mintlify` profile, and an
@@ -503,8 +511,8 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/nrynss/rustydocs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nrynss/rustydocs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nrynss/rustydocs/releases/tag/v0.2.0
