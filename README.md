@@ -199,7 +199,7 @@ Create a `config.json` file:
 | `profile`              | Documentation profile (`markdown`, `gitbook`, `mintlify`, `hugo`); empty = auto-detect | (auto-detect)   |
 | `content_dir`          | Directory containing documentation files           | (required)                   |
 | `content_extensions`   | File extensions to analyze                         | from profile                 |
-| `project_root`         | Project root reusables resolve against — the Hugo site root, or the Mintlify project root snippet paths are relative to (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
+| `project_root`         | Project root reusables resolve against — the Hugo site root, the Mintlify snippet root, or the GitBook root bounding page-relative includes and content references (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
 | `hugo_root`            | **Deprecated** spelling of `project_root`. On its own it still supplies the root, with a deprecation warning telling you to rename it; when `project_root` (or `--project-root`) is set too, that one wins and `hugo_root` is *ignored*, with a warning saying so. Unlike `project_root` it keeps its legacy side effect: it selects the `hugo` profile when no marker is found | (auto-detect)          |
 | `output_dir`           | Output directory for reports                       | `./reports`                  |
 | `reusables.dir`        | Directory containing reusable component files      | (optional)                   |
