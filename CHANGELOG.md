@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-01
 
 This release makes rustydocs tool-aware: it detects which documentation
 generator a tree belongs to and resolves that tool's includes, it scans
@@ -511,8 +511,8 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
-[0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nrynss/rustydocs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nrynss/rustydocs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nrynss/rustydocs/releases/tag/v0.2.0
