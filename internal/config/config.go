@@ -115,7 +115,6 @@ type Config struct {
 	FileLevelOnly     bool            `json:"file_level_only"`
 	ParagraphLevel    bool            `json:"paragraph_level"`
 	Workers           int             `json:"workers"`
-	ShowReusables     bool            `json:"show_reusables"` // Show reusables in report (default false)
 }
 
 // DefaultConfig returns a new Config with default values. Profile-dependent

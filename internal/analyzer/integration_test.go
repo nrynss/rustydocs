@@ -25,6 +25,114 @@ func pinNow(t *testing.T, at time.Time) {
 	t.Cleanup(func() { nowFunc = old })
 }
 
+func TestAnalyze_GitBookReferences(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "old pages", map[string]string{
+		".gitbook.yaml":    "root: ./docs\n",
+		"docs/page.md":     "# Included\n\n{% include 'shared.md' %}\n\n# Linked\n\n{% content-ref title='Reference' url='../reference.md' %}\n\n# Missing\n\n{% include \"missing.md\" %}\n",
+		"docs/shared.md":   "# Shared\n\nold\n",
+		"reference.md":     "# Reference\n\nold\n",
+		"docs/ignored.mdx": "# Not Markdown\n",
+	})
+	fresh := now.AddDate(0, 0, -5)
+	repo.Commit(fresh, "refresh references", map[string]string{
+		"docs/shared.md": "# Shared\n\nnew\n",
+		"reference.md":   "# Reference\n\nnew\n",
+	})
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cfg.ThresholdDays = 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileGitBook || !cfg.ProfileAuto || cfg.ProjectRoot != repo.Dir {
+		t.Fatalf("selection = %q auto=%v root=%q", cfg.ResolvedProfile.Name, cfg.ProfileAuto, cfg.ProjectRoot)
+	}
+	if res.TotalFiles() != 2 || res.UnresolvedReusables() != 1 {
+		t.Errorf("files=%d unresolved=%d", res.TotalFiles(), res.UnresolvedReusables())
+	}
+	var page *FileAnalysis
+	for i := range res.Files {
+		if res.Files[i].RelativePath == "page.md" {
+			page = &res.Files[i]
+		}
+	}
+	if page == nil {
+		t.Fatal("page.md not analyzed")
+	}
+	if len(page.StaleSections) != 1 || page.StaleSections[0].Title != "Missing" {
+		t.Errorf("stale sections = %+v, want only Missing", page.StaleSections)
+	}
+	byName := make(map[string]*time.Time)
+	for _, ref := range res.AllReusables {
+		byName[ref.Name] = ref.LastUpdated
+	}
+	if len(byName) != 3 || byName["docs/shared.md"] == nil || byName["reference.md"] == nil || byName["missing.md"] != nil {
+		t.Errorf("reference history = %+v", res.AllReusables)
+	}
+	outside := testutil.NewRepo(t)
+	outside.Commit(fresh, "outside", map[string]string{"secret.md": "# Secret\n"})
+	escape, err := filepath.Rel(filepath.Dir(repo.Path("docs/page.md")), outside.Path("secret.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.Commit(now.AddDate(0, 0, -1), "add outside reference", map[string]string{
+		"docs/escape.md": "# Escape\n\n{% include \"" + filepath.ToSlash(escape) + "\" %}\n",
+	})
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UnresolvedReusables() != 2 {
+		t.Errorf("unresolved with outside target = %d, want 2", res.UnresolvedReusables())
+	}
+}
+
+func TestAnalyze_GitBookLegacyDirectoryAndExamples(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "old pages", map[string]string{
+		"docs/.gitbook.yaml": "root: ./\n",
+		"docs/missing.md":    "# Missing\n\n{% include \"absent\" %}\n",
+		"docs/quoted.md":     "# Example\n\n> ```md\n> {% include \"shared.md\" %}\n> ```\n",
+		"docs/listed.md":     "# Example\n\n10. ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/unquote.md":    "# Example\n\n10. > Quoted note\n\n    ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/unnest.md":     "# Example\n\n10. - Nested item\n\n    ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/tabbed.md":     "# Example\n\n>\t```md\n>\t{% include \"shared.md\" %}\n>\t```\n",
+		"docs/shared.md":     "# Shared\n\nold\n",
+	})
+	repo.Commit(now.AddDate(0, 0, -5), "fresh targets", map[string]string{
+		"outside/absent.md": "legacy target\n",
+		"docs/shared.md":    "# Shared\n\nnew\n",
+	})
+	for _, paragraphs := range []bool{false, true} {
+		cfg := config.DefaultConfig()
+		cfg.ContentDir = repo.Path("docs")
+		cfg.Reusables.Dir = repo.Path("outside")
+		cfg.ThresholdDays = 90
+		cfg.ParagraphLevel = paragraphs
+		res, err := Analyze(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ResolvedProfile.Name != config.ProfileGitBook || cfg.ProjectRoot != repo.Path("docs") {
+			t.Fatalf("profile/root = %q/%q", cfg.ResolvedProfile.Name, cfg.ProjectRoot)
+		}
+		if res.UnresolvedReusables() != 1 || len(res.AllReusables) != 1 || res.AllReusables[0].LastUpdated != nil {
+			t.Errorf("paragraphs=%v: references = %+v", paragraphs, res.AllReusables)
+		}
+		for _, file := range res.Files {
+			if file.RelativePath != "shared.md" && len(file.StaleSections) == 0 {
+				t.Errorf("paragraphs=%v: %s freshened by fallback/example", paragraphs, file.RelativePath)
+			}
+		}
+	}
+}
+
 func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)

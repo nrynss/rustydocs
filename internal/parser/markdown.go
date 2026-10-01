@@ -88,6 +88,7 @@ var (
 type ReusablePatterns struct {
 	patterns   []*regexp.Regexp
 	extensions []string
+	profile    string
 	// root is the resolved profile's project root: the Hugo site root holding
 	// layouts/ and data/ under ResolverHugo, the docs project root that snippet
 	// paths resolve against under ResolverPath. Empty when the profile has no
@@ -177,6 +178,7 @@ type ReusableConfig struct {
 	ReusablesDir string
 	Root         string
 	Resolver     config.Resolver
+	Profile      string
 	// ImportMap enables the MDX import-map layer on top of the resolver; see
 	// config.Profile.ImportMap (#68).
 	ImportMap bool
@@ -191,6 +193,7 @@ type ReusableConfig struct {
 func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 	rp := &ReusablePatterns{
 		extensions:     rc.Extensions,
+		profile:        rc.Profile,
 		root:           rc.Root,
 		resolver:       rc.Resolver,
 		reusablesDir:   rc.ReusablesDir,
@@ -276,6 +279,25 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	// section titles or content. Line counts are unchanged (split is still on
 	// "\n"), so git-blame line-number alignment is preserved.
 	content = strings.ReplaceAll(content, "\r\n", "\n")
+	if rp != nil && rp.profile == config.ProfileGitBook {
+		// Keep nonblank fenced lines nonblank so paragraph chunks retain
+		// their blame history, while hiding headings and references.
+		masked := []byte(content)
+		for _, span := range fencedSpans(content) {
+			lineHasContent := false
+			for i := span[0]; i < span[1]; i++ {
+				if masked[i] == '\n' {
+					lineHasContent = false
+				} else if !lineHasContent && masked[i] != ' ' && masked[i] != '\t' {
+					masked[i] = 'x'
+					lineHasContent = true
+				} else {
+					masked[i] = ' '
+				}
+			}
+		}
+		content = string(masked)
+	}
 	contentLines := strings.Split(content, "\n")
 
 	// Find all headers and their positions
@@ -559,10 +581,18 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	}
 	var reusables []string
 	seen := make(map[string]bool)
+	var fences [][2]int
+	if rp.profile == config.ProfileGitBook {
+		fences = fencedSpans(content)
+	}
 	for i, pattern := range rp.patterns {
-		matches := pattern.FindAllStringSubmatch(content, -1)
+		matches := pattern.FindAllStringSubmatchIndex(content, -1)
 		for _, match := range matches {
-			if len(match) <= 1 {
+			if len(match) < 4 || match[2] < 0 || inSpans(fences, match[0]) {
+				continue
+			}
+			ref := content[match[2]:match[3]]
+			if rp.profile == config.ProfileGitBook && strings.Contains(ref, "://") {
 				continue
 			}
 			// Record provenance before the de-duplication, not after: a
@@ -570,11 +600,11 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 			// include pattern is an include, and the second sighting is the
 			// one that says so.
 			if !rp.isComponentPattern(i) {
-				rp.noteIncludeCapture(match[1])
+				rp.noteIncludeCapture(ref)
 			}
-			if !seen[match[1]] {
-				reusables = append(reusables, match[1])
-				seen[match[1]] = true
+			if !seen[ref] {
+				reusables = append(reusables, ref)
+				seen[ref] = true
 			}
 		}
 	}
@@ -690,6 +720,12 @@ func isComponentSymbol(ref string) bool {
 // then the legacy reusables directory, the Hugo shortcode lookup and the cached
 // path lookup. Returns nil when nothing resolves.
 func (rp *ReusablePatterns) resolveExisting(reusableName, sourceFile string) *git.FileInfo {
+	// GitBook captures are page-relative paths, never legacy reusable names.
+	// Falling back after a missing, uncommitted, or rejected target would
+	// bypass the direct resolver's project-root boundary.
+	if rp.profile == config.ProfileGitBook {
+		return rp.lookupDirectPath(reusableName, sourceFile)
+	}
 	// The path resolver takes the capture literally: it is a file path, not a
 	// name to look up by convention, so it is resolved on its own terms and
 	// first. See lookupDirectPath.
@@ -749,8 +785,17 @@ func (rp *ReusablePatterns) lookupDirectPath(ref, sourceFile string) *git.FileIn
 // relative capture do not collapse into one reported row (#7).
 func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, bool) {
 	ref = filepath.ToSlash(strings.TrimSpace(ref))
+	if rp.profile == config.ProfileGitBook {
+		ref = strings.SplitN(ref, "#", 2)[0]
+		ref = strings.SplitN(ref, "?", 2)[0]
+	}
 	if ref == "" || rp.root == "" {
 		return "", false
+	}
+	if rp.profile == config.ProfileGitBook {
+		if ext := filepath.Ext(ref); ext != "" && ext != ".md" {
+			return "", false
+		}
 	}
 
 	bases, ref := rp.directPathBases(ref, sourceFile)
@@ -817,7 +862,10 @@ var snippetDirNames = []string{"snippets", "_snippets"}
 //	                   first, then the root, and only then the referencing
 //	                   page's directory as a tolerant last resort.
 //
-// The ordering of the bare form is load-bearing. Real Mintlify projects
+// GitBook instead resolves relative references against the containing page's
+// directory only; a leading slash explicitly selects the project root.
+// The ordering of the Mintlify bare form is load-bearing. Real
+// Mintlify projects
 // (sequin, turso-docs, agno, elementary) overwhelmingly write
 // <Snippet file="aws-access-key-config.mdx" /> meaning
 // <root>/snippets/aws-access-key-config.mdx; searching the page directory and
@@ -833,6 +881,12 @@ func (rp *ReusablePatterns) directPathBases(ref, sourceFile string) (bases []str
 	pageDir := ""
 	if sourceFile != "" {
 		pageDir = filepath.Dir(sourceFile)
+	}
+	if rp.profile == config.ProfileGitBook {
+		if pageDir != "" {
+			return []string{pageDir}, ref
+		}
+		return nil, ref
 	}
 
 	shared := make([]string, 0, len(snippetDirNames)+2)
@@ -866,6 +920,9 @@ func (rp *ReusablePatterns) pathCandidates(base, ref string) []string {
 		candidates = append(candidates, filepath.Clean(joined+ext))
 	}
 	for _, ext := range rp.extensions {
+		if rp.profile == config.ProfileGitBook {
+			candidates = append(candidates, filepath.Clean(filepath.Join(joined, "README"+ext)))
+		}
 		candidates = append(candidates, filepath.Clean(filepath.Join(joined, "index"+ext)))
 	}
 	return candidates

@@ -44,6 +44,7 @@ reports/
 .cursor/
 .grepai/
 .gcourer/
+.junie/
 
 # Agent instruction files kept locally rather than checked in
 # (CLAUDE.md is tracked; these are per-developer)

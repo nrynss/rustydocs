@@ -42,7 +42,7 @@ func TestLookupProfile_ReturnsCopy(t *testing.T) {
 
 func TestProfiles_Sorted(t *testing.T) {
 	names := Profiles()
-	want := []string{"hugo", "markdown", "mintlify"}
+	want := []string{"gitbook", "hugo", "markdown", "mintlify"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("Profiles() = %v, want %v", names, want)
 	}
@@ -70,6 +70,42 @@ var wantHugoMarkers = []string{
 }
 
 func TestBuiltinProfiles_Shape(t *testing.T) {
+	gitbook, ok := LookupProfile("gitbook")
+	if !ok {
+		t.Fatal("gitbook profile missing")
+	}
+	if !reflect.DeepEqual(gitbook.ContentExtensions, []string{".md"}) ||
+		!reflect.DeepEqual(gitbook.RootMarkers, []string{".gitbook.yaml", "SUMMARY.md"}) ||
+		gitbook.Resolver != ResolverPath || gitbook.ImportMap ||
+		!reflect.DeepEqual(gitbook.ReusableExtensions, []string{".md"}) {
+		t.Errorf("gitbook profile shape wrong: %+v", gitbook)
+	}
+	wantPatterns := []string{
+		`\{%\s*content-ref\b[^{}]*\burl\s*=\s*"([^"]+)"`,
+		`\{%\s*content-ref\b[^{}]*\burl\s*=\s*'([^']+)'`,
+		`\{%\s*include\s+"([^"]+)"`,
+		`\{%\s*include\s+'([^']+)'`,
+	}
+	if !reflect.DeepEqual(gitbook.ReusablePatterns, wantPatterns) {
+		t.Errorf("gitbook patterns = %v, want %v", gitbook.ReusablePatterns, wantPatterns)
+	}
+	for _, tc := range []struct{ text, want string }{
+		{`{% content-ref url="../guide/start.md" %}`, "../guide/start.md"},
+		{`{% include "./shared.md" %}`, "./shared.md"},
+		{`{% content-ref title='Guide' url='../guide/start.md' %}`, "../guide/start.md"},
+		{`{% include './shared.md' %}`, "./shared.md"},
+	} {
+		found := false
+		for _, pattern := range gitbook.ReusablePatterns {
+			if match := regexp.MustCompile(pattern).FindStringSubmatch(tc.text); match != nil && match[1] == tc.want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no GitBook pattern captured %q from %q", tc.want, tc.text)
+		}
+	}
+
 	md := DefaultProfile()
 	if md.Name != ProfileMarkdown {
 		t.Fatalf("DefaultProfile = %q, want markdown", md.Name)
@@ -633,7 +669,7 @@ func TestApplyProfile(t *testing.T) {
 		{
 			name:    "unknown profile errors and names the valid ones",
 			cfg:     Config{Profile: "bogus", ContentDir: plainContent},
-			wantErr: "valid profiles: hugo, markdown, mintlify",
+			wantErr: "valid profiles: gitbook, hugo, markdown, mintlify",
 		},
 		{
 			name:     "explicit mintlify fills the snippet pattern and detects the root",
@@ -1044,6 +1080,51 @@ func TestApplyProfile(t *testing.T) {
 				tc.check(t, &c)
 			}
 		})
+	}
+}
+
+func TestGitBookSelection(t *testing.T) {
+	for _, marker := range []string{".gitbook.yaml", "SUMMARY.md"} {
+		t.Run(marker, func(t *testing.T) {
+			root := t.TempDir()
+			content := filepath.Join(root, "docs")
+			if err := os.Mkdir(content, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			body := "# Docs\n"
+			if marker == "SUMMARY.md" {
+				body = "# Summary\n\n* [Home](README.md)\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, marker), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, selection := range []string{"", ProfileGitBook} {
+				cfg := Config{Profile: selection, ContentDir: content}
+				if err := cfg.ApplyProfile(); err != nil {
+					t.Fatal(err)
+				}
+				if cfg.ResolvedProfile.Name != ProfileGitBook || cfg.ProjectRoot != root ||
+					!reflect.DeepEqual(cfg.ContentExtensions, []string{".md"}) {
+					t.Errorf("selection %q: profile=%q root=%q extensions=%v", selection, cfg.ResolvedProfile.Name, cfg.ProjectRoot, cfg.ContentExtensions)
+				}
+			}
+		})
+	}
+}
+
+func TestGitBookSummaryDoesNotSelectUnrelatedMarkdown(t *testing.T) {
+	for _, body := range []string{"# Project overview\n\nA summary of this project.\n", "# Summaryless\n\n* [Home](README.md)\n", "# Project\n\nThe text # summary is not a heading.\n* [Home](README.md)\n"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "SUMMARY.md"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c := Config{ContentDir: root}
+		if err := c.ApplyProfile(); err != nil {
+			t.Fatal(err)
+		}
+		if c.ResolvedProfile.Name != ProfileMarkdown || !reflect.DeepEqual(c.ContentExtensions, []string{".md", ".markdown"}) {
+			t.Errorf("unrelated SUMMARY.md %q selected %q with extensions %v", body, c.ResolvedProfile.Name, c.ContentExtensions)
+		}
 	}
 }
 
