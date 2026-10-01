@@ -722,6 +722,11 @@ func TestGitBookContainerFences(t *testing.T) {
 		{"nested list", "- - ```md", "    ", "    ```"},
 		{"list continuation", "- Example\n\n    ```md", "    ", "    ```"},
 		{"quoted list continuation", "> - Example\n>\n>     ```md", ">     ", ">     ```"},
+		{"quote ends inside ordered list", "10. > Quoted note\n\n    ```md", "    ", "    ```"},
+		{"nested list ends inside ordered list", "10. - Nested item\n\n    ```md", "    ", "    ```"},
+		{"tab after quote", ">\t```md", ">\t", ">\t```"},
+		{"tab after nested quote", "> >\t```md", "> >\t", "> >\t```"},
+		{"tab list continuation", "10. > Quoted note\n\n\t```md", "\t", "\t```"},
 		{"unclosed quote", "> ```md", "> ", ""},
 		{"unclosed list", "- ```md", "  ", ""},
 	} {

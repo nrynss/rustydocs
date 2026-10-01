@@ -477,6 +477,11 @@ func TestBuildImportMap_FencedCodeIsNotAnImport(t *testing.T) {
 			want: map[string]string{"Shared": "snippets/shared.mdx"},
 		},
 		{
+			name: "ending nested quote retains list fence context",
+			body: "10. > Quoted note\n\n    ```mdx\n    import Decoy from \"/snippets/other.mdx\";\n    ```\n\nimport Shared from \"/snippets/shared.mdx\";\n",
+			want: map[string]string{"Shared": "snippets/shared.mdx"},
+		},
+		{
 			name: "indented fence",
 			body: "Text:\n\n   ```\n   import Shared from \"/snippets/shared.mdx\";\n   ```\n",
 			want: map[string]string{},

@@ -167,7 +167,29 @@ type fenceContainer struct {
 	indent int
 }
 
-var fenceContainerPattern = regexp.MustCompile(`^ {0,3}(?:> ?|(?:[-+*]|[0-9]{1,9}[.)])([ \t]+))`)
+var fenceContainerPattern = regexp.MustCompile(`^ {0,3}(?:> ?|(?:[-+*]|[0-9]{1,9}[.)])( +))`)
+
+// CommonMark indentation treats tabs as four-column tab stops, including the
+// space after a blockquote marker. Expand only the line used for matching;
+// fencedSpans still returns byte offsets into the unchanged original content.
+func expandFenceTabs(line string) string {
+	if !strings.ContainsRune(line, '\t') {
+		return line
+	}
+	var out strings.Builder
+	column := 0
+	for _, ch := range line {
+		if ch == '\t' {
+			spaces := 4 - column%4
+			out.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+		} else {
+			out.WriteRune(ch)
+			column++
+		}
+	}
+	return out.String()
+}
 
 func openingFenceLine(line string) (string, []fenceContainer) {
 	var containers []fenceContainer
@@ -185,57 +207,43 @@ func openingFenceLine(line string) (string, []fenceContainer) {
 			if m[2] >= 0 && m[3]-m[2] > 4 {
 				prefix = prefix[:m[2]+1]
 			}
-			width := 0
-			for _, ch := range prefix {
-				if ch == '\t' {
-					width += 4 - width%4
-				} else {
-					width++
-				}
-			}
-			containers = append(containers, fenceContainer{indent: width})
+			containers = append(containers, fenceContainer{indent: len(prefix)})
 		}
 		line = line[len(prefix):]
 	}
 }
 
-func continuedFenceLine(line string, containers []fenceContainer) (string, bool) {
-	for _, c := range containers {
+// Return the matched outer prefix as well as the remaining line: exiting an
+// inner quote or list does not end the enclosing list or blockquote.
+func continuedFenceLine(line string, containers []fenceContainer) (string, int) {
+	for matched, c := range containers {
 		if c.quote {
 			i := 0
 			for i < len(line) && i < 3 && line[i] == ' ' {
 				i++
 			}
 			if i == len(line) || line[i] != '>' {
-				return line, false
+				return line, matched
 			}
 			line = line[i+1:]
-			if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			if len(line) > 0 && line[0] == ' ' {
 				line = line[1:]
 			}
 		} else {
 			if strings.TrimSpace(line) == "" {
-				return "", true
+				return "", len(containers)
 			}
-			i, width := 0, 0
-			for i < len(line) && width < c.indent {
-				switch line[i] {
-				case ' ':
-					width++
-				case '\t':
-					width += 4 - width%4
-				default:
-					return line, false
-				}
+			i := 0
+			for i < len(line) && i < c.indent && line[i] == ' ' {
 				i++
 			}
-			if width < c.indent {
-				return line, false
+			if i < c.indent {
+				return line, matched
 			}
-			line = strings.Repeat(" ", width-c.indent) + line[i:]
+			line = line[i:]
 		}
 	}
-	return line, true
+	return line, len(containers)
 }
 
 // fencedSpans returns the byte ranges of content that sit inside a fenced code
@@ -273,17 +281,16 @@ func fencedSpans(content string) [][2]int {
 			lineEnd = pos + nl
 			next = lineEnd + 1
 		}
-		line := content[pos:lineEnd]
+		line := expandFenceTabs(content[pos:lineEnd])
 		if open || len(containers) > 0 {
-			var inside bool
-			line, inside = continuedFenceLine(line, containers)
-			if !inside {
+			var matched int
+			line, matched = continuedFenceLine(line, containers)
+			if matched < len(containers) {
 				if open {
 					spans = append(spans, [2]int{spanStart, pos})
 				}
 				open = false
-				containers = nil
-				line = content[pos:lineEnd]
+				containers = containers[:matched]
 			}
 		}
 		if !open {

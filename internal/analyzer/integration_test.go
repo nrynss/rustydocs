@@ -100,6 +100,9 @@ func TestAnalyze_GitBookLegacyDirectoryAndExamples(t *testing.T) {
 		"docs/missing.md":    "# Missing\n\n{% include \"absent\" %}\n",
 		"docs/quoted.md":     "# Example\n\n> ```md\n> {% include \"shared.md\" %}\n> ```\n",
 		"docs/listed.md":     "# Example\n\n10. ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/unquote.md":    "# Example\n\n10. > Quoted note\n\n    ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/unnest.md":     "# Example\n\n10. - Nested item\n\n    ```md\n    {% include \"shared.md\" %}\n    ```\n",
+		"docs/tabbed.md":     "# Example\n\n>\t```md\n>\t{% include \"shared.md\" %}\n>\t```\n",
 		"docs/shared.md":     "# Shared\n\nold\n",
 	})
 	repo.Commit(now.AddDate(0, 0, -5), "fresh targets", map[string]string{
