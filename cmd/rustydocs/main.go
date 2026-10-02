@@ -318,13 +318,16 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "  Sections analyzed: %d\n", results.TotalSections())
 	fmt.Fprintf(stdout, "  Stale sections: %d (%.1f%%)\n", results.StaleSections(), results.StaleSectionsPct())
 
-	// Surface files we could not assess so a misconfigured (shallow or partly
-	// uncommitted) checkout does not silently report as clean. See #55.
+	// Surface files we could not assess so a partly uncommitted checkout does
+	// not silently report as clean. See #55. A shallow clone never gets here —
+	// blame there succeeds and dates every line to the tip commit, so the
+	// failure mode is silently meaningless freshness, not this warning — which
+	// is why the full-clone advice lives in the docs, not in this text.
 	if missing := results.FilesMissingHistory(); missing > 0 {
 		fmt.Fprintf(stdout, "  Files with no git history (staleness unknown): %d\n", missing)
 		fmt.Fprintf(stderr, "\nWarning: %d file(s) had no git history and could not be assessed "+
-			"(uncommitted files, a shallow clone, or not a git repository); "+
-			"they are reported as unknown, not fresh. Ensure a full clone (fetch-depth: 0).\n", missing)
+			"(files that were never committed, a content tree outside any git repository, or a blame failure); "+
+			"they are reported as unknown, not fresh.\n", missing)
 	}
 
 	// What the default exclusions removed. Printed before the zero-files

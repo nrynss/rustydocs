@@ -79,9 +79,11 @@ type FileAnalysis struct {
 	// visits each distinct capture on the file exactly once.
 	unresolvedReusableRefs []string
 	// HistoryMissing is true when git produced no timestamps for the file
-	// (neither file-level nor line-level), e.g. an uncommitted file, a shallow
-	// clone, or a content tree that is not a git repository. Such a file cannot
-	// be assessed for staleness and must NOT be treated as fresh. See #55.
+	// (neither file-level nor line-level), e.g. a file that was never
+	// committed, a content tree that is not a git repository, or a blame
+	// failure — not a shallow clone, where blame still succeeds and merely
+	// dates every line to the tip commit. Such a file cannot be assessed for
+	// staleness and must NOT be treated as fresh. See #55.
 	HistoryMissing bool
 }
 
