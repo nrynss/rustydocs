@@ -464,15 +464,21 @@ func isGitBookSummary(path string) (bool, error) {
 // never select the starlight profile.
 var starlightIntegrationCall = regexp.MustCompile(`\bstarlight\s*\(`)
 
-// starlightCommentLine matches a line that is entirely comment. A
-// commented-out `// integrations: [starlight()]` in a plain Astro config must
-// not select the profile, so such lines are skipped before the call pattern
-// runs. Only *whole-line* comments are skipped, deliberately: a call behind
-// real code on the same line is real, and stripping comments from mid-line
-// would need quote awareness to stay safe — a "https://…" URL contains "//" —
-// so a naive strip could cut a real call off a line like
-// `site: 'https://x.dev', integrations: [starlight()]`.
+// starlightCommentLine matches a line that is entirely comment: a
+// commented-out `// integrations: [starlight()]` in a plain Astro config
+// must not select the profile, so such lines are skipped before the call
+// pattern runs. Only *whole-line* comments are skipped; a call behind real
+// code on the same line is counted even if a trailing comment follows it.
 var starlightCommentLine = regexp.MustCompile(`^\s*(?://|/\*|\*)`)
+
+// starlightQuotedSpan matches a single- or double-quoted string or a
+// template literal, escapes included, so its text can be removed before the
+// call pattern runs: a `title: "starlight()"` mentions the integration
+// without registering it. \x60 stands for a backtick so the pattern can live
+// in a raw string. Applied per line, deliberately: an unbalanced quote (an
+// apostrophe in a comment) can then only cost its own line, never swallow a
+// real integration call further down the file.
+var starlightQuotedSpan = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\x60(?:[^\x60\\]|\\.)*\x60`)
 
 // starlightDependency matches the *quoted* package name "@astrojs/starlight" —
 // the exact shape a dependency entry takes. Plain containment is too weak: a
@@ -491,9 +497,10 @@ const maxStarlightMarkerBytes = 1 << 20
 // the Starlight integration. An Astro config that does not — the common case
 // of astro.config.* in the wild — is (false, nil): not a match, silently
 // skipped, exactly like an unrelated docs.json for Mintlify. A config whose
-// only starlight( occurrence sits on a whole-line comment does not count
-// either; see starlightCommentLine. The error return is reserved for "could
-// not be read at all"; see markerPredicate.
+// only starlight( occurrence sits on a whole-line comment or inside a string
+// literal does not count either; see starlightCommentLine and
+// starlightQuotedSpan. The error return is reserved for "could not be read
+// at all"; see markerPredicate.
 func isStarlightConfig(path string) (bool, error) {
 	data, err := readMarkerFile(path)
 	if err != nil {
@@ -503,7 +510,7 @@ func isStarlightConfig(path string) (bool, error) {
 		if starlightCommentLine.MatchString(line) {
 			continue
 		}
-		if starlightIntegrationCall.MatchString(line) {
+		if starlightIntegrationCall.MatchString(starlightQuotedSpan.ReplaceAllString(line, "")) {
 			return true, nil
 		}
 	}
