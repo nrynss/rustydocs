@@ -32,12 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A section with no git history of its own whose only date came from a folded
-  include was counted in `stale_sections` but its row displayed "Unknown"
-  (or, in JSON, `level: "unknown"`). All three report formats now show the
-  date the classification used (the include's), so a blameless section that
-  is stale because of an old include says why. Sections with no date at all
-  still render "Unknown".
+- A section counted stale while its row disagreed with the count. A section
+  with no git history of its own whose only date came from a folded include
+  displayed "Unknown" (or, in JSON, `level: "unknown"`); and a section whose
+  include was newer than its own text displayed its own older date, reading
+  staler than it was counted. All three report formats now derive the row's
+  date and severity from the same date the classification used — the
+  section's own latest commit folded with its includes — so a blameless
+  section stale because of an old include says why, and every row's day count
+  matches the count. Sections with no date at all still render "Unknown".
 - A headerless file (no `#` headings) with no resolvable git history — an
   untracked file that was never committed, a tree outside any repository, or a
   blame failure — collapsed to a single whole-file section instead of one

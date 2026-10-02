@@ -276,6 +276,62 @@ func TestAnalyze_BlamelessSectionShowsFoldedDate(t *testing.T) {
 	}
 }
 
+// TestAnalyze_RowDateMatchesClassificationDate pins the with-blame half of
+// the display rule: a section whose own lines are older than its resolved
+// include — still stale, just less so — displays the same newer date the
+// classification used, not its own older one, so the row never reads staler
+// than it was counted.
+func TestAnalyze_RowDateMatchesClassificationDate(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	ownDate := now.AddDate(0, 0, -200)
+	includeDate := now.AddDate(0, 0, -100)
+	repo := testutil.NewRepo(t)
+	repo.Commit(ownDate, "old page", map[string]string{
+		"astro.config.mjs":              "import starlight from \"@astrojs/starlight\";\nexport default defineConfig({ integrations: [starlight()] });\n",
+		"package.json":                  "{\"dependencies\":{\"@astrojs/starlight\":\"^0.34.0\"}}\n",
+		"src/content/docs/_partial.mdx": "# Steps\n\nv1\n",
+		"src/content/docs/page.mdx":     "import P from \"./_partial.mdx\";\n\n# Guide\n\n<P />\n",
+	})
+	repo.Commit(includeDate, "refresh partial", map[string]string{
+		"src/content/docs/_partial.mdx": "# Steps\n\nv2\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("src/content/docs")
+	cfg.ThresholdDays = 30
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page *FileAnalysis
+	for i := range res.Files {
+		if res.Files[i].RelativePath == "page.mdx" {
+			page = &res.Files[i]
+		}
+	}
+	if page == nil {
+		t.Fatal("page.mdx not analyzed")
+	}
+	var guide *parser.Section
+	for i := range page.StaleSections {
+		if page.StaleSections[i].Title == "Guide" {
+			guide = &page.StaleSections[i]
+		}
+	}
+	if guide == nil {
+		t.Fatalf("stale sections = %+v, want Guide among them (100 days > 30)", page.StaleSections)
+	}
+	section := guide
+	if own := section.LastUpdated(); own == nil || !own.Equal(ownDate) {
+		t.Fatalf("fixture broken: own dates = %v, want %v", own, ownDate)
+	}
+	if got := section.DisplayDate(); got == nil || !got.Equal(includeDate) {
+		t.Errorf("DisplayDate = %v, want the classification date %v (the include's), not the own %v",
+			got, includeDate, ownDate)
+	}
+}
+
 func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)

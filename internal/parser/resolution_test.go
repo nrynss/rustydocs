@@ -78,23 +78,30 @@ func TestChunk_OldestLine(t *testing.T) {
 	}
 }
 
-// TestChunk_DisplayDate pins the stale-row date rule: a section with blame
-// shows its own most recent line; a blameless section that was classified
-// stale through a resolved include shows the folded date the classification
-// used (EffectiveLastUpdated); a section with neither has no date at all and
-// the reports render "Unknown" (#56).
+// TestChunk_DisplayDate pins the stale-row date rule: the row shows the date
+// the classification used — EffectiveLastUpdated, max(own lines, resolved
+// includes), never older than the section's own latest line — whenever the
+// analyzer recorded one; a chunk without one (not reported as stale, or
+// hand-built) falls back to its own most recent line; a section with neither
+// has no date at all and the reports render "Unknown" (#56).
 func TestChunk_DisplayDate(t *testing.T) {
 	own := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	folded := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	ownOlder := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	include := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC) // newer than ownOlder, older than own
 
-	withBlame := &Chunk{Lines: []git.LineInfo{mkLine(1, own, "alice")}, EffectiveLastUpdated: &folded}
-	if got := withBlame.DisplayDate(); !got.Equal(own) {
-		t.Errorf("DisplayDate with blame = %v, want the section's own %v", got, own)
+	countedMax := &Chunk{Lines: []git.LineInfo{mkLine(1, ownOlder, "alice")}, EffectiveLastUpdated: &include}
+	if got := countedMax.DisplayDate(); !got.Equal(include) {
+		t.Errorf("DisplayDate with folded max = %v, want the classification date %v", got, include)
 	}
 
-	blameless := &Chunk{EffectiveLastUpdated: &folded}
-	if got := blameless.DisplayDate(); !got.Equal(folded) {
-		t.Errorf("DisplayDate blameless = %v, want the folded %v", got, folded)
+	uncounted := &Chunk{Lines: []git.LineInfo{mkLine(1, own, "alice")}}
+	if got := uncounted.DisplayDate(); !got.Equal(own) {
+		t.Errorf("DisplayDate without a recorded classification date = %v, want the own %v", got, own)
+	}
+
+	blameless := &Chunk{EffectiveLastUpdated: &include}
+	if got := blameless.DisplayDate(); !got.Equal(include) {
+		t.Errorf("DisplayDate blameless = %v, want the folded %v", got, include)
 	}
 
 	if got := (&Chunk{}).DisplayDate(); got != nil {

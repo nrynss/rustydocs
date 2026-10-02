@@ -73,10 +73,10 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 
 					// No resolvable date at all renders as "Unknown"/"—"
 					// consistently with the HTML and JSON reports, rather than
-					// a fabricated 0. See #56. A section with no blame of its
-					// own that was classified stale through a resolved include
-					// shows the date the classification used instead
-					// (DisplayDate), so the row explains why it is here.
+					// a fabricated 0. See #56. Otherwise DisplayDate is the
+					// date the classification used — own latest folded with
+					// includes — so the row's date and day count always match
+					// the count.
 					dateStr := "Unknown"
 					daysStr := "—"
 					if lastUpdated := section.DisplayDate(); lastUpdated != nil {

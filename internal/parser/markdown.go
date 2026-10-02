@@ -26,25 +26,27 @@ type Chunk struct {
 	IsHeader  bool // True if this chunk starts with a header
 	// EffectiveLastUpdated is the date the staleness classification used for
 	// this section: its own lines' most recent commit folded with the commit
-	// dates of its resolved includes (CalculateSectionStaleness). The analyzer
-	// sets it on the stale sections it reports. It is what DisplayDate falls
-	// back to, so a section with no blame of its own — an uncommitted page
-	// whose include is old, the only reason the section is stale — renders
-	// that date instead of an "Unknown" row that is nonetheless counted.
-	// Nil when nothing resolvable dates the section.
+	// dates of its resolved includes (CalculateSectionStaleness) — the max of
+	// the two, so it is never older than the section's own latest line. The
+	// analyzer sets it on the stale sections it reports, and DisplayDate
+	// returns it, so a stale row's date and day count are always the ones the
+	// count itself was decided on: a blameless section stale through an old
+	// include shows the include's date instead of "Unknown", and a section
+	// whose include is newer than its own text does not read staler than it
+	// was counted. Nil when nothing resolvable dates the section.
 	EffectiveLastUpdated *time.Time
 }
 
-// DisplayDate returns the date a stale-section row should show: the section's
-// own most recent line date, or — when the section has no blame of its own
-// but was classified stale through a resolved include — the folded date the
-// classification used (EffectiveLastUpdated). Nil when there is no resolvable
-// date at all, which renders as "Unknown" (#56).
+// DisplayDate returns the date a stale-section row should show: the date the
+// classification used (EffectiveLastUpdated — own latest line folded with
+// resolved includes) when the analyzer recorded one, else the section's own
+// most recent line date. Nil when there is no resolvable date at all, which
+// renders as "Unknown" (#56).
 func (c *Chunk) DisplayDate() *time.Time {
-	if lu := c.LastUpdated(); lu != nil {
-		return lu
+	if c.EffectiveLastUpdated != nil {
+		return c.EffectiveLastUpdated
 	}
-	return c.EffectiveLastUpdated
+	return c.LastUpdated()
 }
 
 // Section is an alias for Chunk for backward compatibility.

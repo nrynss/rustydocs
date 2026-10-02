@@ -136,9 +136,9 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 
 			// No resolvable date at all renders as "Unknown" with an "unknown"
 			// class — never a fabricated 999 days mislabeled "critical". See
-			// #56. A section with no blame of its own that was classified
-			// stale through a resolved include shows the date the
-			// classification used instead (DisplayDate).
+			// #56. Otherwise DisplayDate is the date the classification used —
+			// own latest folded with includes — so the row always matches the
+			// count.
 			sDateStr := "Unknown"
 			sDays := 0
 			dateKnown := false
