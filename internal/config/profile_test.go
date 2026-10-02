@@ -1227,6 +1227,7 @@ func TestStarlightMarkersDoNotSelectPlainAstro(t *testing.T) {
 	for _, tc := range []struct{ name, marker, body string }{
 		{"plain astro config", "astro.config.mjs", "import { defineConfig } from 'astro/config';\n\nexport default defineConfig({});\n"},
 		{"config importing without registering", "astro.config.mjs", "import starlight from '@astrojs/starlight';\n\nexport default defineConfig({});\n"},
+		{"config with only a commented-out call", "astro.config.mjs", "// integrations: [starlight()]\nimport { defineConfig } from 'astro/config';\n\nexport default defineConfig({});\n"},
 		{"plain package.json", "package.json", "{\n  \"name\": \"astro-blog\",\n  \"dependencies\": {\n    \"astro\": \"^5.0.0\"\n  }\n}\n"},
 		{"package.json mentioning without depending", "package.json", "{\n  \"name\": \"astro-blog\",\n  \"description\": \"A blog inspired by @astrojs/starlight\",\n  \"dependencies\": {\n    \"astro\": \"^5.0.0\"\n  }\n}\n"},
 	} {
@@ -1262,6 +1263,10 @@ func TestStarlightMarkerPredicate(t *testing.T) {
 	}{
 		{"bare call", isStarlightConfig, "integrations: [starlight()]\n", true},
 		{"call with options", isStarlightConfig, "integrations: [starlight({ title: 'Docs' })]\n", true},
+		{"call with trailing comment", isStarlightConfig, "integrations: [starlight()] // required\n", true},
+		{"commented-out call", isStarlightConfig, "// integrations: [starlight()]\n", false},
+		{"indented commented-out call", isStarlightConfig, "  // starlight({ title: 'old' })\n", false},
+		{"block-commented call", isStarlightConfig, "/*\n * integrations: [starlight()]\n */\n", false},
 		{"import without call", isStarlightConfig, "import starlight from '@astrojs/starlight';\n", false},
 		{"unrelated config", isStarlightConfig, "export default defineConfig({});\n", false},
 		{"dependency", isStarlightPackage, `{"dependencies":{"@astrojs/starlight":"^0.34.0"}}` + "\n", true},

@@ -464,6 +464,16 @@ func isGitBookSummary(path string) (bool, error) {
 // never select the starlight profile.
 var starlightIntegrationCall = regexp.MustCompile(`\bstarlight\s*\(`)
 
+// starlightCommentLine matches a line that is entirely comment. A
+// commented-out `// integrations: [starlight()]` in a plain Astro config must
+// not select the profile, so such lines are skipped before the call pattern
+// runs. Only *whole-line* comments are skipped, deliberately: a call behind
+// real code on the same line is real, and stripping comments from mid-line
+// would need quote awareness to stay safe — a "https://…" URL contains "//" —
+// so a naive strip could cut a real call off a line like
+// `site: 'https://x.dev', integrations: [starlight()]`.
+var starlightCommentLine = regexp.MustCompile(`^\s*(?://|/\*|\*)`)
+
 // starlightDependency matches the *quoted* package name "@astrojs/starlight" —
 // the exact shape a dependency entry takes. Plain containment is too weak: a
 // package.json description or repository URL can mention the package without
@@ -480,14 +490,24 @@ const maxStarlightMarkerBytes = 1 << 20
 // isStarlightConfig reports whether path holds an Astro config that registers
 // the Starlight integration. An Astro config that does not — the common case
 // of astro.config.* in the wild — is (false, nil): not a match, silently
-// skipped, exactly like an unrelated docs.json for Mintlify. The error return
-// is reserved for "could not be read at all"; see markerPredicate.
+// skipped, exactly like an unrelated docs.json for Mintlify. A config whose
+// only starlight( occurrence sits on a whole-line comment does not count
+// either; see starlightCommentLine. The error return is reserved for "could
+// not be read at all"; see markerPredicate.
 func isStarlightConfig(path string) (bool, error) {
 	data, err := readMarkerFile(path)
 	if err != nil {
 		return false, err
 	}
-	return starlightIntegrationCall.Match(data), nil
+	for _, line := range strings.Split(string(data), "\n") {
+		if starlightCommentLine.MatchString(line) {
+			continue
+		}
+		if starlightIntegrationCall.MatchString(line) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isStarlightPackage reports whether path holds a package.json that depends on
