@@ -268,7 +268,8 @@ func TestResolveReusable_SnippetAndImportTogether(t *testing.T) {
 }
 
 // TestResolveReusable_ImportMapOffKeepsOldBehaviour checks that the layer is
-// opt-in: with ImportMap disabled (every profile but mintlify today) a
+// opt-in: with ImportMap disabled (every profile but mintlify and starlight
+// today) a
 // component capture is still an unresolved reference, so hugo's reporting is
 // untouched.
 func TestResolveReusable_ImportMapOffKeepsOldBehaviour(t *testing.T) {
