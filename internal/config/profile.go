@@ -473,13 +473,6 @@ func isGitBookSummary(path string) (bool, error) {
 // never select the starlight profile.
 var starlightIntegrationCall = regexp.MustCompile(`\bstarlight\s*\(`)
 
-// starlightCommentLine matches a line that is entirely comment: a
-// commented-out `// integrations: [starlight()]` in a plain Astro config
-// must not select the profile, so such lines are skipped before the call
-// pattern runs. Only *whole-line* comments are skipped; a call behind real
-// code on the same line is counted even if a trailing comment follows it.
-var starlightCommentLine = regexp.MustCompile(`^\s*(?://|/\*|\*)`)
-
 // starlightQuotedSpan matches a single- or double-quoted string or a
 // template literal, escapes included, so its text can be removed before the
 // call pattern runs: a `title: "starlight()"` mentions the integration
@@ -505,21 +498,56 @@ const maxStarlightMarkerBytes = 1 << 20
 // isStarlightConfig reports whether path holds an Astro config that registers
 // the Starlight integration. An Astro config that does not — the common case
 // of astro.config.* in the wild — is (false, nil): not a match, silently
-// skipped, exactly like an unrelated docs.json for Mintlify. A config whose
-// only starlight( occurrence sits on a whole-line comment or inside a string
-// literal does not count either; see starlightCommentLine and
-// starlightQuotedSpan. The error return is reserved for "could not be read
-// at all"; see markerPredicate.
+// skipped, exactly like an unrelated docs.json for Mintlify. Comments are
+// skipped in full: a whole-line // comment, and block comments tracked
+// across lines, so an unprefixed interior line of /* … */ is skipped too
+// (CodeRabbit review of #76); a call in code after a block comment closes on
+// the same line still counts. String literals are removed before matching,
+// so a mention like title: "starlight()" does not count either — and their
+// removal is what makes comment detection safe, since a "https://…" URL can
+// no longer be mistaken for a comment opener. The error return is reserved
+// for "could not be read at all"; see markerPredicate.
 func isStarlightConfig(path string) (bool, error) {
 	data, err := readMarkerFile(path)
 	if err != nil {
 		return false, err
 	}
+	inBlock := false
 	for _, line := range strings.Split(string(data), "\n") {
-		if starlightCommentLine.MatchString(line) {
+		// Interior of a block comment opened on an earlier line: everything
+		// up to the closing */ is comment, and code may resume after it.
+		if inBlock {
+			end := strings.Index(line, "*/")
+			if end < 0 {
+				continue
+			}
+			line = line[end+2:]
+			inBlock = false
+		}
+		// String literals go before comment handling: a "https://…" URL or
+		// a /* inside a string is text, not code, and must not open or be
+		// read as comment state.
+		line = starlightQuotedSpan.ReplaceAllString(line, "")
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
 			continue
 		}
-		if starlightIntegrationCall.MatchString(starlightQuotedSpan.ReplaceAllString(line, "")) {
+		// A block comment opens at the first /* and closes at the first */
+		// after it, on this line or a later one; the code is whatever
+		// remains outside the comment spans.
+		for {
+			open := strings.Index(line, "/*")
+			if open < 0 {
+				break
+			}
+			end := strings.Index(line[open:], "*/")
+			if end < 0 {
+				line = line[:open]
+				inBlock = true
+				break
+			}
+			line = line[:open] + line[open+end+2:]
+		}
+		if starlightIntegrationCall.MatchString(line) {
 			return true, nil
 		}
 	}
@@ -561,6 +589,7 @@ func (p Profile) clone() Profile {
 	return p
 }
 
+// cloneStrings copies s, preserving nil.
 func cloneStrings(s []string) []string {
 	if s == nil {
 		return nil

@@ -386,6 +386,7 @@ func TestImportMap_Memoized(t *testing.T) {
 	}
 }
 
+// contains reports whether needle is in haystack.
 func contains(haystack []string, needle string) bool {
 	for _, h := range haystack {
 		if h == needle {
@@ -662,6 +663,7 @@ import { Other as Other$Two } from "/snippets/other.mdx";
 	}
 }
 
+// slicesContains is contains by another name, kept for its callers.
 func slicesContains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

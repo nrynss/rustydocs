@@ -25,6 +25,7 @@ type starlightRepo struct {
 	astroDate  time.Time
 }
 
+// newStarlightRepo builds the fixture and a ReusablePatterns bound to its root.
 func newStarlightRepo(t *testing.T) *starlightRepo {
 	t.Helper()
 	repo := testutil.NewRepo(t)

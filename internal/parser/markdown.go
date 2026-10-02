@@ -580,6 +580,9 @@ func parseParagraphs(contentLines []string, linesInfo []git.LineInfo, parentTitl
 	return chunks
 }
 
+// createParagraphChunk builds one paragraph chunk from
+// contentLines[start:end+1], carrying the blame of the lines it covers and
+// the references found in its content.
 func createParagraphChunk(contentLines []string, linesInfo []git.LineInfo, start, end, lineOffset int, parentTitle string, paragraphNum int, rp *ReusablePatterns) Chunk {
 	startLine := lineOffset + start + 1
 	endLine := lineOffset + end + 1
@@ -756,6 +759,9 @@ func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*gi
 // it can never be mistaken for the file path a ResolverPath capture usually is.
 var componentSymbolPattern = regexp.MustCompile(`^[A-Z][A-Za-z0-9_$]*$`)
 
+// isComponentSymbol reports whether a capture can only be a JSX component
+// name: capitalised, with neither an extension nor a path separator, so it
+// can never be mistaken for the file path a ResolverPath capture usually is.
 func isComponentSymbol(ref string) bool {
 	return componentSymbolPattern.MatchString(ref)
 }
@@ -1360,6 +1366,7 @@ func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	return nil
 }
 
+// ensureCache builds the legacy reusables-dir lookup cache once per ReusablePatterns.
 func (rp *ReusablePatterns) ensureCache() {
 	if rp.cacheBuilt {
 		return
@@ -1373,6 +1380,7 @@ func (rp *ReusablePatterns) ensureCache() {
 	rp.cacheBuilt = true
 }
 
+// buildDirCache walks a legacy reusables directory and indexes its content files by name.
 func (rp *ReusablePatterns) buildDirCache(dir string) {
 	cleanDir := filepath.Clean(dir)
 	extSet := make(map[string]struct{}, len(rp.extensions))
@@ -1408,6 +1416,7 @@ func (rp *ReusablePatterns) buildDirCache(dir string) {
 	})
 }
 
+// storePath records one cache key, first writer wins.
 func (rp *ReusablePatterns) storePath(key, path string) {
 	if key == "" {
 		return
@@ -1420,6 +1429,7 @@ func (rp *ReusablePatterns) storePath(key, path string) {
 	}
 }
 
+// lookupPath resolves a cached legacy name to git info, if any.
 func (rp *ReusablePatterns) lookupPath(name string) *git.FileInfo {
 	if path, ok := rp.filePaths[name]; ok {
 		fileInfo, err := rp.cache.FileLastModified(path)
@@ -1430,6 +1440,7 @@ func (rp *ReusablePatterns) lookupPath(name string) *git.FileInfo {
 	return nil
 }
 
+// normalizeReusableName trims a legacy reusable name to its lookup key.
 func normalizeReusableName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.TrimPrefix(name, "/")

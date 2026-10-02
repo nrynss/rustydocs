@@ -19,6 +19,7 @@ import (
 // with custom roots while keeping identical matching behavior.
 var defaultPatternStrings = hugoProfile().ReusablePatterns
 
+// mkLine builds one blame line: number, timestamp, author.
 func mkLine(n int, ts time.Time, author string) git.LineInfo {
 	return git.LineInfo{
 		LineNumber: n,
@@ -270,6 +271,7 @@ func TestParseChunks_ParagraphLevel_HeaderInsideParagraph(t *testing.T) {
 	}
 }
 
+// titles extracts chunk titles so failures print a readable shape.
 func titles(chunks []Chunk) []string {
 	out := make([]string, 0, len(chunks))
 	for _, c := range chunks {
