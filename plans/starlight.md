@@ -17,6 +17,13 @@
 
 ## Accepted trade-offs
 
+- Imports through tsconfig path aliases (`import X from "@/components/x.mdx"`)
+  are classified as bare package specifiers and silently skipped: the import
+  map resolves only `/`, `./` and `../` specifiers, and reading tsconfig
+  `paths` is out of scope. That is the safe direction — no false freshness, no
+  false broken include — but an alias-imported partial's history does not fold
+  into the referencing section. Relative imports, which the observed corpora
+  use exclusively, are unaffected.
 - A content import that escapes the project root (a monorepo Starlight site
   reaching `../../../packages/shared/x.mdx`) counts as an unresolved include:
   `withinRoot` rejects the candidate and the import-map rule reports any

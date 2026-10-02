@@ -22,8 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broken include and a restyled component cannot make every page using it look
   fresh.
 
+### Changed
+
+- The missing-history warning (stderr and the HTML report) lists the real
+  causes of missing history — files never committed, trees outside any git
+  repository, blame failures — and no longer names a shallow clone, which
+  never triggers it: blame there succeeds and dates every line to the tip
+  commit.
+
 ### Fixed
 
+- A section with no git history of its own whose only date came from a folded
+  include was counted in `stale_sections` but its row displayed "Unknown".
+  The row now shows the date the classification used (the include's), so a
+  blameless section that is stale because of an old include says why; JSON
+  stale-section rows gain `EffectiveLastUpdated`. Sections with no date at
+  all still render "Unknown".
 - A headerless file (no `#` headings) with no resolvable git history — an
   untracked file that was never committed, a tree outside any repository, or a
   blame failure — collapsed to a single whole-file section instead of one

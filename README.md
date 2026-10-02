@@ -63,7 +63,7 @@ wins.
 | `gitbook`  | `.md`                      | `.gitbook.yaml` or `SUMMARY.md` | `{% content-ref url="…" %}` and `{% include "…" %}` paths |
 | `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style) and MDX imports rendered as `<X />`, resolved as a **path** under `snippets/` / `_snippets/` or the project root; `.jsx`/`.js`/`.css` imports are skipped |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
-| `starlight` | `.md`, `.mdx`, `.mdoc`    | an `astro.config.{mjs,js,ts,mts}` whose contents register the `starlight()` integration, or a `package.json` depending on `@astrojs/starlight` | MDX imports (`import X from "./_shared.mdx"`) rendered as `<X />`, resolved as a **path** within the project root; `.astro`/`.js` imports, bare package specifiers (`@astrojs/starlight/components`) and unimported components — Starlight's built-ins and Markdoc's import-free tags alike — are skipped |
+| `starlight` | `.md`, `.mdx`, `.mdoc`    | an `astro.config.{mjs,js,ts,mts}` whose contents register the `starlight()` integration (whole-line comments are ignored), or a `package.json` depending on `@astrojs/starlight` | MDX imports (`import X from "./_shared.mdx"`) rendered as `<X />`, resolved as a **path** within the project root; `.astro`/`.js` imports, bare package specifiers and tsconfig path aliases (`@/…`), and unimported components — Starlight's built-ins and Markdoc's import-free tags alike — are skipped |
 
 **Auto-detection.** When no profile is named, rustydocs walks up from
 `content_dir` one directory at a time looking for the profiles' root markers;
@@ -89,11 +89,12 @@ registering it does not count), while a `package.json` counts only when it
 depends on `@astrojs/starlight` — the file alone is too generic to be a
 marker. A file that merely has the name — some other tool's `docs.json`, or a
 malformed one — is ignored, and detection carries on up the tree. Only when
-both a Hugo and a Mintlify marker sit in the *same* directory does registry
-order decide, and there **`hugo` wins**: `layouts/` and `hugo.toml` are
-unambiguous evidence, and picking `mintlify` would silently switch shortcode
-tracing off on a Hugo site that happens to ship a `docs.json`. Pass
-`--profile mintlify` to override that tie.
+markers of more than one profile sit in the *same* directory does registry
+order decide, and the earlier-registered profile wins — which is why
+**`hugo` beats `mintlify`** there (`layouts/` and `hugo.toml` are unambiguous
+evidence, and picking `mintlify` would silently switch shortcode tracing off
+on a Hugo site that happens to ship a `docs.json`) and why `starlight`,
+registered last, loses any same-directory tie. Pass `--profile` to override.
 
 If nothing is found, the `markdown` profile is used. **A project root you
 supply never selects a profile**: `--project-root` / `project_root` says where
