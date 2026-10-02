@@ -145,7 +145,13 @@ func GenerateJSON(results *analyzer.Results, cfg *config.Config, outputPath stri
 				Author:    s.LastAuthor(),
 			}
 
-			if lastUpdated := s.LastUpdated(); lastUpdated != nil {
+			// The same date the Markdown and HTML rows display
+			// (Chunk.DisplayDate): the section's own most recent line, or the
+			// folded classification date for a section with no blame of its
+			// own that was counted stale through a resolved include. Leaving
+			// this on LastUpdated() alone put `level: "unknown"` next to a
+			// row that stale_sections counts.
+			if lastUpdated := s.DisplayDate(); lastUpdated != nil {
 				js.LastUpdated = lastUpdated.Format(time.RFC3339)
 				js.DaysStale = int(now.Sub(*lastUpdated).Hours() / 24)
 				js.Level = cfg.GetStalenessClass(js.DaysStale)

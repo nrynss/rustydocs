@@ -384,6 +384,46 @@ func TestBlamelessSectionShowsFoldedDate(t *testing.T) {
 	if !strings.Contains(md, "| Mystery | Unknown | — |") {
 		t.Errorf("Markdown: blameless dateless row did not render Unknown/em-dash:\n%s", md)
 	}
+
+	// --- JSON ---
+	// The JSON level must follow the same date as the other formats: a
+	// counted stale section with no blame of its own used to keep
+	// level "unknown" and no last_updated, contradicting its own count.
+	jsonOut := filepath.Join(dir, "out.json")
+	if err := GenerateJSON(res, cfg, jsonOut); err != nil {
+		t.Fatalf("GenerateJSON: %v", err)
+	}
+	jsonData, err := os.ReadFile(jsonOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report JSONReport
+	if err := json.Unmarshal(jsonData, &report); err != nil {
+		t.Fatalf("JSON output is not valid: %v", err)
+	}
+	var guideLevel, mysteryLevel, guideDate string
+	for _, f := range report.Files {
+		if f.Path != "docs/page.mdx" {
+			continue
+		}
+		for _, s := range f.Sections {
+			switch s.Title {
+			case "Guide":
+				guideLevel, guideDate = s.Level, s.LastUpdated
+			case "Mystery":
+				mysteryLevel = s.Level
+			}
+		}
+	}
+	if guideLevel != "critical" {
+		t.Errorf("JSON: blameless folded-stale section level = %q, want \"critical\"", guideLevel)
+	}
+	if guideDate != folded.Format(time.RFC3339) {
+		t.Errorf("JSON: blameless folded-stale section last_updated = %q, want %q", guideDate, folded.Format(time.RFC3339))
+	}
+	if mysteryLevel != "unknown" {
+		t.Errorf("JSON: blameless dateless section level = %q, want \"unknown\"", mysteryLevel)
+	}
 }
 
 // TestMissingHistoryReporting pins #55: a file with no git history is surfaced
