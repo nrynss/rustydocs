@@ -8,8 +8,8 @@ Find stale documentation using git history. Analyzes your documentation at the s
 
 - **Section-level analysis**: Uses `git blame` to analyze staleness per section, not just per file
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
-- **Tool profiles**: `hugo`, `mintlify`, and `gitbook` profiles add tool-specific include tracking; see [Profiles](#profiles)
-- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
+- **Tool profiles**: `hugo`, `mintlify`, `gitbook`, and `starlight` profiles add tool-specific include tracking; see [Profiles](#profiles)
+- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`); under `starlight`, MDX imports (`import X from "./_shared.mdx"` rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`, and `.astro` under `starlight`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
 - **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is about a 6.5x speedup (48.7 s to 7.5 s) and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
 - **Dual output**: Generates both Markdown and HTML reports
@@ -63,6 +63,7 @@ wins.
 | `gitbook`  | `.md`                      | `.gitbook.yaml` or `SUMMARY.md` | `{% content-ref url="…" %}` and `{% include "…" %}` paths |
 | `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style) and MDX imports rendered as `<X />`, resolved as a **path** under `snippets/` / `_snippets/` or the project root; `.jsx`/`.js`/`.css` imports are skipped |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
+| `starlight` | `.md`, `.mdx`, `.mdoc`    | an `astro.config.{mjs,js,ts,mts}` whose contents register the `starlight()` integration (whole-line comments are ignored), or a `package.json` depending on `@astrojs/starlight` | MDX imports (`import X from "./_shared.mdx"`) rendered as `<X />` and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`), resolved as a **path** within the project root; fenced examples are not captured; `.astro`/`.js` imports, bare package specifiers and tsconfig path aliases (`@/…`), and unimported components — Starlight's built-ins and Markdoc's import-free tags alike — are skipped |
 
 **Auto-detection.** When no profile is named, rustydocs walks up from
 `content_dir` one directory at a time looking for the profiles' root markers;
@@ -72,21 +73,28 @@ selects `mintlify`; a `layouts/` or `themes/` directory, a
 `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config — `hugo.*`
 or `config.*` under that directory — selects `hugo` (the config-file and
 `themes/` markers matter for fresh clones of theme-based sites, since git does
-not track an empty `layouts/` directory). A nested docs tree therefore wins
-over a marker further up: a Mintlify `docs.json` inside a repo that also has a
-`layouts/` at its root selects `mintlify`.
+not track an empty `layouts/` directory); and an `astro.config.{mjs,js,ts,mts}`
+that registers the `starlight()` integration — or a `package.json` depending
+on `@astrojs/starlight` — selects `starlight`. A nested docs tree therefore
+wins over a marker further up: a Mintlify `docs.json` inside a repo that also
+has a `layouts/` at its root selects `mintlify`.
 
-The Mintlify markers are checked by **content** as well as by name: a
-`docs.json` or `mint.json` selects the profile only when it parses as a JSON
-object carrying a recognisably Mintlify key (`navigation`, `theme`, `colors`,
-`logo`, `favicon`, `tabs`, `anchors`, or a `$schema` mentioning Mintlify). A
-file that merely has the name — some other tool's `docs.json`, or a malformed
-one — is ignored, and detection carries on up the tree. Only when both a Hugo
-and a Mintlify marker sit in the *same* directory does registry order decide,
-and there **`hugo` wins**: `layouts/` and `hugo.toml` are unambiguous evidence,
-and picking `mintlify` would silently switch shortcode tracing off on a Hugo
-site that happens to ship a `docs.json`. Pass `--profile mintlify` to override
-that tie.
+The Mintlify and Starlight markers are checked by **content** as well as by
+name: a `docs.json` or `mint.json` selects the profile only when it parses as
+a JSON object carrying a recognisably Mintlify key (`navigation`, `theme`,
+`colors`, `logo`, `favicon`, `tabs`, `anchors`, or a `$schema` mentioning
+Mintlify), and an `astro.config.*` selects `starlight` only when it actually
+*calls* the `starlight()` integration (importing the package without
+registering it does not count), while a `package.json` counts only when it
+depends on `@astrojs/starlight` — the file alone is too generic to be a
+marker. A file that merely has the name — some other tool's `docs.json`, or a
+malformed one — is ignored, and detection carries on up the tree. Only when
+markers of more than one profile sit in the *same* directory does registry
+order decide, and the earlier-registered profile wins — which is why
+**`hugo` beats `mintlify`** there (`layouts/` and `hugo.toml` are unambiguous
+evidence, and picking `mintlify` would silently switch shortcode tracing off
+on a Hugo site that happens to ship a `docs.json`) and why `starlight`,
+registered last, loses any same-directory tie. Pass `--profile` to override.
 
 If nothing is found, the `markdown` profile is used. **A project root you
 supply never selects a profile**: `--project-root` / `project_root` says where
@@ -141,6 +149,14 @@ rustydocs --content-dir ./docs --profile mintlify --project-root .
 
 # GitBook: .gitbook.yaml or a GitBook-style SUMMARY.md selects it automatically.
 rustydocs --content-dir ./docs --profile gitbook
+
+# Astro Starlight: an astro.config.* calling starlight(), or a package.json
+# depending on @astrojs/starlight, selects it automatically. Point --content-dir
+# at the content collection (src/content/docs) or the repo root; imports such as
+# `import X from "./_shared.mdx"` fold the partial's history into the section
+# that renders <X />, while Starlight's built-in components stay out of the
+# report.
+rustydocs --content-dir ./src/content/docs --profile starlight
 
 # --project-root alone never changes the profile: on a repo with a docs.json
 # this is still a mintlify run.

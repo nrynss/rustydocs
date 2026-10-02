@@ -134,13 +134,16 @@ func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath stri
 		for _, s := range f.StaleSections {
 			title := truncateRunes(s.Title, 50)
 
-			// No resolvable date renders as "Unknown" with an "unknown" class —
-			// never a fabricated 999 days mislabeled "critical". See #56.
+			// No resolvable date at all renders as "Unknown" with an "unknown"
+			// class — never a fabricated 999 days mislabeled "critical". See
+			// #56. Otherwise DisplayDate is the date the classification used —
+			// own latest folded with includes — so the row always matches the
+			// count.
 			sDateStr := "Unknown"
 			sDays := 0
 			dateKnown := false
 			stalenessClass := "unknown"
-			if lastUpdated := s.LastUpdated(); lastUpdated != nil {
+			if lastUpdated := s.DisplayDate(); lastUpdated != nil {
 				sDateStr = lastUpdated.Format("2006-01-02")
 				sDays = int(nowFunc().Sub(*lastUpdated).Hours() / 24)
 				dateKnown = true

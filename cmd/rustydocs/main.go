@@ -318,13 +318,16 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "  Sections analyzed: %d\n", results.TotalSections())
 	fmt.Fprintf(stdout, "  Stale sections: %d (%.1f%%)\n", results.StaleSections(), results.StaleSectionsPct())
 
-	// Surface files we could not assess so a misconfigured (shallow or partly
-	// uncommitted) checkout does not silently report as clean. See #55.
+	// Surface files we could not assess so a partly uncommitted checkout does
+	// not silently report as clean. See #55. A shallow clone never gets here —
+	// blame there succeeds and dates every line to the tip commit, so the
+	// failure mode is silently meaningless freshness, not this warning — which
+	// is why the full-clone advice lives in the docs, not in this text.
 	if missing := results.FilesMissingHistory(); missing > 0 {
 		fmt.Fprintf(stdout, "  Files with no git history (staleness unknown): %d\n", missing)
 		fmt.Fprintf(stderr, "\nWarning: %d file(s) had no git history and could not be assessed "+
-			"(uncommitted files, a shallow clone, or not a git repository); "+
-			"they are reported as unknown, not fresh. Ensure a full clone (fetch-depth: 0).\n", missing)
+			"(files that were never committed, a content tree outside any git repository, or a blame failure); "+
+			"they are reported as unknown, not fresh.\n", missing)
 	}
 
 	// What the default exclusions removed. Printed before the zero-files
@@ -381,9 +384,10 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 // it (analyzer.Results.UnresolvedReusableRefs); "" is returned when nothing
 // failed, or when the resolved profile is not one the note can speak for.
 //
-// It is scoped to config.ResolverPath — Mintlify today. Under that resolver
-// the capture *is* a file path, so every unresolved reference is a genuine
-// defect the reader can act on. Under the hugo resolver it is not: the
+// It is scoped to config.ResolverPath — Mintlify, GitBook and Starlight
+// today. Under that resolver the capture *is* a file path, so every
+// unresolved reference is a genuine defect the reader can act on. Under
+// the hugo resolver it is not: the
 // profile's second pattern captures every capitalised JSX/HTML tag on the
 // page, and <Tabs>, <Card>, <Badge> and friends are simply not shortcodes, so
 // on a real MDX site the note's population was overwhelmingly noise (measured
@@ -432,12 +436,21 @@ func describeUnresolvedReusables(cfg *config.Config, unresolved int, refs []stri
 
 	// No project root: for a resolver that works relative to one, that alone
 	// explains every failure, and naming the markers that were looked for is
-	// what turns the note into something actionable.
+	// what turns the note into something actionable. The example is the
+	// resolved profile's own include shape, so the sentence reads like it is
+	// about the run at hand rather than about Mintlify.
+	example := `<Snippet file="aws-config.mdx" />`
+	switch cfg.ResolvedProfile.Name {
+	case config.ProfileGitBook:
+		example = `{% include "./shared.md" %}`
+	case config.ProfileStarlight:
+		example = `{% partial file="./_footer.mdoc" /%}`
+	}
 	fmt.Fprintf(&b, " No project root was found — no %s at or above %s (the search stops at "+
-		"the enclosing git repository) — so snippet path references "+
-		"(e.g. <Snippet file=\"aws-config.mdx\" />) had nothing to resolve against. "+
+		"the enclosing git repository) — so include path references "+
+		"(e.g. %s) had nothing to resolve against. "+
 		"Pass --project-root PATH (or set \"project_root\" in the config file) to point at it.",
-		joinOr(cfg.ResolvedProfile.RootMarkers), cfg.ContentDir)
+		joinOr(cfg.ResolvedProfile.RootMarkers), cfg.ContentDir, example)
 	return b.String()
 }
 

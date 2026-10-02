@@ -71,11 +71,15 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 				for _, section := range fileAnalysis.StaleSections {
 					title := truncateRunes(section.Title, 35)
 
-					// No resolvable date renders as "Unknown"/"—" consistently with
-					// the HTML and JSON reports, rather than a fabricated 0. See #56.
+					// No resolvable date at all renders as "Unknown"/"—"
+					// consistently with the HTML and JSON reports, rather than
+					// a fabricated 0. See #56. Otherwise DisplayDate is the
+					// date the classification used — own latest folded with
+					// includes — so the row's date and day count always match
+					// the count.
 					dateStr := "Unknown"
 					daysStr := "—"
-					if lastUpdated := section.LastUpdated(); lastUpdated != nil {
+					if lastUpdated := section.DisplayDate(); lastUpdated != nil {
 						dateStr = lastUpdated.Format("2006-01-02")
 						daysStr = fmt.Sprintf("%d", int(nowFunc().Sub(*lastUpdated).Hours()/24))
 					}

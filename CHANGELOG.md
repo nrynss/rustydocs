@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `starlight` profile (#18) for Astro Starlight documentation, auto-detected
+  from an `astro.config.{mjs,js,ts,mts}` that registers the `starlight()`
+  integration or a `package.json` depending on `@astrojs/starlight`, or
+  selected with `--profile starlight`. It analyzes `.md`, `.mdx` and `.mdoc`
+  (Markdoc) content and resolves MDX imports (`import X from "./_shared.mdx"`,
+  rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`)
+  as paths within the project root, folding the included content's history into
+  the referencing section. References shown inside fenced code examples are not
+  captured. Imports of `.astro`/`.js`
+  components, bare package specifiers (`@astrojs/starlight/components`) and
+  unimported components — Starlight's built-ins and Markdoc's import-free tags
+  alike — are deliberately skipped, so framework chrome never appears as a
+  broken include and a restyled component cannot make every page using it look
+  fresh.
+
+### Changed
+
+- The missing-history warning (stderr and the HTML report) lists the real
+  causes of missing history — files never committed, trees outside any git
+  repository, blame failures — and no longer names a shallow clone, which
+  never triggers it: blame there succeeds and dates every line to the tip
+  commit.
+
+### Fixed
+
+- A section counted stale while its row disagreed with the count. A section
+  with no git history of its own whose only date came from a folded include
+  displayed "Unknown" (or, in JSON, `level: "unknown"`); and a section whose
+  include was newer than its own text displayed its own older date, reading
+  staler than it was counted. All three report formats now derive the row's
+  date and severity from the same date the classification used — the
+  section's own latest commit folded with its includes — so a blameless
+  section stale because of an old include says why, and every row's day count
+  matches the count. Sections with no date at all still render "Unknown".
+- A headerless file (no `#` headings) with no resolvable git history — an
+  untracked file that was never committed, a tree outside any repository, or a
+  blame failure — collapsed to a single whole-file section instead of one
+  section per paragraph. The same page reported 15 sections with history and 1
+  without. Paragraph structure is now kept in both cases; every section of a
+  file without history is still reported as *unknown*, never *fresh*.
+
 ## [0.5.0] - 2026-10-01
 
 This release makes rustydocs tool-aware: it detects which documentation

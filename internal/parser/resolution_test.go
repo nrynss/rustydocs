@@ -19,6 +19,7 @@ import (
 // with custom roots while keeping identical matching behavior.
 var defaultPatternStrings = hugoProfile().ReusablePatterns
 
+// mkLine builds one blame line: number, timestamp, author.
 func mkLine(n int, ts time.Time, author string) git.LineInfo {
 	return git.LineInfo{
 		LineNumber: n,
@@ -78,6 +79,37 @@ func TestChunk_OldestLine(t *testing.T) {
 	}
 }
 
+// TestChunk_DisplayDate pins the stale-row date rule: the row shows the date
+// the classification used — EffectiveLastUpdated, max(own lines, resolved
+// includes), never older than the section's own latest line — whenever the
+// analyzer recorded one; a chunk without one (not reported as stale, or
+// hand-built) falls back to its own most recent line; a section with neither
+// has no date at all and the reports render "Unknown" (#56).
+func TestChunk_DisplayDate(t *testing.T) {
+	own := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	ownOlder := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	include := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC) // newer than ownOlder, older than own
+
+	countedMax := &Chunk{Lines: []git.LineInfo{mkLine(1, ownOlder, "alice")}, EffectiveLastUpdated: &include}
+	if got := countedMax.DisplayDate(); !got.Equal(include) {
+		t.Errorf("DisplayDate with folded max = %v, want the classification date %v", got, include)
+	}
+
+	uncounted := &Chunk{Lines: []git.LineInfo{mkLine(1, own, "alice")}}
+	if got := uncounted.DisplayDate(); !got.Equal(own) {
+		t.Errorf("DisplayDate without a recorded classification date = %v, want the own %v", got, own)
+	}
+
+	blameless := &Chunk{EffectiveLastUpdated: &include}
+	if got := blameless.DisplayDate(); !got.Equal(include) {
+		t.Errorf("DisplayDate blameless = %v, want the folded %v", got, include)
+	}
+
+	if got := (&Chunk{}).DisplayDate(); got != nil {
+		t.Errorf("DisplayDate with no dates = %v, want nil", got)
+	}
+}
+
 func TestChunk_LastAuthor(t *testing.T) {
 	old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	recent := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)
@@ -117,8 +149,10 @@ func TestChunk_DisplayTitle(t *testing.T) {
 func TestParseChunks_ParagraphLevel_MultipleParagraphs(t *testing.T) {
 	content := "# Section\n\nFirst paragraph.\n\nSecond paragraph.\n"
 
-	// Paragraph chunks with zero Lines are dropped by parseParagraphs, so feed
-	// line info (one entry per source line) to keep both paragraph chunks.
+	// This test pins the blame-carrying case: one line of info per source
+	// line, as git blame produces. (A file with no history at all keeps its
+	// paragraph chunks too, with empty Lines — see
+	// TestParseChunks_NoHistoryKeepsParagraphStructure.)
 	lines := []git.LineInfo{}
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, mkLine(i, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), "alice"))
@@ -154,6 +188,46 @@ func TestParseChunks_ParagraphLevel_NoHeaders(t *testing.T) {
 		if c.IsHeader {
 			t.Errorf("headerless content should produce no header chunks, got %+v", c)
 		}
+	}
+}
+
+// TestParseChunks_NoHistoryKeepsParagraphStructure pins the no-history rule: a
+// headerless file with no git history keeps one chunk per paragraph — the same
+// structure it would show with history — instead of collapsing into a single
+// whole-file row. Every chunk is unknown either way; the structure is what the
+// section-level report exists to show. Found on a real Starlight site: a
+// 31-line headerless page reported 15 sections with history and 1 without.
+func TestParseChunks_NoHistoryKeepsParagraphStructure(t *testing.T) {
+	content := "first paragraph\n\nsecond paragraph\n\nthird paragraph\n"
+
+	when := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var lines []git.LineInfo
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, mkLine(i, when, "alice"))
+	}
+
+	withHistory := ParseChunks(content, lines, false, DefaultReusablePatterns())
+	withoutHistory := ParseChunks(content, nil, false, DefaultReusablePatterns())
+
+	if len(withoutHistory) != 3 {
+		t.Fatalf("headerless file without history = %d chunks, want 3: %+v",
+			len(withoutHistory), titles(withoutHistory))
+	}
+	if len(withHistory) != len(withoutHistory) {
+		t.Errorf("chunk count depends on history: %d with, %d without",
+			len(withHistory), len(withoutHistory))
+	}
+	for i, chunk := range withoutHistory {
+		if len(chunk.Lines) != 0 {
+			t.Errorf("chunk %d carries blame although there is no history: %+v", i, chunk.Lines)
+		}
+		if chunk.LastUpdated() != nil {
+			t.Errorf("chunk %d is dated although there is no history", i)
+		}
+	}
+	// The paragraph-level split agrees.
+	if plain := ParseChunks(content, nil, true, DefaultReusablePatterns()); len(plain) != 3 {
+		t.Errorf("paragraph-level split without history = %d chunks, want 3", len(plain))
 	}
 }
 
@@ -197,6 +271,7 @@ func TestParseChunks_ParagraphLevel_HeaderInsideParagraph(t *testing.T) {
 	}
 }
 
+// titles extracts chunk titles so failures print a readable shape.
 func titles(chunks []Chunk) []string {
 	out := make([]string, 0, len(chunks))
 	for _, c := range chunks {
