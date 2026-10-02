@@ -620,7 +620,13 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	var reusables []string
 	seen := make(map[string]bool)
 	var fences [][2]int
-	if rp.profile == config.ProfileGitBook {
+	if rp.profile == config.ProfileGitBook || rp.profile == config.ProfileStarlight {
+		// Fenced content does not render, so references shown *as examples*
+		// must not be captured: for GitBook a fenced include is the shape of
+		// its documented examples, and for Starlight a fenced {% partial %}
+		// or imported component on a page that really uses it would
+		// otherwise be counted unresolved (include captures are never
+		// skipped) or fold a date it should not (components).
 		fences = fencedSpans(content)
 	}
 	for i, pattern := range rp.patterns {

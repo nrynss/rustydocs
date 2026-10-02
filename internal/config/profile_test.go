@@ -171,9 +171,17 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 	if !reflect.DeepEqual(star.RootMarkers, wantStarMarkers) || star.Resolver != ResolverPath {
 		t.Errorf("starlight profile root markers/resolver wrong: %+v", star)
 	}
-	// Component usage alone: Starlight has no include syntax of its own, so
-	// every shared-content reference goes through the import map.
-	if !reflect.DeepEqual(star.ReusablePatterns, []string{MDXComponentPattern}) {
+	// Two Markdoc partial patterns (one per quote style) plus the shared MDX
+	// component pattern. The partial patterns are include patterns — a broken
+	// one is unresolved, not skipped — while component usage only means
+	// anything because the profile carries an import map to say which
+	// captures are includes (#68, #18).
+	wantStarPatterns := []string{
+		`\{%\s*partial\b[^%]*\bfile\s*=\s*"([^"]+)"`,
+		`\{%\s*partial\b[^%]*\bfile\s*=\s*'([^']+)'`,
+		MDXComponentPattern,
+	}
+	if !reflect.DeepEqual(star.ReusablePatterns, wantStarPatterns) {
 		t.Errorf("starlight patterns = %v", star.ReusablePatterns)
 	}
 	if !reflect.DeepEqual(star.ReusableExtensions, []string{".mdx", ".md", ".mdoc"}) {
@@ -181,6 +189,22 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 	}
 	if !star.ImportMap {
 		t.Error("starlight profile should enable the MDX import map")
+	}
+	for _, tc := range []struct{ text, want string }{
+		{`{% partial file="./_footer.mdoc" /%}`, "./_footer.mdoc"},
+		{"{% partial file='./_footer.mdoc' /%}", "./_footer.mdoc"},
+		{`{% partial file="footer.mdoc" %}`, "footer.mdoc"},
+		{"{% content %}\n{% partial file='./deep/nested.mdoc' /%}", "./deep/nested.mdoc"},
+	} {
+		found := false
+		for _, pattern := range star.ReusablePatterns {
+			if match := regexp.MustCompile(pattern).FindStringSubmatch(tc.text); match != nil && match[1] == tc.want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no starlight pattern captured %q from %q", tc.want, tc.text)
+		}
 	}
 	if match := regexp.MustCompile(MDXComponentPattern).FindStringSubmatch("<Tabs />"); match == nil || match[1] != "Tabs" {
 		t.Errorf("component pattern did not capture Tabs from <Tabs />: %v", match)

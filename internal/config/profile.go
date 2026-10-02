@@ -278,18 +278,26 @@ var mintlifyReusablePatterns = []string{
 	MDXComponentPattern,
 }
 
-// starlightReusablePatterns captures component usage on an Astro Starlight
-// page — the shared pattern alone, because Starlight has no include syntax of
-// its own. Shared content is an MDX import rendered as <X />; Starlight's
-// built-in components (Tabs, Steps, Card, Aside, …) are imported from the
-// bare package specifier "@astrojs/starlight/components" in MDX and come
-// import-free through the Markdoc preset. The import map
-// (Profile.ImportMap) does all the distinguishing: a content import resolves,
+// starlightReusablePatterns captures the two ways a Starlight page includes
+// shared content, plus component usage for the import map. MDX pages import
+// and render <X />; Markdoc pages use Astro's partial tag —
+// {% partial file="./_footer.mdoc" /%} (upstream: relative paths, an
+// underscore prefix so partials stay out of content queries), whose capture
+// is a path the resolver looks up. The two partial patterns are *include*
+// patterns, so a broken one is counted unresolved rather than skipped (see
+// the provenance rule in parser.ResolveReusable), and a partial's commit
+// date folds into the section that renders it. Component usage is the
+// shared pattern alone: Starlight's built-in components are imported from
+// the bare package specifier "@astrojs/starlight/components" in MDX and come
+// import-free through the Markdoc preset, and the import map
+// (Profile.ImportMap) does the distinguishing — a content import resolves,
 // while a component import — or a capitalised tag no import introduced — is
-// skipped, never reported unresolved (see parser.ResolveReusable). That also
-// covers the built-ins without hardcoding their names, so components
-// Starlight adds later are handled by the same rules.
+// skipped, never reported unresolved. That also covers the built-ins
+// without hardcoding their names, so components Starlight adds later are
+// handled by the same rules.
 var starlightReusablePatterns = []string{
+	`\{%\s*partial\b[^%]*\bfile\s*=\s*"([^"]+)"`,
+	`\{%\s*partial\b[^%]*\bfile\s*=\s*'([^']+)'`,
 	MDXComponentPattern,
 }
 
@@ -397,7 +405,8 @@ var builtinProfiles = []Profile{
 		Name: ProfileStarlight,
 		Description: "Astro Starlight docs: .md, .mdx and .mdoc content (Markdoc is experimental " +
 			"upstream) under src/content/docs/, ATX '#' headers, MDX imports (import X from " +
-			"\"./_shared.mdx\", used as <X />) resolved as paths within the project root; " +
+			"\"./_shared.mdx\", used as <X />) and Markdoc partials ({% partial file=" +
+			"\"./_footer.mdoc\" /%}) resolved as paths within the project root; " +
 			".astro/.js/.jsx imports, bare package specifiers (@astrojs/starlight/components) and " +
 			"unimported components — Starlight's built-ins and Markdoc's import-free tags alike — " +
 			"are deliberately skipped. Auto-detected from an astro.config.{mjs,js,ts,mts} that calls " +

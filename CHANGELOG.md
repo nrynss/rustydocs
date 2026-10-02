@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integration or a `package.json` depending on `@astrojs/starlight`, or
   selected with `--profile starlight`. It analyzes `.md`, `.mdx` and `.mdoc`
   (Markdoc) content and resolves MDX imports (`import X from "./_shared.mdx"`,
-  rendered as `<X />`) as paths within the project root, folding the imported
-  partial's history into the referencing section. Imports of `.astro`/`.js`
+  rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`)
+  as paths within the project root, folding the included content's history into
+  the referencing section. References shown inside fenced code examples are not
+  captured. Imports of `.astro`/`.js`
   components, bare package specifiers (`@astrojs/starlight/components`) and
   unimported components — Starlight's built-ins and Markdoc's import-free tags
   alike — are deliberately skipped, so framework chrome never appears as a

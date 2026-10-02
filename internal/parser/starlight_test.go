@@ -17,11 +17,12 @@ import (
 // settings rather than hand-copied ones, so a profile change that would break
 // resolution shows up here (#18).
 type starlightRepo struct {
-	repo      *testutil.Repo
-	root      string
-	rp        *ReusablePatterns
-	stepsDate time.Time
-	astroDate time.Time
+	repo       *testutil.Repo
+	root       string
+	rp         *ReusablePatterns
+	stepsDate  time.Time
+	footerDate time.Time
+	astroDate  time.Time
 }
 
 func newStarlightRepo(t *testing.T) *starlightRepo {
@@ -34,7 +35,8 @@ func newStarlightRepo(t *testing.T) *starlightRepo {
 		// The .astro component is by far the newest file, so any test that
 		// wrongly followed a component import would show its date and be
 		// caught — the same trick TestResolveReusable_ImportMap uses for .jsx.
-		astroDate: time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC),
+		astroDate:  time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC),
+		footerDate: time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC),
 	}
 	repo.Commit(sr.stepsDate, "docs", map[string]string{
 		"astro.config.mjs":            "integrations: [starlight()]\n",
@@ -43,6 +45,9 @@ func newStarlightRepo(t *testing.T) *starlightRepo {
 	})
 	repo.Commit(sr.astroDate, "restyle component", map[string]string{
 		"src/components/CustomCard.astro": "---\n---\n<div />",
+	})
+	repo.Commit(sr.footerDate, "add markdoc partial", map[string]string{
+		"src/content/docs/_footer.mdoc": "footer body\n",
 	})
 	p, ok := config.LookupProfile(config.ProfileStarlight)
 	if !ok {
@@ -224,5 +229,68 @@ import { Tabs } from "@astrojs/starlight/components";
 	if !got.Equal(sr.stepsDate) {
 		t.Errorf("effective date = %s, want the imported partial's %s (the .astro component's %s must not be folded in)",
 			got, sr.stepsDate, sr.astroDate)
+	}
+}
+
+// TestStarlightMarkdocPartialIncludes pins the include half of the profile
+// (#18 review): Astro's Markdoc integration documents
+// {% partial file="./_footer.mdoc" /%} for reusing .mdoc content, so the
+// partial's capture is a path — resolved, folded into the section that
+// renders it, and counted unresolved when broken — not a component symbol
+// the import map may skip. A partial shown inside a fence is an example, not
+// a use, and is not captured at all.
+func TestStarlightMarkdocPartialIncludes(t *testing.T) {
+	sr := newStarlightRepo(t)
+
+	body := "# API\n\n{% partial file=\"./_footer.mdoc\" /%}\n"
+	page := sr.page("src/content/docs/api.mdoc", body)
+	data, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := FindReusables(string(data), sr.rp)
+	if !slicesContains(refs, "./_footer.mdoc") {
+		t.Fatalf("FindReusables = %v, want it to contain ./_footer.mdoc", refs)
+	}
+	info, res := ResolveReusable("./_footer.mdoc", page, sr.rp)
+	if res != ResolutionResolved || info == nil {
+		t.Fatalf("ResolveReusable(partial) = %v %+v, want resolved", res, info)
+	}
+	if !info.LastModified.Equal(sr.footerDate) {
+		t.Errorf("partial date = %s, want %s", info.LastModified, sr.footerDate)
+	}
+
+	// A broken partial came out of an include pattern, so it is unresolved —
+	// counted and noted — never skipped, whatever its shape.
+	broken := sr.page("src/content/docs/broken.mdoc", "{% partial file='./_gone.mdoc' /%}\n")
+	brokenData, err := os.ReadFile(broken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	FindReusables(string(brokenData), sr.rp)
+	if _, res := ResolveReusable("./_gone.mdoc", broken, sr.rp); res != ResolutionUnresolved {
+		t.Errorf("broken partial = %v, want ResolutionUnresolved", res)
+	}
+
+	// An example inside a fence neither renders nor resolves — not captured.
+	fenced := sr.page("src/content/docs/example.mdoc",
+		"# Example\n\n```mdoc\n{% partial file=\"./_gone.mdoc\" /%}\n```\n")
+	fencedData, err := os.ReadFile(fenced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := FindReusables(string(fencedData), sr.rp); len(refs) != 0 {
+		t.Errorf("fenced partial example captured: %v", refs)
+	}
+
+	// The point of the pattern: the partial's date folds into the section
+	// that renders it.
+	section := &Chunk{
+		Title:     "API",
+		Reusables: []string{"./_footer.mdoc"},
+		Lines:     []git.LineInfo{{LineNumber: 1, Timestamp: sr.stepsDate}},
+	}
+	if got := CalculateSectionStaleness(section, page, sr.rp); got == nil || !got.Equal(sr.footerDate) {
+		t.Errorf("folded staleness = %v, want the partial's %s", got, sr.footerDate)
 	}
 }
