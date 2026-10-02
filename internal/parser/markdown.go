@@ -490,12 +490,14 @@ func hasContent(lines []string) bool {
 // A paragraph chunk exists to carry the blame of its lines, and a chunk with
 // none would have nothing to date, so chunks whose Lines came back empty used
 // to be dropped. But blame covers every line of a file: empty Lines can only
-// mean the file has no git history at all, and dropping every chunk then
-// collapsed a headerless file into one whole-file row — erasing exactly the
-// structure the chunking exists to show, and making its section count depend
-// on whether a clone was shallow. With no history every chunk is unknown
-// regardless, so the structure is kept instead: the empty-Lines guard only
-// applies when there is blame to compare against.
+// mean the file has no resolvable history — an untracked file that was never
+// committed, a tree outside any repository, a blame failure — and dropping
+// every chunk then collapsed a headerless file into one whole-file row,
+// erasing exactly the structure the chunking exists to show. A shallow clone
+// does not do this: blame there still dates every line, to the tip commit.
+// With no history every chunk is unknown regardless, so the structure is kept
+// instead: the empty-Lines guard only applies when there is blame to compare
+// against.
 func parseParagraphs(contentLines []string, linesInfo []git.LineInfo, parentTitle string, lineOffset int, rp *ReusablePatterns) []Chunk {
 	var chunks []Chunk
 	var currentStart int

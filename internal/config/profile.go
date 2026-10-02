@@ -428,7 +428,15 @@ var builtinProfiles = []Profile{
 			"astro.config.mts": isStarlightConfig,
 			"package.json":     isStarlightPackage,
 		},
-		ReusablePatterns:   starlightReusablePatterns,
+		ReusablePatterns: starlightReusablePatterns,
+		// ReusableExtensions includes .mdoc, so an extensionless capture
+		// ("./partial") resolves to partial.mdoc — but an explicit
+		// "./partial.mdoc" import is skipped, because the import map follows
+		// .md/.mdx only (parser.importContentExtensions). The asymmetry is by
+		// spelling, and on the safe side either way: MDX imports always carry
+		// an extension, so the extensionless form is theoretical for
+		// Starlight, and skipping an .mdoc import can only under-report
+		// freshness, never over-report it.
 		ReusableExtensions: []string{".mdx", ".md", ".mdoc"},
 		Resolver:           ResolverPath,
 		ImportMap:          true,

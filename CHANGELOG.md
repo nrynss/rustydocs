@@ -24,11 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A headerless file (no `#` headings) with no git history — uncommitted, or a
-  shallow clone — collapsed to a single whole-file section instead of one
+- A headerless file (no `#` headings) with no resolvable git history — an
+  untracked file that was never committed, a tree outside any repository, or a
+  blame failure — collapsed to a single whole-file section instead of one
   section per paragraph. The same page reported 15 sections with history and 1
-  without, making `total_sections` depend on how completely the repository was
-  cloned. Paragraph structure is now kept in both cases; every section of a
+  without. Paragraph structure is now kept in both cases; every section of a
   file without history is still reported as *unknown*, never *fresh*.
 
 ## [0.5.0] - 2026-10-01

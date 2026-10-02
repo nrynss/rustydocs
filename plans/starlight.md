@@ -15,6 +15,21 @@
 - Add config tests (registry shape, selection per marker, predicate negatives) and parser tests pinned against the profile's own settings (classification table, Markdoc tags, section folding). Add a git-backed analyzer integration test with a Starlight tree, freshness folding, unresolved import and an outside-root escape.
 - Update `README.md`, `CHANGELOG.md`, and `CLAUDE.md` per project convention.
 
+## Accepted trade-offs
+
+- A content import that escapes the project root (a monorepo Starlight site
+  reaching `../../../packages/shared/x.mdx`) counts as an unresolved include:
+  `withinRoot` rejects the candidate and the import-map rule reports any
+  content import that resolves to nothing. That is the conservative direction —
+  a broken reference is visible rather than silently folded — and no observed
+  corpus does it; revisit if a real monorepo complains.
+- Component captures are not fence-masked outside GitBook (`FindReusables`
+  computes `fencedSpans` for the gitbook profile only), so a page that
+  *documents* a component it genuinely imports elsewhere folds that partial's
+  date into the documenting section too. Pre-existing mintlify behaviour,
+  unchanged here; unimported built-ins shown inside fences are still safely
+  skipped.
+
 ## Validation
 
 - Run targeted tests for `internal/config`, `internal/parser`, and `internal/analyzer`, then `go test ./...` including the profile-listing assertions, plus `go vet` and `gofmt -l .`.
