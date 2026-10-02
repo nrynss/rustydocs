@@ -486,11 +486,22 @@ func hasContent(lines []string) bool {
 }
 
 // parseParagraphs splits content into paragraph-level chunks.
+//
+// A paragraph chunk exists to carry the blame of its lines, and a chunk with
+// none would have nothing to date, so chunks whose Lines came back empty used
+// to be dropped. But blame covers every line of a file: empty Lines can only
+// mean the file has no git history at all, and dropping every chunk then
+// collapsed a headerless file into one whole-file row — erasing exactly the
+// structure the chunking exists to show, and making its section count depend
+// on whether a clone was shallow. With no history every chunk is unknown
+// regardless, so the structure is kept instead: the empty-Lines guard only
+// applies when there is blame to compare against.
 func parseParagraphs(contentLines []string, linesInfo []git.LineInfo, parentTitle string, lineOffset int, rp *ReusablePatterns) []Chunk {
 	var chunks []Chunk
 	var currentStart int
 	var inParagraph bool
 	paragraphNum := 0
+	keepChunk := len(linesInfo) > 0
 
 	for i, line := range contentLines {
 		trimmed := strings.TrimSpace(line)
@@ -504,7 +515,7 @@ func parseParagraphs(contentLines []string, linesInfo []git.LineInfo, parentTitl
 			// End of paragraph
 			paragraphNum++
 			chunk := createParagraphChunk(contentLines, linesInfo, currentStart, i-1, lineOffset, parentTitle, paragraphNum, rp)
-			if len(chunk.Lines) > 0 {
+			if len(chunk.Lines) > 0 || !keepChunk {
 				chunks = append(chunks, chunk)
 			}
 			inParagraph = false
@@ -515,12 +526,14 @@ func parseParagraphs(contentLines []string, linesInfo []git.LineInfo, parentTitl
 	if inParagraph {
 		paragraphNum++
 		chunk := createParagraphChunk(contentLines, linesInfo, currentStart, len(contentLines)-1, lineOffset, parentTitle, paragraphNum, rp)
-		if len(chunk.Lines) > 0 {
+		if len(chunk.Lines) > 0 || !keepChunk {
 			chunks = append(chunks, chunk)
 		}
 	}
 
-	// If no paragraphs found, return the whole content as one chunk
+	// If no paragraphs found, return the whole content as one chunk. With no
+	// history this can only be an all-blank span: a headerless file with
+	// paragraphs now keeps them (see keepChunk above).
 	if len(chunks) == 0 && len(contentLines) > 0 {
 		startLine := lineOffset + 1
 		endLine := lineOffset + len(contentLines)
