@@ -24,6 +24,27 @@ type Chunk struct {
 	Lines     []git.LineInfo
 	Reusables []string
 	IsHeader  bool // True if this chunk starts with a header
+	// EffectiveLastUpdated is the date the staleness classification used for
+	// this section: its own lines' most recent commit folded with the commit
+	// dates of its resolved includes (CalculateSectionStaleness). The analyzer
+	// sets it on the stale sections it reports. It is what DisplayDate falls
+	// back to, so a section with no blame of its own — an uncommitted page
+	// whose include is old, the only reason the section is stale — renders
+	// that date instead of an "Unknown" row that is nonetheless counted.
+	// Nil when nothing resolvable dates the section.
+	EffectiveLastUpdated *time.Time
+}
+
+// DisplayDate returns the date a stale-section row should show: the section's
+// own most recent line date, or — when the section has no blame of its own
+// but was classified stale through a resolved include — the folded date the
+// classification used (EffectiveLastUpdated). Nil when there is no resolvable
+// date at all, which renders as "Unknown" (#56).
+func (c *Chunk) DisplayDate() *time.Time {
+	if lu := c.LastUpdated(); lu != nil {
+		return lu
+	}
+	return c.EffectiveLastUpdated
 }
 
 // Section is an alias for Chunk for backward compatibility.

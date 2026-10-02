@@ -78,6 +78,30 @@ func TestChunk_OldestLine(t *testing.T) {
 	}
 }
 
+// TestChunk_DisplayDate pins the stale-row date rule: a section with blame
+// shows its own most recent line; a blameless section that was classified
+// stale through a resolved include shows the folded date the classification
+// used (EffectiveLastUpdated); a section with neither has no date at all and
+// the reports render "Unknown" (#56).
+func TestChunk_DisplayDate(t *testing.T) {
+	own := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	folded := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	withBlame := &Chunk{Lines: []git.LineInfo{mkLine(1, own, "alice")}, EffectiveLastUpdated: &folded}
+	if got := withBlame.DisplayDate(); !got.Equal(own) {
+		t.Errorf("DisplayDate with blame = %v, want the section's own %v", got, own)
+	}
+
+	blameless := &Chunk{EffectiveLastUpdated: &folded}
+	if got := blameless.DisplayDate(); !got.Equal(folded) {
+		t.Errorf("DisplayDate blameless = %v, want the folded %v", got, folded)
+	}
+
+	if got := (&Chunk{}).DisplayDate(); got != nil {
+		t.Errorf("DisplayDate with no dates = %v, want nil", got)
+	}
+}
+
 func TestChunk_LastAuthor(t *testing.T) {
 	old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	recent := time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC)

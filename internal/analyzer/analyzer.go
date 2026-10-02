@@ -707,6 +707,11 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		effectiveDate := parser.CalculateSectionStaleness(&section, filePath, rp)
 
 		if effectiveDate != nil && effectiveDate.Before(thresholdDate) {
+			// Recorded so the row displays the date the classification used:
+			// a section with no blame of its own, stale only through a folded
+			// include, must say so rather than render "Unknown" while being
+			// counted (see parser.Chunk.DisplayDate).
+			section.EffectiveLastUpdated = effectiveDate
 			staleSections = append(staleSections, section)
 		}
 

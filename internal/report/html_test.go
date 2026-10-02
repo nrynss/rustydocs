@@ -304,6 +304,88 @@ func TestUnknownDateConsistency(t *testing.T) {
 	}
 }
 
+// TestBlamelessSectionShowsFoldedDate pins the display rule for the
+// stale-but-no-blame shape: a section with no line history that was counted
+// stale only through a resolved include shows the date the classification
+// used (Chunk.EffectiveLastUpdated) instead of "Unknown" — counting a row in
+// stale_sections while displaying Unknown hid why it was there. A blameless
+// section with no folded date at all still renders Unknown (#56).
+func TestBlamelessSectionShowsFoldedDate(t *testing.T) {
+	pinNow(t)
+	folded := daysAgo(400) // >= Critical (365) => class "critical"
+	foldedStr := folded.Format("2006-01-02")
+
+	foldedSection := parser.Chunk{
+		Title:                "Guide",
+		Level:                1,
+		StartLine:            10,
+		EndLine:              12,
+		IsHeader:             true,
+		Lines:                nil, // no blame of its own: the page was never committed
+		EffectiveLastUpdated: &folded,
+	}
+	trulyUnknown := parser.Chunk{
+		Title:                "Mystery",
+		Level:                1,
+		StartLine:            20,
+		EndLine:              22,
+		IsHeader:             true,
+		Lines:                nil,
+		EffectiveLastUpdated: nil,
+	}
+	file := analyzer.FileAnalysis{
+		Path:                 "docs/page.mdx",
+		RelativePath:         "docs/page.mdx",
+		HistoryMissing:       true,
+		Sections:             []parser.Section{foldedSection, trulyUnknown},
+		StaleSections:        []parser.Section{foldedSection, trulyUnknown},
+		EffectiveLastUpdated: &folded,
+		OldestSectionDate:    &folded,
+		DaysStale:            400,
+		OldestSectionDays:    400,
+	}
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = "docs"
+	res := &analyzer.Results{Files: []analyzer.FileAnalysis{file}, Config: cfg, GeneratedAt: fixedNow}
+	dir := t.TempDir()
+
+	// --- HTML ---
+	htmlOut := filepath.Join(dir, "out.html")
+	if err := GenerateHTML(res, cfg, htmlOut); err != nil {
+		t.Fatalf("GenerateHTML: %v", err)
+	}
+	htmlData, err := os.ReadFile(htmlOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlData)
+	guideRow := regexp.MustCompile(`(?s)<tr class="critical">.*?<td>Guide</td>.*?<td>` + foldedStr + `</td>`)
+	if !guideRow.MatchString(html) {
+		t.Errorf("HTML: blameless folded-stale row did not render the folded date with the critical class:\n%s", html)
+	}
+	mysteryRow := regexp.MustCompile(`(?s)<tr class="unknown">.*?<td>Mystery</td>.*?<td>Unknown</td>`)
+	if !mysteryRow.MatchString(html) {
+		t.Errorf("HTML: blameless dateless row did not render Unknown/unknown class:\n%s", html)
+	}
+
+	// --- Markdown ---
+	mdOut := filepath.Join(dir, "out.md")
+	if err := GenerateMarkdown(res, cfg, mdOut); err != nil {
+		t.Fatalf("GenerateMarkdown: %v", err)
+	}
+	mdData, err := os.ReadFile(mdOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(mdData)
+	if !strings.Contains(md, "| Guide | "+foldedStr+" | 400 |") {
+		t.Errorf("Markdown: blameless folded-stale row did not render the folded date and day count:\n%s", md)
+	}
+	if !strings.Contains(md, "| Mystery | Unknown | — |") {
+		t.Errorf("Markdown: blameless dateless row did not render Unknown/em-dash:\n%s", md)
+	}
+}
+
 // TestMissingHistoryReporting pins #55: a file with no git history is surfaced
 // as "files missing history" (unknown), not silently dropped or treated as
 // fresh, in every format.

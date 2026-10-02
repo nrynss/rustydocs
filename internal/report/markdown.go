@@ -71,11 +71,15 @@ func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath 
 				for _, section := range fileAnalysis.StaleSections {
 					title := truncateRunes(section.Title, 35)
 
-					// No resolvable date renders as "Unknown"/"—" consistently with
-					// the HTML and JSON reports, rather than a fabricated 0. See #56.
+					// No resolvable date at all renders as "Unknown"/"—"
+					// consistently with the HTML and JSON reports, rather than
+					// a fabricated 0. See #56. A section with no blame of its
+					// own that was classified stale through a resolved include
+					// shows the date the classification used instead
+					// (DisplayDate), so the row explains why it is here.
 					dateStr := "Unknown"
 					daysStr := "—"
-					if lastUpdated := section.LastUpdated(); lastUpdated != nil {
+					if lastUpdated := section.DisplayDate(); lastUpdated != nil {
 						dateStr = lastUpdated.Format("2006-01-02")
 						daysStr = fmt.Sprintf("%d", int(nowFunc().Sub(*lastUpdated).Hours()/24))
 					}

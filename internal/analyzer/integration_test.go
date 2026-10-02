@@ -226,6 +226,56 @@ func TestAnalyze_StarlightImports(t *testing.T) {
 	}
 }
 
+// TestAnalyze_BlamelessSectionShowsFoldedDate pins the analyzer half of the
+// stale-but-Unknown fix: a page with no git history whose section is stale
+// only through a resolved include records the folded classification date on
+// the stale section, so the reports can show why the row is counted instead
+// of rendering "Unknown".
+func TestAnalyze_BlamelessSectionShowsFoldedDate(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	partialDate := now.AddDate(0, 0, -200)
+	repo := testutil.NewRepo(t)
+	repo.Commit(partialDate, "old partial", map[string]string{
+		"astro.config.mjs":              "import starlight from \"@astrojs/starlight\";\nexport default defineConfig({ integrations: [starlight()] });\n",
+		"package.json":                  "{\"dependencies\":{\"@astrojs/starlight\":\"^0.34.0\"}}\n",
+		"src/content/docs/_partial.mdx": "# Steps\n\nold\n",
+	})
+	// Never committed: the page has no blame of its own, so its section's own
+	// dates are empty and the staleness comes entirely from the include.
+	repo.Write("src/content/docs/page.mdx", "import P from \"./_partial.mdx\";\n\n# Guide\n\n<P />\n")
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("src/content/docs")
+	cfg.ThresholdDays = 30
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page *FileAnalysis
+	for i := range res.Files {
+		if res.Files[i].RelativePath == "page.mdx" {
+			page = &res.Files[i]
+		}
+	}
+	if page == nil {
+		t.Fatal("page.mdx not analyzed")
+	}
+	if !page.HistoryMissing {
+		t.Fatal("uncommitted page should have HistoryMissing")
+	}
+	if len(page.StaleSections) != 1 || page.StaleSections[0].Title != "Guide" {
+		t.Fatalf("stale sections = %+v, want only Guide", page.StaleSections)
+	}
+	section := page.StaleSections[0]
+	if section.LastUpdated() != nil {
+		t.Errorf("blameless section reported own dates: %+v", section.Lines)
+	}
+	if section.EffectiveLastUpdated == nil || !section.EffectiveLastUpdated.Equal(partialDate) {
+		t.Errorf("EffectiveLastUpdated = %v, want the folded include date %v", section.EffectiveLastUpdated, partialDate)
+	}
+}
+
 func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)
