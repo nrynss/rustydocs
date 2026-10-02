@@ -29,8 +29,8 @@ const (
 	// first; a bare path uses profile-specific bases. Mintlify searches
 	// snippets/, _snippets/, root, then page directory; GitBook searches page
 	// directory only. Paths escaping the root are ignored; extensionless
-	// captures try ReusableExtensions in order. Used by Mintlify and GitBook. See
-	// parser.ReusablePatterns.directPathBases for the full order.
+	// captures try ReusableExtensions in order. Used by Mintlify, GitBook and
+	// Starlight. See parser.ReusablePatterns.directPathBases for the full order.
 	ResolverPath Resolver = "path"
 )
 
@@ -45,6 +45,8 @@ const (
 	ProfileMintlify = "mintlify"
 	// ProfileGitBook is the GitBook git-synced Markdown profile.
 	ProfileGitBook = "gitbook"
+	// ProfileStarlight is the Astro Starlight docs profile.
+	ProfileStarlight = "starlight"
 )
 
 // Profile describes how a documentation tool lays out its content: which
@@ -276,6 +278,21 @@ var mintlifyReusablePatterns = []string{
 	MDXComponentPattern,
 }
 
+// starlightReusablePatterns captures component usage on an Astro Starlight
+// page — the shared pattern alone, because Starlight has no include syntax of
+// its own. Shared content is an MDX import rendered as <X />; Starlight's
+// built-in components (Tabs, Steps, Card, Aside, …) are imported from the
+// bare package specifier "@astrojs/starlight/components" in MDX and come
+// import-free through the Markdoc preset. The import map
+// (Profile.ImportMap) does all the distinguishing: a content import resolves,
+// while a component import — or a capitalised tag no import introduced — is
+// skipped, never reported unresolved (see parser.ResolveReusable). That also
+// covers the built-ins without hardcoding their names, so components
+// Starlight adds later are handled by the same rules.
+var starlightReusablePatterns = []string{
+	MDXComponentPattern,
+}
+
 // builtinProfiles is the profile registry. Order matters for auto-detection
 // only as a tie-breaker: detectProfile walks up from content_dir one level at
 // a time and the nearest level holding any profile's marker wins; when two
@@ -292,6 +309,11 @@ var mintlifyReusablePatterns = []string{
 // markers sit in the same directory; whenever a Mintlify docs tree is nested
 // below a Hugo marker (or vice versa) the nearer marker wins regardless of
 // this order.
+//
+// Starlight is registered last: its markers (an astro.config.* calling the
+// starlight() integration, a package.json depending on @astrojs/starlight) do
+// not collide with the other profiles' at any realistic level, and on a
+// pathological same-directory tie the older profiles' resolvers win.
 var builtinProfiles = []Profile{
 	{
 		Name: ProfileMarkdown,
@@ -371,6 +393,46 @@ var builtinProfiles = []Profile{
 		Resolver:           ResolverPath,
 		ImportMap:          true,
 	},
+	{
+		Name: ProfileStarlight,
+		Description: "Astro Starlight docs: .md, .mdx and .mdoc content (Markdoc is experimental " +
+			"upstream) under src/content/docs/, ATX '#' headers, MDX imports (import X from " +
+			"\"./_shared.mdx\", used as <X />) resolved as paths within the project root; " +
+			".astro/.js/.jsx imports, bare package specifiers (@astrojs/starlight/components) and " +
+			"unimported components — Starlight's built-ins and Markdoc's import-free tags alike — " +
+			"are deliberately skipped. Auto-detected from an astro.config.{mjs,js,ts,mts} that calls " +
+			"the starlight() integration, or a package.json depending on @astrojs/starlight, at or " +
+			"above content_dir.",
+		ContentExtensions: []string{".md", ".mdx", ".mdoc"},
+		// Each astro.config.* spelling is listed individually because marker
+		// matching stats exact names (there is no glob). Astro's docs recommend
+		// astro.config.mjs and support .js and .ts; .mts is the same TypeScript
+		// spelling. package.json is a marker only through its predicate: the
+		// file alone is the most generic name in the ecosystem (which is why no
+		// profile used it before), but a package.json that depends on
+		// @astrojs/starlight is a Starlight project. Both markers are validated
+		// by content as well as by name — see isStarlightConfig and
+		// isStarlightPackage. Starlight's content collection config
+		// (src/content.config.ts, legacy src/content/config.ts) is deliberately
+		// not a marker: plain Astro content collections have one too, so it
+		// says nothing about Starlight. Content lives in src/content/docs/, so
+		// the walk from there finds these markers at the project root.
+		RootMarkers: []string{
+			"astro.config.mjs", "astro.config.js", "astro.config.ts", "astro.config.mts",
+			"package.json",
+		},
+		markerPredicates: map[string]markerPredicate{
+			"astro.config.mjs": isStarlightConfig,
+			"astro.config.js":  isStarlightConfig,
+			"astro.config.ts":  isStarlightConfig,
+			"astro.config.mts": isStarlightConfig,
+			"package.json":     isStarlightPackage,
+		},
+		ReusablePatterns:   starlightReusablePatterns,
+		ReusableExtensions: []string{".mdx", ".md", ".mdoc"},
+		Resolver:           ResolverPath,
+		ImportMap:          true,
+	},
 }
 
 var gitBookSummaryLink = regexp.MustCompile(`(?m)^\s*[-*+]\s+\[[^]]+\]\([^\n)]*\.md(?:#[^\n)]*)?\)`)
@@ -384,6 +446,65 @@ func isGitBookSummary(path string) (bool, error) {
 		return false, err
 	}
 	return gitBookSummaryHeading.Match(data) && gitBookSummaryLink.Match(data), nil
+}
+
+// starlightIntegrationCall matches the Starlight integration being *called*
+// inside an Astro config — `integrations: [starlight()]` or
+// `starlight({ title: … })`, either of which is how upstream's manual setup
+// renders it. Merely importing or mentioning the package must not count: a
+// config can import it without registering it, and a plain Astro site must
+// never select the starlight profile.
+var starlightIntegrationCall = regexp.MustCompile(`\bstarlight\s*\(`)
+
+// starlightDependency matches the *quoted* package name "@astrojs/starlight" —
+// the exact shape a dependency entry takes. Plain containment is too weak: a
+// package.json description or repository URL can mention the package without
+// the project depending on it.
+var starlightDependency = regexp.MustCompile(`["']@astrojs/starlight["']`)
+
+// maxStarlightMarkerBytes caps how much of an astro.config.* / package.json
+// candidate is read before the predicate gives up, bounding memory the way
+// maxMintlifyConfigBytes does. A real Astro config or package.json is a few
+// kilobytes; a candidate larger than the cap is truncated, likely fails to
+// match, and the project can still select the profile explicitly.
+const maxStarlightMarkerBytes = 1 << 20
+
+// isStarlightConfig reports whether path holds an Astro config that registers
+// the Starlight integration. An Astro config that does not — the common case
+// of astro.config.* in the wild — is (false, nil): not a match, silently
+// skipped, exactly like an unrelated docs.json for Mintlify. The error return
+// is reserved for "could not be read at all"; see markerPredicate.
+func isStarlightConfig(path string) (bool, error) {
+	data, err := readMarkerFile(path)
+	if err != nil {
+		return false, err
+	}
+	return starlightIntegrationCall.Match(data), nil
+}
+
+// isStarlightPackage reports whether path holds a package.json that depends on
+// @astrojs/starlight — the integration package, which every Starlight site
+// lists, whether added by create-astro or by hand. Anything else is
+// (false, nil); see markerPredicate and isStarlightConfig.
+func isStarlightPackage(path string) (bool, error) {
+	data, err := readMarkerFile(path)
+	if err != nil {
+		return false, err
+	}
+	return starlightDependency.Match(data), nil
+}
+
+// readMarkerFile reads up to maxStarlightMarkerBytes of path for a marker
+// predicate. Truncation at the cap is a legitimate "no": the deciding text of
+// a config that big is beyond any realistic one, and unbounded reads of
+// attacker- or accident-sized files are the failure the cap exists to avoid.
+func readMarkerFile(path string) ([]byte, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, maxStarlightMarkerBytes))
 }
 
 // clone returns a deep copy so callers can mutate slices without touching the

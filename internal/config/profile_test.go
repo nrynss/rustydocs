@@ -42,7 +42,7 @@ func TestLookupProfile_ReturnsCopy(t *testing.T) {
 
 func TestProfiles_Sorted(t *testing.T) {
 	names := Profiles()
-	want := []string{"gitbook", "hugo", "markdown", "mintlify"}
+	want := []string{"gitbook", "hugo", "markdown", "mintlify", "starlight"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("Profiles() = %v, want %v", names, want)
 	}
@@ -154,6 +154,36 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 	}
 	if !mint.ImportMap {
 		t.Error("mintlify profile should enable the MDX import map (#68)")
+	}
+
+	star, ok := LookupProfile(ProfileStarlight)
+	if !ok {
+		t.Fatal("starlight profile missing from registry")
+	}
+	if !reflect.DeepEqual(star.ContentExtensions, []string{".md", ".mdx", ".mdoc"}) {
+		t.Errorf("starlight extensions = %v", star.ContentExtensions)
+	}
+	// README, CHANGELOG and the profile Description list the same set.
+	wantStarMarkers := []string{
+		"astro.config.mjs", "astro.config.js", "astro.config.ts", "astro.config.mts",
+		"package.json",
+	}
+	if !reflect.DeepEqual(star.RootMarkers, wantStarMarkers) || star.Resolver != ResolverPath {
+		t.Errorf("starlight profile root markers/resolver wrong: %+v", star)
+	}
+	// Component usage alone: Starlight has no include syntax of its own, so
+	// every shared-content reference goes through the import map.
+	if !reflect.DeepEqual(star.ReusablePatterns, []string{MDXComponentPattern}) {
+		t.Errorf("starlight patterns = %v", star.ReusablePatterns)
+	}
+	if !reflect.DeepEqual(star.ReusableExtensions, []string{".mdx", ".md", ".mdoc"}) {
+		t.Errorf("starlight reusable extensions = %v", star.ReusableExtensions)
+	}
+	if !star.ImportMap {
+		t.Error("starlight profile should enable the MDX import map")
+	}
+	if match := regexp.MustCompile(MDXComponentPattern).FindStringSubmatch("<Tabs />"); match == nil || match[1] != "Tabs" {
+		t.Errorf("component pattern did not capture Tabs from <Tabs />: %v", match)
 	}
 
 	// The import map is opt-in per profile: hugo resolves a component capture
@@ -1125,6 +1155,150 @@ func TestGitBookSummaryDoesNotSelectUnrelatedMarkdown(t *testing.T) {
 		if c.ResolvedProfile.Name != ProfileMarkdown || !reflect.DeepEqual(c.ContentExtensions, []string{".md", ".markdown"}) {
 			t.Errorf("unrelated SUMMARY.md %q selected %q with extensions %v", body, c.ResolvedProfile.Name, c.ContentExtensions)
 		}
+	}
+}
+
+// starlightConfigJS is a minimal but realistic Astro config registering the
+// Starlight integration: the marker is validated by content as well as by
+// name (see isStarlightConfig), so test trees must carry the integration call
+// a real astro.config.* would.
+const starlightConfigJS = `import { defineConfig } from 'astro/config';
+import starlight from '@astrojs/starlight';
+
+export default defineConfig({
+  integrations: [starlight()],
+});
+`
+
+// starlightPackageJSON is a minimal package.json depending on
+// @astrojs/starlight, the shape create-astro's Starlight template writes.
+const starlightPackageJSON = `{
+  "name": "docs",
+  "type": "module",
+  "dependencies": {
+    "astro": "^5.0.0",
+    "@astrojs/starlight": "^0.34.0"
+  }
+}`
+
+// TestStarlightSelection pins selection for every starlight marker, alone:
+// each marker (any astro.config.* spelling carrying the integration call, or
+// a package.json depending on @astrojs/starlight) must select the profile
+// explicitly and by auto-detection, with the Starlight extensions and the
+// project root found at the level holding the marker.
+func TestStarlightSelection(t *testing.T) {
+	for _, tc := range []struct{ name, marker, body string }{
+		{"integration config mjs", "astro.config.mjs", starlightConfigJS},
+		{"integration config js", "astro.config.js", starlightConfigJS},
+		{"integration config ts", "astro.config.ts", starlightConfigJS},
+		{"integration config mts", "astro.config.mts", starlightConfigJS},
+		{"package dependency", "package.json", starlightPackageJSON},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			content := filepath.Join(root, "src", "content", "docs")
+			if err := os.MkdirAll(content, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, tc.marker), []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, selection := range []string{"", ProfileStarlight} {
+				cfg := Config{Profile: selection, ContentDir: content}
+				if err := cfg.ApplyProfile(); err != nil {
+					t.Fatal(err)
+				}
+				if cfg.ResolvedProfile.Name != ProfileStarlight || cfg.ProjectRoot != root ||
+					!reflect.DeepEqual(cfg.ContentExtensions, []string{".md", ".mdx", ".mdoc"}) {
+					t.Errorf("selection %q: profile=%q root=%q extensions=%v", selection, cfg.ResolvedProfile.Name, cfg.ProjectRoot, cfg.ContentExtensions)
+				}
+			}
+		})
+	}
+}
+
+// TestStarlightMarkersDoNotSelectPlainAstro: a marker that carries the name
+// but not the substance is not a marker. An astro.config.* without the
+// starlight() call (including one that imports the package but never
+// registers it) and a package.json that does not depend on
+// @astrojs/starlight (including one that merely mentions it) must fall
+// through to markdown.
+func TestStarlightMarkersDoNotSelectPlainAstro(t *testing.T) {
+	for _, tc := range []struct{ name, marker, body string }{
+		{"plain astro config", "astro.config.mjs", "import { defineConfig } from 'astro/config';\n\nexport default defineConfig({});\n"},
+		{"config importing without registering", "astro.config.mjs", "import starlight from '@astrojs/starlight';\n\nexport default defineConfig({});\n"},
+		{"plain package.json", "package.json", "{\n  \"name\": \"astro-blog\",\n  \"dependencies\": {\n    \"astro\": \"^5.0.0\"\n  }\n}\n"},
+		{"package.json mentioning without depending", "package.json", "{\n  \"name\": \"astro-blog\",\n  \"description\": \"A blog inspired by @astrojs/starlight\",\n  \"dependencies\": {\n    \"astro\": \"^5.0.0\"\n  }\n}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			content := filepath.Join(root, "src", "content", "docs")
+			if err := os.MkdirAll(content, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, tc.marker), []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := Config{ContentDir: content}
+			if err := cfg.ApplyProfile(); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ResolvedProfile.Name != ProfileMarkdown {
+				t.Errorf("%s: selected %q, want markdown", tc.name, cfg.ResolvedProfile.Name)
+			}
+		})
+	}
+}
+
+// TestStarlightMarkerPredicate pins the two content predicates directly: what
+// matches, what does not, and why.
+func TestStarlightMarkerPredicate(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		pred markerPredicate
+		body string
+		want bool
+	}{
+		{"bare call", isStarlightConfig, "integrations: [starlight()]\n", true},
+		{"call with options", isStarlightConfig, "integrations: [starlight({ title: 'Docs' })]\n", true},
+		{"import without call", isStarlightConfig, "import starlight from '@astrojs/starlight';\n", false},
+		{"unrelated config", isStarlightConfig, "export default defineConfig({});\n", false},
+		{"dependency", isStarlightPackage, `{"dependencies":{"@astrojs/starlight":"^0.34.0"}}` + "\n", true},
+		{"devDependency", isStarlightPackage, `{"devDependencies":{"@astrojs/starlight":"^0.34.0"}}` + "\n", true},
+		{"unquoted mention only", isStarlightPackage, `{"description":"like @astrojs/starlight"}` + "\n", false},
+		{"different package", isStarlightPackage, `{"dependencies":{"@astrojs/starlight-docs":"^1.0.0"}}` + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "candidate")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := tc.pred(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("predicate = %v, want %v for %q", got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
+// The marker read is capped: a candidate whose deciding text sits past
+// maxStarlightMarkerBytes is truncated and must not match.
+func TestStarlightMarkerPredicate_SizeCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "package.json")
+	padded := strings.Repeat(" ", maxStarlightMarkerBytes) + `{"dependencies":{"@astrojs/starlight":"^0.34.0"}}` + "\n"
+	if err := os.WriteFile(path, []byte(padded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := isStarlightPackage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Error("predicate matched a candidate truncated at the read cap")
 	}
 }
 

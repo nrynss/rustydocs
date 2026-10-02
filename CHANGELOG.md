@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `starlight` profile (#18) for Astro Starlight documentation, auto-detected
+  from an `astro.config.{mjs,js,ts,mts}` that registers the `starlight()`
+  integration or a `package.json` depending on `@astrojs/starlight`, or
+  selected with `--profile starlight`. It analyzes `.md`, `.mdx` and `.mdoc`
+  (Markdoc) content and resolves MDX imports (`import X from "./_shared.mdx"`,
+  rendered as `<X />`) as paths within the project root, folding the imported
+  partial's history into the referencing section. Imports of `.astro`/`.js`
+  components, bare package specifiers (`@astrojs/starlight/components`) and
+  unimported components — Starlight's built-ins and Markdoc's import-free tags
+  alike — are deliberately skipped, so framework chrome never appears as a
+  broken include and a restyled component cannot make every page using it look
+  fresh.
+
 ## [0.5.0] - 2026-10-01
 
 This release makes rustydocs tool-aware: it detects which documentation

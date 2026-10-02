@@ -133,6 +133,99 @@ func TestAnalyze_GitBookLegacyDirectoryAndExamples(t *testing.T) {
 	}
 }
 
+// TestAnalyze_StarlightImports pins the starlight profile end to end (#18):
+// auto-detection from the Starlight markers, MDX import resolution folding an
+// imported partial's freshness into the section that renders it, the
+// built-ins (package specifier, local .astro component, import-free Markdoc
+// tags, unimported tags) producing no rows at all, .mdoc analyzed as content,
+// and a broken import counted unresolved — including one that escapes the
+// project root.
+func TestAnalyze_StarlightImports(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "old pages", map[string]string{
+		"astro.config.mjs":                "import { defineConfig } from 'astro/config';\nimport starlight from '@astrojs/starlight';\n\nexport default defineConfig({\n  integrations: [starlight()],\n});\n",
+		"package.json":                    "{\n  \"name\": \"docs\",\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"astro\": \"^5.0.0\",\n    \"@astrojs/starlight\": \"^0.34.0\"\n  }\n}\n",
+		"src/content/docs/guide.mdx":      "import LocalSteps from \"./_steps.mdx\";\nimport CustomCard from \"../../components/CustomCard.astro\";\nimport { Tabs, TabItem } from \"@astrojs/starlight/components\";\nimport Gone from \"./missing.mdx\";\n\n# Intro\n\n<LocalSteps />\n\n# Components\n\n<Tabs><TabItem>ok</TabItem></Tabs>\n<CustomCard />\n<Card />\n<Gone />\n",
+		"src/content/docs/_steps.mdx":     "# Steps\n\nold\n",
+		"src/content/docs/api.mdoc":       "# API\n\n<Tabs />\n\n<Card />\n",
+		"src/components/CustomCard.astro": "---\n---\n<div />",
+	})
+	fresh := now.AddDate(0, 0, -5)
+	repo.Commit(fresh, "refresh partial", map[string]string{
+		"src/content/docs/_steps.mdx": "# Steps\n\nnew\n",
+	})
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("src/content/docs")
+	cfg.ThresholdDays = 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileStarlight || !cfg.ProfileAuto || cfg.ProjectRoot != repo.Dir {
+		t.Fatalf("selection = %q auto=%v root=%q", cfg.ResolvedProfile.Name, cfg.ProfileAuto, cfg.ProjectRoot)
+	}
+	if res.TotalFiles() != 3 || res.UnresolvedReusables() != 1 {
+		t.Errorf("files=%d unresolved=%d", res.TotalFiles(), res.UnresolvedReusables())
+	}
+	var guide *FileAnalysis
+	for i := range res.Files {
+		if res.Files[i].RelativePath == "guide.mdx" {
+			guide = &res.Files[i]
+		}
+	}
+	if guide == nil {
+		t.Fatal("guide.mdx not analyzed")
+	}
+	// Intro renders only the imported partial, whose fresh commit must keep
+	// the section out of the stale list. Two sections are stale: the
+	// "(preamble)" chunk holding the page's import block (#70) and Components,
+	// whose only unattributable reference is the broken import.
+	staleTitles := make(map[string]bool)
+	for _, section := range guide.StaleSections {
+		staleTitles[section.Title] = true
+	}
+	if len(guide.StaleSections) != 2 || !staleTitles["(preamble)"] || !staleTitles["Components"] {
+		t.Errorf("stale sections = %+v, want (preamble) and Components", guide.StaleSections)
+	}
+	byName := make(map[string]*time.Time)
+	for _, ref := range res.AllReusables {
+		byName[ref.Name] = ref.LastUpdated
+	}
+	// Skipped references (Tabs, TabItem, CustomCard, Card) produce no rows at
+	// all; the resolved partial and the broken import do.
+	if len(byName) != 2 || byName["src/content/docs/_steps.mdx"] == nil || byName["src/content/docs/missing.mdx"] != nil {
+		t.Errorf("reference history = %+v", res.AllReusables)
+	}
+	api := false
+	for i := range res.Files {
+		if res.Files[i].RelativePath == "api.mdoc" {
+			api = true
+		}
+	}
+	if !api {
+		t.Error("api.mdoc (.mdoc) not analyzed as content")
+	}
+
+	outside := testutil.NewRepo(t)
+	outside.Commit(fresh, "outside", map[string]string{"secret.mdx": "# Secret\n"})
+	escape, err := filepath.Rel(filepath.Dir(repo.Path("src/content/docs/guide.mdx")), outside.Path("secret.mdx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.Commit(now.AddDate(0, 0, -1), "add outside reference", map[string]string{
+		"src/content/docs/escape.mdx": "import Secret from \"" + filepath.ToSlash(escape) + "\";\n\n# Escape\n\n<Secret />\n",
+	})
+	res, err = Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UnresolvedReusables() != 2 {
+		t.Errorf("unresolved with outside target = %d, want 2", res.UnresolvedReusables())
+	}
+}
+
 func TestAnalyze_StaleAndFreshFiles(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)
