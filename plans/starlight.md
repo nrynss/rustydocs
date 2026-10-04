@@ -11,12 +11,35 @@
 
 - The parser's only change is fence masking for starlight's reusable detection: `importmap.go` already skips non-content imports and bare specifiers and classifies unimported component-shaped captures as skipped, so the profile configures extensions, markers, predicates, patterns (two Markdoc partial include forms + `MDXComponentPattern`, per the provenance rule) and `ResolverPath` + `ImportMap: true`. Fenced content does not render, so examples shown in fences are not captured and cannot produce unresolved rows or fold dates.
 - Marker predicates `isStarlightConfig` (a `starlight(` call, not a bare import) and `isStarlightPackage` (the quoted `@astrojs/starlight` dependency) with a 1 MiB bounded read. `src/content.config.ts` is deliberately not a marker: plain Astro content collections have one too.
-- `.mdoc` is analyzed as content and its `{% partial file="…" /%}` includes are captured as paths (include patterns, so broken ones are unresolved); an explicit ES import of an `.mdoc` file stays off the import allowlist and is skipped — the safe failure direction, since Markdoc reuses content through the partial tag, not ES imports.
+- `.mdoc` is analyzed as content and its `{% partial file="…" /%}` includes are captured as paths (include patterns, so broken ones are unresolved); an explicit ES import of an `.mdoc` file stays off the import allowlist and is skipped — the safe failure direction, since Markdoc reuses content through the partial tag, not ES imports. The partial patterns are additionally gated to `.mdoc` (#75): Markdoc tags render there only, so an unfenced tag on a `.md`/`.mdx` page — inert syntax — is neither captured nor resolved.
 - Add config tests (registry shape, selection per marker, predicate negatives) and parser tests pinned against the profile's own settings (classification table, Markdoc tags, section folding). Add a git-backed analyzer integration test with a Starlight tree, freshness folding, unresolved import and an outside-root escape.
 - Update `README.md`, `CHANGELOG.md`, and `CLAUDE.md` per project convention.
 
 ## Accepted trade-offs
 
+- Markdoc partials written with an **import alias** are captured — the quoted
+  patterns match any file attribute — but when an *alias-shaped* capture
+  resolves to no literal file under the project root it is classified as
+  deliberately out of scope, not a broken include (#74). Alias-shaped means
+  `@`-prefixed (the tsconfig-paths/Vite alias convention) or a bare
+  extensionless word (the key of `markdoc.config`'s `partials` map —
+  upstream's fixture spelling — or an alias; Vite's default
+  `resolve.extensions` exclude `.mdoc`, so such a word can never resolve
+  page-relative upstream). Upstream resolves such attributes through Vite
+  module resolution (`resolvePartials` calls `pluginContext.resolve(file, …)`
+  with a `'./' + file` page-relative fallback), so the name may map through
+  alias configuration this tool does not read; a genuinely broken alias fails
+  the Astro build regardless. A bare name that *does* exist page-relative
+  still resolves (the fallback upstream performs). Relative paths — with or
+  without the `./` prefix (`_partial.mdoc` is upstream's own fixture form,
+  `my-partials/_diagram.mdoc` the same shape in a subdirectory) — stay
+  path-shaped and keep the include rule: missing means unresolved (CodeRabbit
+  review of #77). The `file={import('…')}`
+  expression form the issue hypothesised does not exist upstream — no
+  example in the docs, none in the wild, and Markdoc expressions cannot call
+  `import()` — and is deliberately not captured: folding a date for syntax
+  Astro never renders would over-report freshness, the failure #75 exists to
+  prevent.
 - Imports through tsconfig path aliases (`import X from "@/components/x.mdx"`)
   are classified as bare package specifiers and silently skipped: the import
   map resolves only `/`, `./` and `../` specifiers, and reading tsconfig

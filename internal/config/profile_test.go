@@ -210,6 +210,22 @@ func TestBuiltinProfiles_Shape(t *testing.T) {
 		t.Errorf("component pattern did not capture Tabs from <Tabs />: %v", match)
 	}
 
+	// The two partial patterns are extension-constrained to .mdoc (#75):
+	// Markdoc tags render in .mdoc files only, so on .md/.mdx an unfenced tag
+	// must be neither captured nor resolved. The shared component pattern —
+	// and every other profile's patterns — stay unconstrained.
+	for _, p := range star.ReusablePatterns[:2] {
+		if got := PatternExtensionConstraint(p); !reflect.DeepEqual(got, []string{".mdoc"}) {
+			t.Errorf("partial pattern constraint = %v, want [.mdoc]", got)
+		}
+	}
+	if got := PatternExtensionConstraint(MDXComponentPattern); got != nil {
+		t.Errorf("component pattern should be unconstrained, got %v", got)
+	}
+	if got := PatternExtensionConstraint(`<Snippet\b[^>]*\bfile="([^"]+)"`); got != nil {
+		t.Errorf("mintlify snippet pattern should be unconstrained, got %v", got)
+	}
+
 	// The import map is opt-in per profile: hugo resolves a component capture
 	// as a shortcode name and must not start reading imports instead.
 	if hugo.ImportMap {

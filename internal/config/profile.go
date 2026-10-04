@@ -88,7 +88,10 @@ type Profile struct {
 	// predicates cannot be bypassed by accident.
 	markerPredicates map[string]markerPredicate
 	// ReusablePatterns are regexes with one capture group (the reusable name);
-	// nil = reusable detection disabled.
+	// nil = reusable detection disabled. Individual built-in patterns may be
+	// extension-constrained (see patternExtensionConstraints): the parser drops
+	// such a pattern for a file whose extension it does not cover, because a
+	// pattern can match syntax a page does not render (#75).
 	ReusablePatterns []string
 	// ReusableExtensions are the extensions tried when resolving a reusable
 	// name to a file.
@@ -278,6 +281,25 @@ var mintlifyReusablePatterns = []string{
 	MDXComponentPattern,
 }
 
+// starlightPartialPatternDouble and starlightPartialPatternSingle capture the
+// path of Astro's Markdoc partial tag, one per quote style:
+//
+//	{% partial file="./_footer.mdoc" /%}
+//
+// They are named so patternExtensionConstraints can bind them to .mdoc (see
+// its comment) and so the profile list and the constraint can never drift
+// apart. Upstream resolves the file attribute as a plain path — or through
+// Vite module resolution when it is written as an import alias (@-prefixed,
+// or a bare extensionless markdoc.config partials key; see
+// parser.ResolveReusable) — and never as a Markdoc expression:
+// `file={import('…')}` is not a form Astro supports, so it is deliberately
+// not captured (capturing it would fold dates for syntax that never renders,
+// the exact over-freshness class #75 exists to prevent).
+const (
+	starlightPartialPatternDouble = `\{%\s*partial\b[^%]*\bfile\s*=\s*"([^"]+)"`
+	starlightPartialPatternSingle = `\{%\s*partial\b[^%]*\bfile\s*=\s*'([^']+)'`
+)
+
 // starlightReusablePatterns captures the two ways a Starlight page includes
 // shared content, plus component usage for the import map. MDX pages import
 // and render <X />; Markdoc pages use Astro's partial tag —
@@ -285,8 +307,12 @@ var mintlifyReusablePatterns = []string{
 // underscore prefix so partials stay out of content queries), whose capture
 // is a path the resolver looks up. The two partial patterns are *include*
 // patterns, so a broken one is counted unresolved rather than skipped (see
-// the provenance rule in parser.ResolveReusable), and a partial's commit
-// date folds into the section that renders it. Component usage is the
+// the provenance rule in parser.ResolveReusable) — with one deliberate
+// exception for import-alias spellings, recorded in patternExtensionConstraints
+// and parser.ResolveReusable — and a partial's commit date folds into the
+// section that renders it. Both partial patterns are additionally gated to
+// .mdoc pages, where Markdoc tags are the only ones that render (#75).
+// Component usage is the
 // shared pattern alone: Starlight's built-in components are imported from
 // the bare package specifier "@astrojs/starlight/components" in MDX and come
 // import-free through the Markdoc preset, and the import map
@@ -296,9 +322,47 @@ var mintlifyReusablePatterns = []string{
 // without hardcoding their names, so components Starlight adds later are
 // handled by the same rules.
 var starlightReusablePatterns = []string{
-	`\{%\s*partial\b[^%]*\bfile\s*=\s*"([^"]+)"`,
-	`\{%\s*partial\b[^%]*\bfile\s*=\s*'([^']+)'`,
+	starlightPartialPatternDouble,
+	starlightPartialPatternSingle,
 	MDXComponentPattern,
+}
+
+// patternExtensionConstraints binds individual built-in reusable patterns to
+// the content extensions they may run on; a pattern absent from the map is
+// unconstrained and runs on every analyzed file, as every pattern did before
+// #75. PatternExtensionConstraint is the only reader.
+//
+// The constraint exists because a pattern can match syntax a page does not
+// render. Under starlight, {% partial %} is Markdoc syntax, and Markdoc tags
+// render in .mdoc files only: .md never processes them (literal text) and .mdx
+// rejects them (MDX reads `{% … %}` as a JavaScript expression and fails the
+// build). An unfenced tag on such a page — stray, migrated, or illustrative —
+// used to be captured anyway, producing a spurious unresolved include for a
+// missing target, or — the only starlight path that could over-report
+// freshness — folding an existing target's recent commit date into a section
+// whose own text was never re-rendered by it. Gating the two partial patterns
+// to .mdoc closes both (#75). MDXComponentPattern stays unconstrained: a
+// capitalised tag renders in all three extensions (as MDX or through the
+// Markdoc preset), and on .md its captures are skipped at resolution anyway.
+//
+// The map is keyed by the pattern string, the same identity rule the parser
+// already uses to recognise the shared component pattern, so the constraint
+// survives config merging (Config.Reusables.Patterns stays []string) and a
+// user pattern identical to a built-in one inherits its semantics.
+var patternExtensionConstraints = map[string][]string{
+	starlightPartialPatternDouble: {".mdoc"},
+	starlightPartialPatternSingle: {".mdoc"},
+}
+
+// PatternExtensionConstraint returns a copy of the extensions the given
+// built-in reusable pattern is restricted to, or nil when the pattern applies
+// to every analyzed file. See patternExtensionConstraints.
+func PatternExtensionConstraint(pattern string) []string {
+	exts, ok := patternExtensionConstraints[pattern]
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), exts...)
 }
 
 // builtinProfiles is the profile registry. Order matters for auto-detection
