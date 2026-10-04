@@ -226,6 +226,82 @@ func TestAnalyze_StarlightImports(t *testing.T) {
 	}
 }
 
+// TestAnalyze_StarlightPartialGatedToMdoc pins the end-to-end #75 contract
+// with the one starlight shape that could over-report freshness: the same
+// {% partial %} tag pointing at the same fresh target, on an .mdoc page
+// (where it renders, so its fresh date keeps the section out of the stale
+// list) and on an .md page (where the tag is inert literal text, so the
+// section stays stale on its own old dates and the target produces no row at
+// all). Before the gating the .md page folded the fresh partial date too and
+// looked recently updated.
+func TestAnalyze_StarlightPartialGatedToMdoc(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	old := now.AddDate(0, 0, -200)
+	repo.Commit(old, "old pages", map[string]string{
+		"astro.config.mjs":              "import { defineConfig } from 'astro/config';\nimport starlight from '@astrojs/starlight';\n\nexport default defineConfig({\n  integrations: [starlight()],\n});\n",
+		"package.json":                  "{\n  \"dependencies\": {\n    \"@astrojs/starlight\": \"^0.34.0\"\n  }\n}\n",
+		"src/content/docs/guide.md":     "# Guide\n\n{% partial file=\"./_footer.mdoc\" /%}\n",
+		"src/content/docs/api.mdoc":     "# API\n\n{% partial file=\"./_footer.mdoc\" /%}\n",
+		"src/content/docs/_footer.mdoc": "footer body\n",
+	})
+	fresh := now.AddDate(0, 0, -5)
+	repo.Commit(fresh, "refresh partial", map[string]string{
+		"src/content/docs/_footer.mdoc": "footer body\n\nnew\n",
+	})
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("src/content/docs")
+	cfg.ThresholdDays = 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileStarlight {
+		t.Fatalf("profile = %q, want starlight", cfg.ResolvedProfile.Name)
+	}
+
+	var guide, api *FileAnalysis
+	for i := range res.Files {
+		switch res.Files[i].RelativePath {
+		case "guide.md":
+			guide = &res.Files[i]
+		case "api.mdoc":
+			api = &res.Files[i]
+		}
+	}
+	if guide == nil || api == nil {
+		t.Fatalf("guide.md / api.mdoc missing from %v", res.Files)
+	}
+
+	// The .mdoc section renders the partial, so the fresh commit date keeps
+	// it out of the stale list.
+	if len(api.StaleSections) != 0 {
+		t.Errorf("api.mdoc stale sections = %+v, want none (partial folds in)", api.StaleSections)
+	}
+	// The .md section cannot render the tag: it stays stale on its own dates,
+	// and the row's date is the page's own commit, not the partial's.
+	if len(guide.StaleSections) != 1 || guide.StaleSections[0].Title != "Guide" {
+		t.Fatalf("guide.md stale sections = %+v, want only Guide", guide.StaleSections)
+	}
+	if got := guide.StaleSections[0].DisplayDate(); got == nil || !got.Equal(old) {
+		t.Errorf("guide.md stale row date = %v, want the page's own %s (the fresh partial must not fold in)", got, old)
+	}
+
+	// The partial is referenced (and resolved) by api.mdoc alone, so exactly
+	// one row exists, and nothing is unresolved.
+	byName := make(map[string]*time.Time)
+	for _, ref := range res.AllReusables {
+		byName[ref.Name] = ref.LastUpdated
+	}
+	if len(byName) != 1 || byName["src/content/docs/_footer.mdoc"] == nil {
+		t.Errorf("reusables = %+v, want only src/content/docs/_footer.mdoc", byName)
+	}
+	if res.UnresolvedReusables() != 0 {
+		t.Errorf("unresolved = %d, want 0", res.UnresolvedReusables())
+	}
+}
+
 // TestAnalyze_BlamelessSectionShowsFoldedDate pins the analyzer half of the
 // stale-but-Unknown fix: a page with no git history whose section is stale
 // only through a resolved include records the folded classification date on

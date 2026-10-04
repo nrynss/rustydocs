@@ -670,7 +670,11 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		Resolver:     cfg.ResolvedProfile.Resolver,
 		Profile:      cfg.ResolvedProfile.Name,
 		ImportMap:    cfg.ResolvedProfile.ImportMap,
-		Cache:        cache,
+		// Drives config.PatternExtensionConstraint: patterns matching syntax
+		// this file cannot render are dropped, so e.g. a Markdoc partial tag
+		// on a plain .md/.mdx Starlight page is never captured (#75).
+		FileExtension: strings.ToLower(filepath.Ext(filePath)),
+		Cache:         cache,
 	})
 	if err != nil {
 		return FileAnalysis{Path: filePath, RelativePath: relativePath}, fmt.Errorf("%s: %w", relativePath, err)

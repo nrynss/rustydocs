@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Starlight: `{% partial %}` tags are now captured on `.mdoc` pages only
+  (#75). Markdoc tags render in `.mdoc` files, never in `.md` (literal text)
+  or `.mdx` (an MDX build error), so an unfenced tag on such a page — stray,
+  migrated, or illustrative — used to be captured anyway and could fold the
+  target's recent commit date into a section the tag never rendered, or count
+  a missing target as an unresolved include. Reusable patterns now carry an
+  optional extension constraint the parser applies per analyzed file.
+- Starlight: a partial written with an import alias — a bare specifier such
+  as `{% partial file="@partials/footer.mdoc" /%}`, or the key of
+  `markdoc.config`'s `partials` map — that does not resolve as a path is now
+  classified as deliberately out of scope instead of a broken include (#74).
+  Astro resolves such attributes through Vite module resolution at build
+  time, never as the literal path; a broken alias fails the build upstream
+  regardless. The `file={import('…')}` spelling the issue hypothesised turned
+  out not to exist upstream and is deliberately not captured: it would fold
+  dates for syntax Astro never renders.
+
 ## [0.6.0] - 2026-10-03
 
 ### Added

@@ -2,6 +2,7 @@ package parser
 
 import (
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -293,5 +294,98 @@ func TestStarlightMarkdocPartialIncludes(t *testing.T) {
 	}
 	if got := CalculateSectionStaleness(section, page, sr.rp); got == nil || !got.Equal(sr.footerDate) {
 		t.Errorf("folded staleness = %v, want the partial's %s", got, sr.footerDate)
+	}
+}
+
+// TestStarlightPartialPatternsRunOnMdocOnly pins the #75 gating: the partial
+// patterns run on .mdoc pages, where Markdoc tags render, and are dropped for
+// .md and .mdx, where they cannot — so an unfenced tag on such a page can
+// neither fold the target's date into a section nor count it unresolved. An
+// unknown extension ("") keeps every pattern: callers that bypass the
+// analyzer see the pre-constraint behaviour.
+func TestStarlightPartialPatternsRunOnMdocOnly(t *testing.T) {
+	sr := newStarlightRepo(t)
+	p, ok := config.LookupProfile(config.ProfileStarlight)
+	if !ok {
+		t.Fatal("starlight profile missing from config registry")
+	}
+
+	body := "# API\n\n{% partial file=\"./_footer.mdoc\" /%}\n\n<Card />\n"
+	tests := []struct {
+		ext  string
+		want []string
+	}{
+		{".md", []string{"Card"}},
+		{".mdx", []string{"Card"}},
+		{".mdoc", []string{"./_footer.mdoc", "Card"}},
+		{"", []string{"./_footer.mdoc", "Card"}},
+	}
+	for _, tt := range tests {
+		t.Run("ext="+tt.ext, func(t *testing.T) {
+			rp, err := NewReusablePatternsFor(ReusableConfig{
+				Patterns:      p.ReusablePatterns,
+				Extensions:    p.ReusableExtensions,
+				Root:          sr.root,
+				Resolver:      p.Resolver,
+				Profile:       p.Name,
+				ImportMap:     p.ImportMap,
+				FileExtension: tt.ext,
+			})
+			if err != nil {
+				t.Fatalf("NewReusablePatternsFor: %v", err)
+			}
+			got := FindReusables(body, rp)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("FindReusables with ext %q = %v, want %v", tt.ext, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStarlightPartialImportAliasClassification pins the #74 behaviour: a
+// partial whose file attribute is a bare module specifier is resolved
+// upstream through Vite module resolution (an import alias from tsconfig
+// paths, or a markdoc.config partials key), never as the literal path the
+// resolver looks up — so when path resolution fails, the capture is skipped,
+// not reported as a broken include. Path-shaped captures keep the include
+// rule (a broken one is unresolved), and a bare name that does exist
+// page-relative still resolves, upstream's './'+file fallback.
+func TestStarlightPartialImportAliasClassification(t *testing.T) {
+	sr := newStarlightRepo(t)
+	inlineDate := time.Date(2024, 8, 1, 9, 0, 0, 0, time.UTC)
+	sr.repo.Commit(inlineDate, "add inline partial", map[string]string{
+		"src/content/docs/_inline.mdoc": "inline body\n",
+	})
+
+	tests := []struct {
+		name string
+		ref  string
+		want Resolution
+	}{
+		{"tsconfig-style alias skipped", "@partials/footer.mdoc", ResolutionSkipped},
+		{"markdoc.config partials key skipped", "configured", ResolutionSkipped},
+		{"path-shaped broken partial unresolved", "./_gone.mdoc", ResolutionUnresolved},
+		{"bare name that exists page-relative resolves", "_inline.mdoc", ResolutionResolved},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page := sr.page("src/content/docs/tags.mdoc",
+				"# Tags\n\n{% partial file=\""+tt.ref+"\" /%}\n")
+			data, err := os.ReadFile(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs := FindReusables(string(data), sr.rp)
+			if !slicesContains(refs, tt.ref) {
+				t.Fatalf("FindReusables = %v, want it to contain %q", refs, tt.ref)
+			}
+			info, res := ResolveReusable(tt.ref, page, sr.rp)
+			if res != tt.want {
+				t.Fatalf("ResolveReusable(%q) = %v, want %v", tt.ref, res, tt.want)
+			}
+			if tt.want == ResolutionResolved && (info == nil || !info.LastModified.Equal(inlineDate)) {
+				t.Errorf("ResolveReusable(%q) = %+v, want the inline partial's %s", tt.ref, info, inlineDate)
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -149,7 +150,10 @@ type ReusablePatterns struct {
 	// is never classified ResolutionSkipped, however component-shaped it looks
 	// (a capitalised, extensionless "AlsoMissing" is a perfectly ordinary
 	// snippet name, and the path resolver supports exactly that spelling
-	// through its .mdx/.md/index.* fallback).
+	// through its .mdx/.md/index.* fallback). The one exception is a Starlight
+	// partial capture that is a bare module specifier — an import alias
+	// upstream resolves through Vite, never as the literal path the resolver
+	// just failed to find (see ResolveReusable, #74).
 	//
 	// A capture that is not in here carries no provenance — resolution was
 	// asked about a name FindReusables never produced — and falls back to the
@@ -205,6 +209,13 @@ type ReusableConfig struct {
 	// ImportMap enables the MDX import-map layer on top of the resolver; see
 	// config.Profile.ImportMap (#68).
 	ImportMap bool
+	// FileExtension is the extension of the file being analyzed, lowercase and
+	// dot-prefixed. A built-in pattern whose extension constraint
+	// (config.PatternExtensionConstraint) does not list it is dropped, so
+	// syntax a page cannot render is never captured (#75). Empty means
+	// unknown — callers that do not know the extension get every pattern,
+	// the behaviour before constraints existed.
+	FileExtension string
 	// Cache, when non-nil, memoizes the git lookups resolution performs. It is
 	// created once per analysis run and shared by every file's
 	// ReusablePatterns; nil disables caching (#65).
@@ -226,6 +237,17 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 		importMap:      rc.ImportMap,
 	}
 	for _, p := range rc.Patterns {
+		// Extension-constrained patterns (config.patternExtensionConstraints)
+		// run only on the file kinds whose syntax they detect (#75): a pattern
+		// matching on a page that cannot render it would under no circumstances
+		// be right, and the two failure shapes — a spurious unresolved include,
+		// or a date folded in for content that never displayed — are both
+		// worse than not looking. An unknown extension ("" — direct API
+		// callers, tests) keeps every pattern, the pre-constraint behaviour.
+		if exts := config.PatternExtensionConstraint(p); len(exts) > 0 &&
+			rc.FileExtension != "" && !slices.Contains(exts, rc.FileExtension) {
+			continue
+		}
 		re, err := regexp.Compile(p)
 		if err != nil {
 			return nil, fmt.Errorf("invalid reusable pattern %q: %w", p, err)
@@ -735,6 +757,25 @@ func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*gi
 
 	if info := rp.resolveExisting(reusableName, sourceFile); info != nil {
 		return info, ResolutionResolved
+	}
+
+	// A Starlight partial written with an *import alias* — a bare specifier
+	// like file="@partials/footer.mdoc", or the key of markdoc.config's
+	// partials map — is resolved by Astro through Vite module resolution, with
+	// a page-relative fallback ('./' + file); upstream's resolvePartials never
+	// treats such a name as a literal path. The path resolver above has
+	// already tried every spelling that could be a real file under the project
+	// root (snippets/, the root, the page directory), so a bare capture that
+	// reached here named something upstream resolved — or would fail to —
+	// through alias configuration this tool does not read. Reporting it
+	// unresolved would call a working include broken (#74); skipped, never
+	// counted, is the safe direction, the same rule the import map applies to
+	// bare ES-module specifiers. Path-shaped captures ("./_footer.mdoc",
+	// "footer.mdoc" that resolves page-relative) are unaffected, and a bare
+	// name that *does* exist as a literal file still resolves above.
+	if rp.profile == config.ProfileStarlight &&
+		rp.fromIncludePattern(reusableName) && isBareModuleSpecifier(reusableName) {
+		return nil, ResolutionSkipped
 	}
 
 	// Under the import map, a capitalised tag that resolved to nothing is a
