@@ -342,6 +342,40 @@ func TestStarlightPartialPatternsRunOnMdocOnly(t *testing.T) {
 	}
 }
 
+// TestStarlightPartialConstraintFollowsPatternIdentity pins the claim in
+// config.patternExtensionConstraints's comment: the constraint is keyed by
+// the pattern *string*, so a user config that copies a built-in pattern
+// verbatim inherits its semantics. If the map were ever keyed by slice
+// position or pointer instead, a config-supplied copy would silently lose
+// the .mdoc gating.
+func TestStarlightPartialConstraintFollowsPatternIdentity(t *testing.T) {
+	sr := newStarlightRepo(t)
+	p, ok := config.LookupProfile(config.ProfileStarlight)
+	if !ok {
+		t.Fatal("starlight profile missing from config registry")
+	}
+	// A "user" pattern list holding a verbatim copy of the built-in partial
+	// pattern — a fresh slice, not the profile's own — plus the component
+	// pattern, as a customised starlight configuration might.
+	patterns := []string{p.ReusablePatterns[0], p.ReusablePatterns[len(p.ReusablePatterns)-1]}
+	rp, err := NewReusablePatternsFor(ReusableConfig{
+		Patterns:      patterns,
+		Extensions:    p.ReusableExtensions,
+		Root:          sr.root,
+		Resolver:      p.Resolver,
+		Profile:       p.Name,
+		ImportMap:     p.ImportMap,
+		FileExtension: ".md",
+	})
+	if err != nil {
+		t.Fatalf("NewReusablePatternsFor: %v", err)
+	}
+	got := FindReusables("# API\n\n{% partial file=\"./_footer.mdoc\" /%}\n\n<Card />\n", rp)
+	if !reflect.DeepEqual(got, []string{"Card"}) {
+		t.Errorf("FindReusables = %v, want only Card (the copied partial pattern must be .mdoc-gated)", got)
+	}
+}
+
 // TestStarlightPartialImportAliasClassification pins the #74 behaviour: a
 // partial whose file attribute is a bare module specifier is resolved
 // upstream through Vite module resolution (an import alias from tsconfig

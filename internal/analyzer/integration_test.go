@@ -302,6 +302,58 @@ func TestAnalyze_StarlightPartialGatedToMdoc(t *testing.T) {
 	}
 }
 
+// TestAnalyze_StarlightGatingSurvivesUserExtensionSpelling pins the #75 gate
+// through the config surface users actually write: a content_extensions entry
+// spelled without the dot ("mdx") is legal input, canonicalised by
+// NormalizeExtensions in ApplyProfile before the walk, so the analyzed file's
+// extension reaches NewReusablePatternsFor dot-prefixed and the partial
+// patterns stay gated. (The FileExtension=="" escape hatch is unreachable
+// through AnalyzeWithProgress: the allowlist match is on the file's own
+// non-empty extension, and NormalizeExtensions never yields an empty entry —
+// CodeRabbit observation on #77.)
+func TestAnalyze_StarlightGatingSurvivesUserExtensionSpelling(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	old := now.AddDate(0, 0, -200)
+	repo.Commit(old, "old pages", map[string]string{
+		"astro.config.mjs":              "import { defineConfig } from 'astro/config';\nimport starlight from '@astrojs/starlight';\n\nexport default defineConfig({\n  integrations: [starlight()],\n});\n",
+		"package.json":                  "{\n  \"dependencies\": {\n    \"@astrojs/starlight\": \"^0.34.0\"\n  }\n}\n",
+		"src/content/docs/guide.mdx":    "# Guide\n\n{% partial file=\"./_footer.mdoc\" /%}\n",
+		"src/content/docs/_footer.mdoc": "footer body\n",
+	})
+	fresh := now.AddDate(0, 0, -5)
+	repo.Commit(fresh, "refresh partial", map[string]string{
+		"src/content/docs/_footer.mdoc": "footer body\n\nnew\n",
+	})
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("src/content/docs")
+	cfg.ContentExtensions = []string{"mdx"} // user override, no dot: legal input
+	cfg.ThresholdDays = 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolvedProfile.Name != config.ProfileStarlight {
+		t.Fatalf("profile = %q, want starlight", cfg.ResolvedProfile.Name)
+	}
+	if len(res.Files) != 1 || res.Files[0].RelativePath != "guide.mdx" {
+		t.Fatalf("files = %+v, want only guide.mdx (the user allowlist is .mdx)", res.Files)
+	}
+	// The .mdx page cannot render the tag, and the partial pattern must be
+	// gated despite the non-canonical extension spelling: the section stays
+	// stale on its own dates, with the row date the page's own commit.
+	if len(res.Files[0].StaleSections) != 1 || res.Files[0].StaleSections[0].Title != "Guide" {
+		t.Fatalf("stale sections = %+v, want only Guide", res.Files[0].StaleSections)
+	}
+	if got := res.Files[0].StaleSections[0].DisplayDate(); got == nil || !got.Equal(old) {
+		t.Errorf("stale row date = %v, want the page's own %s (the fresh partial must not fold in)", got, old)
+	}
+	if res.UnresolvedReusables() != 0 {
+		t.Errorf("unresolved = %d, want 0", res.UnresolvedReusables())
+	}
+}
+
 // TestAnalyze_BlamelessSectionShowsFoldedDate pins the analyzer half of the
 // stale-but-Unknown fix: a page with no git history whose section is stale
 // only through a resolved include records the folded classification date on
