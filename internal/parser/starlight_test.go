@@ -365,6 +365,10 @@ func TestStarlightPartialImportAliasClassification(t *testing.T) {
 		{"tsconfig-style alias skipped", "@partials/footer.mdoc", ResolutionSkipped},
 		{"markdoc.config partials key skipped", "configured", ResolutionSkipped},
 		{"path-shaped broken partial unresolved", "./_gone.mdoc", ResolutionUnresolved},
+		// Relative spellings without the ./ prefix stay path-shaped: missing
+		// means unresolved, never skipped (CodeRabbit review of #77).
+		{"missing relative path without ./ prefix unresolved", "my-partials/_diagram.mdoc", ResolutionUnresolved},
+		{"missing bare page-relative name unresolved", "_gone.mdoc", ResolutionUnresolved},
 		{"bare name that exists page-relative resolves", "_inline.mdoc", ResolutionResolved},
 	}
 	for _, tt := range tests {

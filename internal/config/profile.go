@@ -289,8 +289,9 @@ var mintlifyReusablePatterns = []string{
 // They are named so patternExtensionConstraints can bind them to .mdoc (see
 // its comment) and so the profile list and the constraint can never drift
 // apart. Upstream resolves the file attribute as a plain path — or through
-// Vite module resolution when it is written as an import alias (a bare
-// specifier, see parser.ResolveReusable) — and never as a Markdoc expression:
+// Vite module resolution when it is written as an import alias (@-prefixed,
+// or a bare extensionless markdoc.config partials key; see
+// parser.ResolveReusable) — and never as a Markdoc expression:
 // `file={import('…')}` is not a form Astro supports, so it is deliberately
 // not captured (capturing it would fold dates for syntax that never renders,
 // the exact over-freshness class #75 exists to prevent).

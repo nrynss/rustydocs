@@ -151,9 +151,10 @@ type ReusablePatterns struct {
 	// (a capitalised, extensionless "AlsoMissing" is a perfectly ordinary
 	// snippet name, and the path resolver supports exactly that spelling
 	// through its .mdx/.md/index.* fallback). The one exception is a Starlight
-	// partial capture that is a bare module specifier — an import alias
-	// upstream resolves through Vite, never as the literal path the resolver
-	// just failed to find (see ResolveReusable, #74).
+	// partial capture shaped as an import alias — @-prefixed, or a bare
+	// extensionless word — which upstream resolves through Vite, never as the
+	// literal path the resolver just failed to find (see ResolveReusable and
+	// isPartialAliasShape, #74).
 	//
 	// A capture that is not in here carries no provenance — resolution was
 	// asked about a name FindReusables never produced — and falls back to the
@@ -759,22 +760,21 @@ func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*gi
 		return info, ResolutionResolved
 	}
 
-	// A Starlight partial written with an *import alias* — a bare specifier
-	// like file="@partials/footer.mdoc", or the key of markdoc.config's
-	// partials map — is resolved by Astro through Vite module resolution, with
-	// a page-relative fallback ('./' + file); upstream's resolvePartials never
-	// treats such a name as a literal path. The path resolver above has
-	// already tried every spelling that could be a real file under the project
-	// root (snippets/, the root, the page directory), so a bare capture that
-	// reached here named something upstream resolved — or would fail to —
-	// through alias configuration this tool does not read. Reporting it
-	// unresolved would call a working include broken (#74); skipped, never
-	// counted, is the safe direction, the same rule the import map applies to
-	// bare ES-module specifiers. Path-shaped captures ("./_footer.mdoc",
-	// "footer.mdoc" that resolves page-relative) are unaffected, and a bare
-	// name that *does* exist as a literal file still resolves above.
+	// A Starlight partial written with an *import alias* is resolved by Astro
+	// through Vite module resolution, with a page-relative fallback ('./' +
+	// file); upstream's resolvePartials never treats such a name as a literal
+	// path. When the capture is shaped so that only module resolution can
+	// place it (isPartialAliasShape), path resolution above has already tried
+	// every spelling that could be a real file under the project root, and
+	// what it names upstream resolved — or would fail to — through alias
+	// configuration this tool does not read. Reporting it unresolved would
+	// call a working include broken (#74); skipped, never counted, is the
+	// safe direction, the same rule the import map applies to bare ES-module
+	// specifiers. Path-shaped captures ("./_footer.mdoc", "_partial.mdoc" —
+	// upstream's own fixture spelling — "my-partials/_diagram.mdoc") are
+	// unaffected and keep the include rule: missing means unresolved.
 	if rp.profile == config.ProfileStarlight &&
-		rp.fromIncludePattern(reusableName) && isBareModuleSpecifier(reusableName) {
+		rp.fromIncludePattern(reusableName) && isPartialAliasShape(reusableName) {
 		return nil, ResolutionSkipped
 	}
 
@@ -805,6 +805,35 @@ var componentSymbolPattern = regexp.MustCompile(`^[A-Z][A-Za-z0-9_$]*$`)
 // can never be mistaken for the file path a ResolverPath capture usually is.
 func isComponentSymbol(ref string) bool {
 	return componentSymbolPattern.MatchString(ref)
+}
+
+// isPartialAliasShape reports whether a Starlight partial file attribute that
+// failed path resolution is shaped so that only upstream's module resolution
+// can place it — an import alias or a markdoc.config partials key — which is
+// what qualifies it for ResolutionSkipped rather than unresolved (#74):
+//
+//	"@partials/footer.mdoc"  alias: the @-prefix is the tsconfig-paths/Vite
+//	                         alias convention. (If a literal "@partials/…"
+//	                         path ever existed under the root, resolution
+//	                         above would have found it.)
+//	"configured"             no separator, no extension: a partials-map key
+//	                         (upstream's fixture spelling) or an alias.
+//	                         Vite's default resolve.extensions do not include
+//	                         .mdoc, so such a word can never resolve
+//	                         page-relative upstream — it is never a typo'd
+//	                         file path that resolution merely missed.
+//	"_partial.mdoc",         path-shaped: relative partial paths, with or
+//	"my-partials/_diagram.mdoc"  without the ./ prefix (upstream's './'+file
+//	                         fallback resolves both). The include rule
+//	                         applies: a missing one is unresolved.
+func isPartialAliasShape(ref string) bool {
+	if strings.HasPrefix(ref, "@") {
+		return true
+	}
+	if strings.Contains(ref, "/") {
+		return false
+	}
+	return filepath.Ext(ref) == ""
 }
 
 // resolveExisting performs the pre-import-map resolution: the path resolver,

@@ -17,17 +17,24 @@
 
 ## Accepted trade-offs
 
-- Markdoc partials written with an **import alias** (`{% partial
-  file="@partials/footer.mdoc" /%}`, or the key of `markdoc.config`'s
-  `partials` map) are captured — the quoted patterns match any file attribute
-  — but when the capture resolves to no literal file under the project root
-  it is classified as deliberately out of scope, not a broken include (#74).
-  Upstream resolves such attributes through Vite module resolution
-  (`resolvePartials` calls `pluginContext.resolve(file, …)` with a
-  `'./' + file` page-relative fallback), so the name may map through alias
-  configuration this tool does not read; a genuinely broken alias fails the
-  Astro build regardless. A bare name that does exist page-relative still
-  resolves (the fallback upstream performs). The `file={import('…')}`
+- Markdoc partials written with an **import alias** are captured — the quoted
+  patterns match any file attribute — but when an *alias-shaped* capture
+  resolves to no literal file under the project root it is classified as
+  deliberately out of scope, not a broken include (#74). Alias-shaped means
+  `@`-prefixed (the tsconfig-paths/Vite alias convention) or a bare
+  extensionless word (the key of `markdoc.config`'s `partials` map —
+  upstream's fixture spelling — or an alias; Vite's default
+  `resolve.extensions` exclude `.mdoc`, so such a word can never resolve
+  page-relative upstream). Upstream resolves such attributes through Vite
+  module resolution (`resolvePartials` calls `pluginContext.resolve(file, …)`
+  with a `'./' + file` page-relative fallback), so the name may map through
+  alias configuration this tool does not read; a genuinely broken alias fails
+  the Astro build regardless. A bare name that *does* exist page-relative
+  still resolves (the fallback upstream performs). Relative paths — with or
+  without the `./` prefix (`_partial.mdoc` is upstream's own fixture form,
+  `my-partials/_diagram.mdoc` the same shape in a subdirectory) — stay
+  path-shaped and keep the include rule: missing means unresolved (CodeRabbit
+  review of #77). The `file={import('…')}`
   expression form the issue hypothesised does not exist upstream — no
   example in the docs, none in the wild, and Markdoc expressions cannot call
   `import()` — and is deliberately not captured: folding a date for syntax
