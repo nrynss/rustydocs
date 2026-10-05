@@ -18,6 +18,7 @@ import tarfile
 
 
 def run(args, **kwargs):
+    kwargs.setdefault('timeout', 1800)
     return subprocess.run(args, check=True, **kwargs)
 
 
