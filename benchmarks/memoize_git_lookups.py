@@ -18,17 +18,24 @@ import tarfile
 
 
 def run(args, **kwargs):
+    """Run a command, raising on failure, with an overridable 1800-second timeout."""
     kwargs.setdefault('timeout', 1800)
     return subprocess.run(args, check=True, **kwargs)
 
 
 def write(root, name, text):
+    """Write fixture text under root, creating any missing parent directories."""
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
 
 
 def build(repo, ref, destination, disable=False):
+    """Build an archived ref in a new directory and return its binary path.
+
+    When disable is true, replace the analyzer's shared cache with its nil
+    fallback to create the otherwise unchanged uncached control.
+    """
     destination.mkdir()
     archive = subprocess.check_output(['git', 'archive', ref], cwd=repo)
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
@@ -45,6 +52,11 @@ def build(repo, ref, destination, disable=False):
 
 
 def fixture(root, profile, pages):
+    """Create a profile corpus with fixed Git history and one uncommitted page.
+
+    Reusable profiles reference three shared includes per committed page;
+    Markdown pages have no includes and exercise unique file lookups.
+    """
     root.mkdir()
     extension = '.mdx' if profile in ('mintlify', 'starlight') else '.md'
     for i in range(pages):
@@ -74,12 +86,18 @@ def fixture(root, profile, pages):
 
 
 def normalise(text):
+    """Replace report generation timestamps while preserving content and ages."""
     # Only wall-clock generation fields differ between independent CLI runs.
     text = re.sub(r'Generated: \d{4}-\d\d-\d\d \d\d:\d\d', 'Generated: <time>', text)
     return re.sub(r'Generated on \d{4}-\d\d-\d\d \d\d:\d\d', 'Generated on <time>', text)
 
 
 def main():
+    """Parse CLI options, prepare and verify corpora, or time saved commands.
+
+    Preparation saves source refs, command metadata, and output parity checks.
+    Timing exports hyperfine samples, optionally repeating a reversed pair.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path, help='new directory for artifacts')
     parser.add_argument('--baseline', default='426b8bf')

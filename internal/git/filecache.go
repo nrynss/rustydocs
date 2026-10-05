@@ -129,6 +129,7 @@ type fileInfoKey struct {
 	file      string
 }
 
+// fileInfoCacheKey combines the lookup directory context with the resolved file.
 func fileInfoCacheKey(filePath string) fileInfoKey {
 	return fileInfoKey{
 		directory: normaliseCachePath(filepath.Dir(filePath)),
