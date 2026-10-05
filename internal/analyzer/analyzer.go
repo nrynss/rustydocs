@@ -85,6 +85,8 @@ type FileAnalysis struct {
 	// dates every line to the tip commit. Such a file cannot be assessed for
 	// staleness and must NOT be treated as fresh. See #55.
 	HistoryMissing bool
+	AnalysisStatus string
+	Diagnostics    []Diagnostic
 }
 
 // IsStale returns true if the file has any stale content.
@@ -94,10 +96,15 @@ func (f *FileAnalysis) IsStale() bool {
 
 // Results contains complete analysis results.
 type Results struct {
-	Files        []FileAnalysis
-	AllReusables []ReusableInfo
-	Config       *config.Config
-	GeneratedAt  time.Time
+	Files         []FileAnalysis
+	AllReusables  []ReusableInfo
+	Config        *config.Config
+	GeneratedAt   time.Time
+	ToolVersion   string
+	BuildRevision string
+	Repositories  []Repository
+	Locations     map[string]Location
+	Diagnostics   []Diagnostic
 
 	// filesExcluded counts files whose extension matched the content allowlist
 	// but which exclude_dirs / exclude_patterns dropped from the walk. It is
@@ -611,6 +618,11 @@ func isUserExcludedDir(dirPath string, cfg *config.Config, baseDir string) bool 
 // nil cache disables memoization (#65).
 func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git.FileInfoCache) (FileAnalysis, error) {
 	now := nowFunc()
+	return analyzeFileAt(filePath, cfg, baseDir, cache, now)
+}
+
+// analyzeFileAt analyzes one file against the shared scan instant and Git cache.
+func analyzeFileAt(filePath string, cfg *config.Config, baseDir string, cache *git.FileInfoCache, now time.Time) (FileAnalysis, error) {
 	thresholdDate := now.Add(-time.Duration(cfg.ThresholdDays) * 24 * time.Hour)
 
 	// Get file-level info
@@ -619,7 +631,8 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 	// Read file content
 	content, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
-		return FileAnalysis{Path: filePath}, nil
+		rel, _ := filepath.Rel(baseDir, filePath)
+		return FileAnalysis{Path: filePath, RelativePath: filepath.ToSlash(rel), FileInfo: fileInfo, HistoryMissing: fileInfo == nil, AnalysisStatus: "failed", Diagnostics: []Diagnostic{{Code: "file_read_failed", Severity: "warning", Message: "Unable to read content file"}}}, nil
 	}
 
 	// Get relative path for display. Normalize to forward slashes so reports
@@ -680,6 +693,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		return FileAnalysis{Path: filePath, RelativePath: relativePath}, fmt.Errorf("%s: %w", relativePath, err)
 	}
 
+	var diagnostics []Diagnostic
 	var sections []parser.Section
 	var linesInfo []git.LineInfo
 
@@ -690,7 +704,19 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 			// Git blame failed - file may not be tracked, or git error occurred
 			// Continue with empty linesInfo, sections will have no line-level timestamps
 			linesInfo = nil
+			diagnostics = append(diagnostics, Diagnostic{Code: "blame_failed", Severity: "warning", Message: "Git blame unavailable"})
 		}
+		committed := make([]git.LineInfo, 0, len(linesInfo))
+		for _, line := range linesInfo {
+			if line.CommitHash != "" && strings.Trim(line.CommitHash, "0") == "" {
+				if len(diagnostics) == 0 || diagnostics[len(diagnostics)-1].Code != "uncommitted_content" {
+					diagnostics = append(diagnostics, Diagnostic{Code: "uncommitted_content", Severity: "warning", Message: "Uncommitted lines have no committed change evidence"})
+				}
+				continue
+			}
+			committed = append(committed, line)
+		}
+		linesInfo = committed
 		if cfg.ParagraphLevel {
 			sections = parser.ParseChunks(string(content), linesInfo, true, rp)
 		} else {
@@ -706,11 +732,18 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 	var unresolvedReusableRefs []string
 	var oldestSectionDate *time.Time
 
-	for _, section := range sections {
+	for idx := range sections {
+		section := sections[idx]
+		for i, d := range section.Dependencies {
+			section.Dependencies[i] = parser.ResolveDependency(d, filePath, rp)
+		}
 		// Calculate effective staleness considering reusables
 		effectiveDate := parser.CalculateSectionStaleness(&section, filePath, rp)
 
-		if effectiveDate != nil && effectiveDate.Before(thresholdDate) {
+		section.EffectiveLastUpdated = effectiveDate
+		section.IsStale = effectiveDate != nil && effectiveDate.Before(thresholdDate)
+		sections[idx] = section
+		if section.IsStale {
 			// Recorded so the row displays the same date it was counted on
 			// (see parser.Chunk.DisplayDate): max(own lines, resolved
 			// includes), which for a blameless section is the include's date.
@@ -836,6 +869,8 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		DaysStale:            daysStale,
 		OldestSectionDays:    oldestSectionDays,
 		HistoryMissing:       historyMissing,
+		AnalysisStatus:       "analyzed",
+		Diagnostics:          diagnostics,
 
 		unresolvedReusableRefs: unresolvedReusableRefs,
 	}, nil
@@ -872,6 +907,7 @@ func Analyze(cfg *config.Config) (*Results, error) {
 
 // AnalyzeWithProgress runs analysis with progress reporting.
 func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results, error) {
+	analysisTime := nowFunc()
 	if cfg.ContentDir == "" {
 		return nil, os.ErrInvalid
 	}
@@ -1038,7 +1074,7 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		go func() {
 			defer wg.Done()
 			for idx := range fileChan {
-				fa, ferr := analyzeFile(mdFiles[idx], cfg, baseDir, fileInfoCache)
+				fa, ferr := analyzeFileAt(mdFiles[idx], cfg, baseDir, fileInfoCache, analysisTime)
 				if ferr != nil {
 					firstErrM.Lock()
 					if firstErr == nil {
@@ -1114,11 +1150,11 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		return allReusables[i].Name < allReusables[j].Name
 	})
 
-	return &Results{
+	results := &Results{
 		Files:           analyses,
 		AllReusables:    allReusables,
 		Config:          cfg,
-		GeneratedAt:     nowFunc(),
+		GeneratedAt:     analysisTime,
 		filesExcluded:   excluded,
 		filesSkippedExt: skippedExt,
 		skippedExts:     skippedExts,
@@ -1129,5 +1165,7 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 
 		unresolvedReusables: unresolved,
 		unresolvedRefs:      unresolvedRefs,
-	}, nil
+	}
+	results.captureContext(baseDir)
+	return results, nil
 }

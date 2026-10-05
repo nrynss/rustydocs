@@ -17,6 +17,12 @@ import (
 // ReusablePatterns holds compiled regex patterns for detecting reusables and
 // the settings that decide how a detected reference is resolved to a file.
 type ReusablePatterns struct {
+	traceFiles      []string
+	traceRoots      map[string]string
+	supportIssues   []SupportIssue
+	shortcodeIssues map[string][]SupportIssue
+	collectTrace    bool
+
 	patterns     []*regexp.Regexp
 	extensions   []string
 	capabilities config.ParserCapabilities
@@ -134,15 +140,16 @@ type ReusableConfig struct {
 // reusable settings. Returns an error if any pattern fails to compile.
 func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 	rp := &ReusablePatterns{
-		extensions:     slices.Clone(rc.Extensions),
-		capabilities:   rc.Capabilities,
-		root:           rc.Root,
-		resolver:       rc.Resolver,
-		reusablesDir:   rc.ReusablesDir,
-		filePaths:      make(map[string]string),
-		shortcodeCache: make(map[string][]string),
-		cache:          rc.Cache,
-		importMap:      rc.ImportMap,
+		extensions:      slices.Clone(rc.Extensions),
+		capabilities:    rc.Capabilities,
+		root:            rc.Root,
+		resolver:        rc.Resolver,
+		reusablesDir:    rc.ReusablesDir,
+		filePaths:       make(map[string]string),
+		shortcodeCache:  make(map[string][]string),
+		shortcodeIssues: make(map[string][]SupportIssue),
+		cache:           rc.Cache,
+		importMap:       rc.ImportMap,
 	}
 	// Retain nil versus empty capability lists while isolating this parser
 	// from later mutations to the caller's configuration.
@@ -829,11 +836,24 @@ func (rp *ReusablePatterns) displayTarget(ref, sourceFile string) (string, bool)
 func (rp *ReusablePatterns) layoutRoots() []string {
 	roots := []string{filepath.Join(rp.root, "layouts")}
 	themesDir := filepath.Join(rp.root, "themes")
-	entries, err := os.ReadDir(themesDir)
+	physicalThemesDir, status := supportingTarget(themesDir, rp.root)
+	if status != "" {
+		if status == "rejected" {
+			rp.noteSupportIssue("reusable_support_rejected", "themes")
+		}
+		return roots
+	}
+	entries, err := os.ReadDir(physicalThemesDir)
 	if err != nil {
 		return roots
 	}
 	for _, e := range entries {
+		if _, status := supportingTarget(filepath.Join(themesDir, e.Name()), rp.root); status != "" {
+			if status == "rejected" {
+				rp.noteSupportIssue("reusable_support_rejected", "theme "+e.Name())
+			}
+			continue
+		}
 		if entryIsDir(themesDir, e) {
 			roots = append(roots, filepath.Join(themesDir, e.Name(), "layouts"))
 		}
@@ -847,7 +867,8 @@ func (rp *ReusablePatterns) layoutRoots() []string {
 // symlinking a checkout into themes/<name> is the standard Hugo local
 // theme-development workflow. Only symlink entries are stat'ed, so the common
 // case costs nothing extra; a broken symlink stats with an error and is
-// skipped.
+// skipped. layoutRoots authorizes the physical target first, so only in-root
+// theme symlinks reach this helper.
 func entryIsDir(parent string, e fs.DirEntry) bool {
 	if e.IsDir() {
 		return true
@@ -885,14 +906,21 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 
 	// Check cache first
 	if paths, ok := rp.shortcodeCache[name]; ok {
+		for _, issue := range rp.shortcodeIssues[name] {
+			rp.noteSupportIssue(issue.Code, issue.Reference)
+		}
 		return rp.mostRecentFile(paths)
 	}
+	issueStart := len(rp.supportIssues)
+	defer func() {
+		rp.shortcodeIssues[name] = append([]SupportIssue{}, rp.supportIssues[issueStart:]...)
+	}()
 
 	// Look for the shortcode template, project layouts before theme layouts.
 	shortcodePath := ""
 	for _, layouts := range rp.layoutRoots() {
 		for _, candidate := range shortcodeCandidates(layouts, name) {
-			if _, err := os.Stat(candidate); err != nil {
+			if _, ok := rp.supportingFile(candidate, rp.root, "shortcode "+name, false); !ok {
 				continue
 			}
 			if !rp.caseExactUnder(rp.root, candidate) {
@@ -909,6 +937,7 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 	}
 
 	if shortcodePath == "" {
+		rp.shortcodeCache[name] = nil
 		return nil
 	}
 
@@ -927,8 +956,13 @@ func (rp *ReusablePatterns) lookupShortcode(name string) *git.FileInfo {
 // same reason resolution is: the date it contributes must not depend on the
 // case-folding rules of the filesystem the run happened on.
 func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []string {
-	data, err := os.ReadFile(filepath.Clean(shortcodePath))
+	target, ok := rp.supportingFile(shortcodePath, rp.root, "shortcode template", true)
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(target)
 	if err != nil {
+		rp.noteSupportIssue("reusable_support_missing", "shortcode template")
 		return nil
 	}
 
@@ -940,8 +974,8 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	for _, match := range readFileRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
 			fullPath := filepath.Join(rp.root, match[1])
-			if _, err := os.Stat(fullPath); err == nil && rp.caseExactUnder(rp.root, fullPath) {
-				dataFiles = append(dataFiles, fullPath)
+			if target, ok := rp.supportingFile(fullPath, rp.root, match[1], true); ok {
+				dataFiles = append(dataFiles, target)
 			}
 		}
 	}
@@ -954,8 +988,8 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 			if !strings.HasSuffix(partialPath, ".html") {
 				partialPath += ".html"
 			}
-			if _, err := os.Stat(partialPath); err == nil && rp.caseExactUnder(rp.root, partialPath) {
-				dataFiles = append(dataFiles, partialPath)
+			if target, ok := rp.supportingFile(partialPath, rp.root, "partial "+match[1], true); ok {
+				dataFiles = append(dataFiles, target)
 			}
 		}
 	}
@@ -965,13 +999,20 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 	dataRe := regexp.MustCompile(`\.Site\.Data\.(\w+)`)
 	for _, match := range dataRe.FindAllStringSubmatch(content, -1) {
 		if len(match) > 1 {
-			// Try common extensions
+			// Try common extensions without inventing a missing issue for each
+			// fallback; qualify the concrete .Site.Data reference once.
+			found := false
+			issueStart := len(rp.supportIssues)
 			for _, ext := range []string{".yaml", ".yml", ".json", ".toml"} {
 				dataPath := filepath.Join(rp.root, "data", match[1]+ext)
-				if _, err := os.Stat(dataPath); err == nil && rp.caseExactUnder(rp.root, dataPath) {
-					dataFiles = append(dataFiles, dataPath)
+				if target, ok := rp.supportingFile(dataPath, rp.root, ".Site.Data."+match[1], false); ok {
+					dataFiles = append(dataFiles, target)
+					found = true
 					break
 				}
+			}
+			if !found && len(rp.supportIssues) == issueStart {
+				rp.noteSupportIssue("reusable_support_missing", ".Site.Data."+match[1])
 			}
 		}
 	}
@@ -981,17 +1022,7 @@ func (rp *ReusablePatterns) parseShortcodeDataRefs(shortcodePath string) []strin
 
 // mostRecentFile returns git info for the most recently modified file in the list.
 func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
-	var mostRecent *git.FileInfo
-	for _, p := range paths {
-		info, err := rp.cache.FileLastModified(p)
-		if err != nil || info == nil {
-			continue
-		}
-		if mostRecent == nil || info.LastModified.After(mostRecent.LastModified) {
-			mostRecent = info
-		}
-	}
-	return mostRecent
+	return rp.mostRecentFileUnder(paths, rp.root)
 }
 
 // lookupInDir tries to find a file in a directory by name.
@@ -1003,20 +1034,20 @@ func (rp *ReusablePatterns) mostRecentFile(paths []string) *git.FileInfo {
 func (rp *ReusablePatterns) lookupInDir(name, dir string) *git.FileInfo {
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name+ext)
-		if !rp.caseExactUnder(dir, candidate) {
+		if _, ok := rp.supportingFile(candidate, dir, name, false); !ok {
 			continue
 		}
-		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
+		if info, err := rp.tracedFileInfoUnder(candidate, dir); err == nil && info != nil {
 			return info
 		}
 	}
 	// Try as subdirectory with index file
 	for _, ext := range rp.extensions {
 		candidate := filepath.Join(dir, name, "index"+ext)
-		if !rp.caseExactUnder(dir, candidate) {
+		if _, ok := rp.supportingFile(candidate, dir, name, false); !ok {
 			continue
 		}
-		if info, err := rp.cache.FileLastModified(candidate); err == nil && info != nil {
+		if info, err := rp.tracedFileInfoUnder(candidate, dir); err == nil && info != nil {
 			return info
 		}
 	}
@@ -1089,7 +1120,7 @@ func (rp *ReusablePatterns) storePath(key, path string) {
 // lookupPath resolves a cached legacy name to git info, if any.
 func (rp *ReusablePatterns) lookupPath(name string) *git.FileInfo {
 	if path, ok := rp.filePaths[name]; ok {
-		fileInfo, err := rp.cache.FileLastModified(path)
+		fileInfo, err := rp.tracedFileInfoUnder(path, rp.reusablesDir)
 		if err == nil && fileInfo != nil {
 			return fileInfo
 		}
