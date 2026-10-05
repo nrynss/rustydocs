@@ -267,13 +267,7 @@ func (d profileDefinition) profile() (Profile, error) {
 		ContentExtensions: d.ContentExtensions, RootMarkers: d.RootMarkers,
 		markerPredicates: predicates, ReusablePatterns: d.ReusablePatterns,
 		ReusableExtensions: d.ReusableExtensions, Resolver: d.Resolver, ImportMap: d.ImportMap,
-		ParserCapabilities: ParserCapabilities{
-			MaskFencedChunking: c.MaskFencedChunking, SkipFencedCaptures: c.SkipFencedCaptures,
-			SkipURLCaptures: c.SkipURLCaptures, SkipAliasShapedIncludes: c.SkipAliasShapedIncludes,
-			PathCapturesOnly: c.PathCapturesOnly, StripCaptureFragments: c.StripCaptureFragments,
-			AllowedExplicitPathExtensions: c.AllowedExplicitPathExtensions,
-			PathBaseMode:                  c.PathBaseMode, IndexFileNames: c.IndexFileNames,
-		},
+		ParserCapabilities: ParserCapabilities(c),
 	}, nil
 }
 
