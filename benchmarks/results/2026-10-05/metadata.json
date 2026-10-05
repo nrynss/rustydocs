@@ -1,0 +1,51 @@
+{
+  "baseline": "426b8bf38fa62e03339649c8149203e021899622",
+  "candidate": "b9e0f3c5eee6e58b3aa43492bbfdffcbcdda2fc2",
+  "pages": 300,
+  "workers": 8,
+  "runs": 5,
+  "go": "go version go1.27.1 darwin/arm64",
+  "git": "git version 2.54.0 (Apple Git-157)",
+  "uname": "Darwin Narayans-MacBook-Pro.local 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:49:53 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6030 arm64",
+  "commands": {
+    "mintlify": [
+      "/private/tmp/rustydocs-memo-results-v2/uncached-control/rustydocs --profile mintlify --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-mintlify/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-mintlify --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-mintlify",
+      "/private/tmp/rustydocs-memo-results-v2/main/rustydocs --profile mintlify --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-mintlify/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-mintlify --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-mintlify",
+      "/private/tmp/rustydocs-memo-results-v2/candidate/rustydocs --profile mintlify --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-mintlify/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-mintlify --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-mintlify"
+    ],
+    "starlight": [
+      "/private/tmp/rustydocs-memo-results-v2/uncached-control/rustydocs --profile starlight --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-starlight/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-starlight --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-starlight",
+      "/private/tmp/rustydocs-memo-results-v2/main/rustydocs --profile starlight --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-starlight/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-starlight --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-starlight",
+      "/private/tmp/rustydocs-memo-results-v2/candidate/rustydocs --profile starlight --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-starlight/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-starlight --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-starlight"
+    ],
+    "gitbook": [
+      "/private/tmp/rustydocs-memo-results-v2/uncached-control/rustydocs --profile gitbook --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-gitbook/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-gitbook --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-gitbook",
+      "/private/tmp/rustydocs-memo-results-v2/main/rustydocs --profile gitbook --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-gitbook/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-gitbook --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-gitbook",
+      "/private/tmp/rustydocs-memo-results-v2/candidate/rustydocs --profile gitbook --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-gitbook/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-gitbook --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-gitbook"
+    ],
+    "hugo": [
+      "/private/tmp/rustydocs-memo-results-v2/uncached-control/rustydocs --profile hugo --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-hugo/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-hugo --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-hugo",
+      "/private/tmp/rustydocs-memo-results-v2/main/rustydocs --profile hugo --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-hugo/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-hugo --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-hugo",
+      "/private/tmp/rustydocs-memo-results-v2/candidate/rustydocs --profile hugo --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-hugo/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-hugo --workers 8 --project-root /private/tmp/rustydocs-memo-results-v2/fixture-hugo"
+    ],
+    "markdown": [
+      "/private/tmp/rustydocs-memo-results-v2/uncached-control/rustydocs --profile markdown --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-markdown/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-markdown --workers 8",
+      "/private/tmp/rustydocs-memo-results-v2/main/rustydocs --profile markdown --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-markdown/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-markdown --workers 8",
+      "/private/tmp/rustydocs-memo-results-v2/candidate/rustydocs --profile markdown --content-dir /private/tmp/rustydocs-memo-results-v2/fixture-markdown/content --output-dir /private/tmp/rustydocs-memo-results-v2/report-markdown --workers 8"
+    ]
+  },
+  "verification": "All 3 formats (generation timestamp removed), stdout (progress frames removed)/stderr, one unknown file and zero-match warnings agree for all cases.",
+  "cpu": "Apple M3 Pro",
+  "date": "2026-10-05",
+  "hyperfine": "hyperfine 1.20.0",
+  "repeat": {
+    "profile": "gitbook",
+    "order": [
+      "candidate",
+      "main"
+    ],
+    "warmup_per_command": 1,
+    "runs": 5,
+    "reason": "Initial candidate samples ranged from 2.402 to 6.137 seconds; repeat after the complete suite, reversing order, to investigate variation. Cause of outlier is unproven. Initial samples retained."
+  }
+}
