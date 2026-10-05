@@ -1,4 +1,4 @@
-// Package report provides report generators for rustydocs.
+// Package report provides portable single-run scan exports.
 package report
 
 import (
@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/nrynss/rustydocs/internal/analyzer"
 	"github.com/nrynss/rustydocs/internal/config"
@@ -17,268 +18,192 @@ import (
 //go:embed templates/report.html
 var templateFS embed.FS
 
-// TemplateData holds data for the HTML template.
+// TemplateData is a read-only view of the captured scan, shared with Markdown.
 type TemplateData struct {
-	GeneratedDate       string
-	ThresholdDays       int
-	TotalFiles          int
-	StaleFiles          int
-	StaleFilesPct       string
-	TotalSections       int
-	StaleSections       int
-	StaleSectionsPct    string
-	FilesMissingHistory int
-	OldestFile          string
-	OldestDays          int
-	Files               []FileData
-	Reusables           []ReusableTemplateData
-	WarningThreshold    int
-	CautionThreshold    int
-	CriticalThreshold   int
+	GeneratedDate                     string
+	ThresholdDays                     int
+	Summary                           JSONSummary
+	Files, UnknownFiles, SnippetFiles []FileData
+	Reusables                         []ReusableTemplateData
+	Diagnostics                       []string
+	FileLevelOnly                     bool
 }
 
-// ReusableTemplateData holds data for a reusable component in the template.
+// ReusableTemplateData presents supporting-file history without review state.
 type ReusableTemplateData struct {
-	Name        string
-	DateStr     string
-	Status      string
-	StatusClass string
-	Author      string
+	Name, DateStr, Status, StatusClass, Author, Age string
 }
 
-// FileData holds data for a single file in the template.
+// FileData groups section findings with a stable navigation anchor.
 type FileData struct {
-	Path           string
-	SidebarPath    string
-	Anchor         string
-	ShortName      string
-	DateStr        string
-	DaysStale      int
-	OldestDays     int
-	StalenessClass string
-	Sections       []SectionData
-	Reusables      []ReusableData
+	Path, Anchor, HistoryStatus string
+	Sections                    []SectionData
 }
 
-// SectionData holds data for a section in the template.
+// SectionData presents effective age and authors alongside concise dependency evidence.
 type SectionData struct {
-	StartLine      int
-	Title          string
-	DateStr        string
-	DaysStale      int
-	DateKnown      bool // false when the date is unknown (render "—", class "unknown")
-	Author         string
-	StalenessClass string
+	StartLine                                        int
+	Title, DateStr, Author, StalenessClass, Evidence string
+	DaysStale                                        int
+	DateKnown                                        bool
 }
 
-// ReusableData holds data for a reusable in the template.
-type ReusableData struct {
-	Name        string
-	DateStr     string
-	Status      string
-	StatusClass string
-	Author      string
+// displayDate renders absent change evidence explicitly rather than inventing freshness.
+func displayDate(date *time.Time) string {
+	if date == nil {
+		return "Unknown"
+	}
+	return date.UTC().Format("2006-01-02")
 }
 
-// GenerateHTML generates an HTML report of stale documentation.
+// displayAuthors keeps effective-source authors distinct from absent author evidence.
+func displayAuthors(authors []string) string {
+	if len(authors) == 0 {
+		return "Unknown"
+	}
+	return strings.Join(authors, ", ")
+}
+
+// readableData builds findings and provenance from the same snapshot used by JSON.
+func readableData(results *analyzer.Results, cfg *config.Config) TemplateData {
+	scan := buildJSON(results, cfg)
+	data := TemplateData{GeneratedDate: scan.GeneratedAt, ThresholdDays: cfg.ThresholdDays, Summary: scan.Summary, FileLevelOnly: cfg.FileLevelOnly}
+	reusables := map[string]JSONReusable{}
+	for _, r := range scan.Reusables {
+		reusables[r.ID] = r
+		status, cls := "Unknown", "unknown"
+		age := "—"
+		if r.AgeDays != nil {
+			age = fmt.Sprint(*r.AgeDays)
+			status, cls = "Fresh", "fresh"
+			if r.LastChange.Date.Before(analysisTime(results).Add(-time.Duration(cfg.ThresholdDays) * 24 * time.Hour)) {
+				status, cls = "Stale", "stale"
+			}
+		}
+		data.Reusables = append(data.Reusables, ReusableTemplateData{Name: r.Name, DateStr: displayDate(r.LastChange.Date), Status: status, StatusClass: cls, Author: displayAuthors(r.LastChange.Authors), Age: age})
+	}
+	fileNames, sectionNames := map[string]string{}, map[string]string{}
+	for _, f := range scan.Files {
+		fileNames[f.ID] = f.ContentPath
+		stale := FileData{Path: f.ContentPath, Anchor: f.ID, HistoryStatus: f.HistoryStatus}
+		unknown, snippets := stale, stale
+		unknown.Anchor += "-unknown"
+		snippets.Anchor += "-snippets"
+		for _, s := range f.Sections {
+			sectionNames[s.ID] = s.Title
+			sourceIDs := map[string]bool{}
+			for _, source := range s.FreshnessSources {
+				if source.ReusableID != nil {
+					sourceIDs[*source.ReusableID] = true
+				}
+			}
+			evidence := []string{}
+			partialSupport := false
+			if len(s.Dependencies) > 0 {
+				evidence = append(evidence, "Own content: "+displayDate(s.OwnLastChange.Date)+"; "+displayAuthors(s.OwnLastChange.Authors))
+			}
+			for _, d := range s.Dependencies {
+				// An unimported JSX component is intentionally skipped, and supplies no
+				// supporting file. Keep it in JSON without distracting readable tables.
+				if d.Status == "skipped" {
+					continue
+				}
+				if d.Status == "partial" {
+					partialSupport = true
+					evidence = append(evidence, d.Reference+" (partial supporting evidence; see diagnostics)")
+				}
+				if len(d.ReusableIDs) == 0 {
+					evidence = append(evidence, fmt.Sprintf("%s (L%d: %s)", d.Reference, d.Line, d.Status))
+				}
+				for _, id := range d.ReusableIDs {
+					r := reusables[id]
+					label := fmt.Sprintf("%s (L%d; %s; %s)", r.Name, d.Line, displayDate(r.LastChange.Date), displayAuthors(r.LastChange.Authors))
+					if sourceIDs[id] {
+						label += " supplies freshness"
+					}
+					if r.HistoryStatus == "missing" {
+						label += "; history unknown"
+					}
+					evidence = append(evidence, label)
+				}
+			}
+			row := SectionData{StartLine: s.StartLine, Title: s.Title, DateStr: displayDate(s.EffectiveLastChange.Date), Author: displayAuthors(s.EffectiveLastChange.Authors), StalenessClass: s.Level, Evidence: strings.Join(unique(evidence), "; ")}
+			if s.AgeDays != nil {
+				row.DaysStale = *s.AgeDays
+				row.DateKnown = true
+			}
+			if s.IsStale {
+				stale.Sections = append(stale.Sections, row)
+			}
+			if s.AgeDays == nil || partialSupport {
+				unknown.Sections = append(unknown.Sections, row)
+			}
+			ownStale := s.OwnLastChange.Date == nil || s.OwnLastChange.Date.Before(analysisTime(results).Add(-time.Duration(cfg.ThresholdDays)*24*time.Hour))
+			if !s.IsStale && s.AgeDays != nil && len(sourceIDs) > 0 && ownStale {
+				snippets.Sections = append(snippets.Sections, row)
+			}
+		}
+		if len(stale.Sections) > 0 {
+			data.Files = append(data.Files, stale)
+		}
+		if len(unknown.Sections) > 0 || f.HistoryStatus != "available" || f.AnalysisStatus == "failed" {
+			data.UnknownFiles = append(data.UnknownFiles, unknown)
+		}
+		if len(snippets.Sections) > 0 {
+			data.SnippetFiles = append(data.SnippetFiles, snippets)
+		}
+	}
+	for _, d := range scan.Diagnostics {
+		context := []string{}
+		if d.FileID != nil {
+			context = append(context, fileNames[*d.FileID])
+		}
+		if d.SectionID != nil {
+			context = append(context, sectionNames[*d.SectionID])
+		}
+		if d.Reference != nil {
+			context = append(context, *d.Reference)
+		}
+		if d.Line != nil {
+			context = append(context, fmt.Sprintf("L%d", *d.Line))
+		}
+		if d.RepositoryID != nil && d.FileID == nil {
+			for _, r := range scan.Repositories {
+				if r.ID == *d.RepositoryID {
+					context = append(context, "repository "+r.Path)
+				}
+			}
+		}
+		label := d.Code + ": " + d.Message
+		if len(context) > 0 {
+			label += " (" + strings.Join(context, "; ") + ")"
+		}
+		data.Diagnostics = append(data.Diagnostics, label)
+	}
+	for _, files := range [][]FileData{data.Files, data.UnknownFiles, data.SnippetFiles} {
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	}
+	sort.Slice(data.Reusables, func(i, j int) bool { return data.Reusables[i].Name < data.Reusables[j].Name })
+	return data
+}
+
+// GenerateHTML writes a self-contained, read-only report from captured evidence.
 func GenerateHTML(results *analyzer.Results, cfg *config.Config, outputPath string) error {
-	// Load template
-	tmpl, err := template.New("report.html").Funcs(template.FuncMap{
-		"safeHTML": func(s string) template.HTML {
-			return template.HTML(s) //nolint:gosec // trusted template content
-		},
-	}).ParseFS(templateFS, "templates/report.html")
+	tmpl, err := template.New("report.html").ParseFS(templateFS, "templates/report.html")
 	if err != nil {
 		return fmt.Errorf("unable to parse template: %w", err)
 	}
-
-	// Sort files by oldest section (files with oldest content first)
-	staleFiles := make([]analyzer.FileAnalysis, 0)
-	for _, f := range results.Files {
-		if f.IsStale() {
-			staleFiles = append(staleFiles, f)
-		}
-	}
-	sort.Slice(staleFiles, func(i, j int) bool {
-		return staleFiles[i].OldestSectionDays > staleFiles[j].OldestSectionDays
-	})
-
-	// Build template data
-	var files []FileData
-	for _, f := range staleFiles {
-		var dateStr string
-		if f.EffectiveLastUpdated != nil {
-			dateStr = f.EffectiveLastUpdated.Format("2006-01-02")
-		} else {
-			dateStr = "Unknown"
-		}
-
-		anchor := strings.ReplaceAll(f.RelativePath, "/", "-")
-
-		// For sidebar, show path without _index filename
-		sidebarPath := f.RelativePath
-		pathParts := strings.Split(sidebarPath, "/")
-		filename := pathParts[len(pathParts)-1]
-		if strings.HasPrefix(filename, "_index") {
-			// Remove the _index.*.md filename, show parent path only
-			if len(pathParts) > 1 {
-				sidebarPath = strings.Join(pathParts[:len(pathParts)-1], "/")
-			} else {
-				sidebarPath = "(root)"
-			}
-		}
-
-		shortName := pathParts[len(pathParts)-1]
-
-		var sections []SectionData
-		for _, s := range f.StaleSections {
-			title := truncateRunes(s.Title, 50)
-
-			// No resolvable date at all renders as "Unknown" with an "unknown"
-			// class — never a fabricated 999 days mislabeled "critical". See
-			// #56. Otherwise DisplayDate is the date the classification used —
-			// own latest folded with includes — so the row always matches the
-			// count.
-			sDateStr := "Unknown"
-			sDays := 0
-			dateKnown := false
-			stalenessClass := "unknown"
-			if lastUpdated := s.DisplayDate(); lastUpdated != nil {
-				sDateStr = lastUpdated.Format("2006-01-02")
-				sDays = int(nowFunc().Sub(*lastUpdated).Hours() / 24)
-				dateKnown = true
-				stalenessClass = cfg.GetStalenessClass(sDays)
-			}
-
-			author := s.LastAuthor()
-			if author == "" {
-				author = "Unknown"
-			}
-
-			sections = append(sections, SectionData{
-				StartLine:      s.StartLine,
-				Title:          title,
-				DateStr:        sDateStr,
-				DaysStale:      sDays,
-				DateKnown:      dateKnown,
-				Author:         author,
-				StalenessClass: stalenessClass,
-			})
-		}
-
-		var reusables []ReusableData
-		for _, r := range f.Reusables {
-			var rDateStr, status, statusClass, author string
-			if r.LastUpdated != nil {
-				rDateStr = r.LastUpdated.Format("2006-01-02")
-				if r.IsFresh {
-					status = "fresh"
-					statusClass = "fresh"
-				} else {
-					status = "stale"
-					statusClass = "stale"
-				}
-				author = r.LastAuthor
-			} else {
-				rDateStr = "unknown"
-				status = "unknown"
-				statusClass = "unknown"
-				author = "unknown"
-			}
-
-			reusables = append(reusables, ReusableData{
-				Name:        r.Name,
-				DateStr:     rDateStr,
-				Status:      status,
-				StatusClass: statusClass,
-				Author:      author,
-			})
-		}
-
-		files = append(files, FileData{
-			Path:           f.RelativePath,
-			SidebarPath:    sidebarPath,
-			Anchor:         anchor,
-			ShortName:      shortName,
-			DateStr:        dateStr,
-			DaysStale:      f.DaysStale,
-			OldestDays:     f.OldestSectionDays,
-			StalenessClass: cfg.GetStalenessClass(f.OldestSectionDays),
-			Sections:       sections,
-			Reusables:      reusables,
-		})
-	}
-
-	oldestFile := ""
-	oldestDays := 0
-	if oldest := results.OldestFile(); oldest != nil {
-		oldestFile = oldest.RelativePath
-		oldestDays = oldest.OldestSectionDays
-	}
-
-	// Build reusables data
-	var reusables []ReusableTemplateData
-	for _, r := range results.AllReusables {
-		var dateStr, status, statusClass, author string
-		if r.LastUpdated != nil {
-			dateStr = r.LastUpdated.Format("2006-01-02")
-			if r.IsFresh {
-				status = "Fresh"
-				statusClass = "fresh"
-			} else {
-				status = "Stale"
-				statusClass = "stale"
-			}
-			author = r.LastAuthor
-		} else {
-			dateStr = "Unknown"
-			status = "Unknown"
-			statusClass = "unknown"
-			author = "Unknown"
-		}
-		reusables = append(reusables, ReusableTemplateData{
-			Name:        r.Name,
-			DateStr:     dateStr,
-			Status:      status,
-			StatusClass: statusClass,
-			Author:      author,
-		})
-	}
-
-	data := TemplateData{
-		GeneratedDate:       results.GeneratedAt.Format("2006-01-02 15:04"),
-		ThresholdDays:       cfg.ThresholdDays,
-		TotalFiles:          results.TotalFiles(),
-		StaleFiles:          results.StaleFiles(),
-		StaleFilesPct:       fmt.Sprintf("%.1f", results.StaleFilesPct()),
-		TotalSections:       results.TotalSections(),
-		StaleSections:       results.StaleSections(),
-		StaleSectionsPct:    fmt.Sprintf("%.1f", results.StaleSectionsPct()),
-		FilesMissingHistory: results.FilesMissingHistory(),
-		OldestFile:          oldestFile,
-		OldestDays:          oldestDays,
-		Files:               files,
-		Reusables:           reusables,
-		WarningThreshold:    cfg.StalenessLevels.Warning,
-		CautionThreshold:    cfg.StalenessLevels.Caution,
-		CriticalThreshold:   cfg.StalenessLevels.Critical,
-	}
-
-	// Ensure output directory exists
 	if err := os.MkdirAll(filepath.Clean(filepath.Dir(outputPath)), 0750); err != nil {
 		return err
 	}
-
-	// Create output file
 	f, err := os.OpenFile(filepath.Clean(outputPath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	return tmpl.Execute(f, data)
+	executeErr := tmpl.Execute(f, readableData(results, cfg))
+	closeErr := f.Close()
+	if executeErr != nil {
+		return executeErr
+	}
+	return closeErr
 }

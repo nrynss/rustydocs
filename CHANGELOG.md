@@ -7,13 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- JSON schema `2.0` exports all analyzed sections, portable repository/file/section
+  identities, normalized content fingerprints, own/effective Git evidence,
+  section dependency relationships and tied freshness sources. Repository context,
+  nullable unknown dates/ages, effective configuration, structured diagnostics and
+  coverage counters support external consumers. See `docs/json-v2.md` for the
+  breaking schema migration and complete example artifact (#80).
+
 ### Changed
+
+- HTML is now read-only: review buttons, status tabs, persisted browser state and
+  page-age/date displays are removed. HTML and Markdown show snippet provenance
+  beside consuming sections, sections made fresh by snippets, unknown/partial
+  history details and scan diagnostics. All report ages use the analysis timestamp.
+
 
 - Refactored built-in profiles into embedded, validated JSON definitions and
   identity-free parser capabilities; separated reusable resolution from Markdown
   chunking. Existing profile behavior and user configuration are unchanged.
 
 ### Fixed
+
+- Authorize reusable supporting files within the resolver's physical root before
+  template reads, Git history queries and fingerprints. Hugo traversal and
+  external symlink targets (including discovered theme checkouts) are rejected;
+  explicit legacy directories authorize only legacy lookup. Reports retain
+  contextual diagnostics and partial evidence for rejected or missing support.
+- Heading detection ignores fenced code, and MDX import declarations no longer
+  manufacture preamble sections; frontmatter and rendered preamble content retain
+  their existing behavior. HTML sorting now uses each table's own columns, explicit
+  numeric/date/text types and consistent unknown-value ordering (#80).
+
 
 - Git lookup memoization now keeps the repository context of the caller's
   directory. A file symlink into another repository no longer shares the

@@ -182,11 +182,9 @@ func TestGenerateHTMLReusablesTable(t *testing.T) {
 	if !unknownRow.MatchString(html) {
 		t.Errorf("HTML: unknown-date reusable row did not render:\n%s", html)
 	}
-	// The table is global information, so it must sit before the tab strip.
-	tableAt := strings.Index(html, `<table class="sections-table reusables-table">`)
-	tabsAt := strings.Index(html, `<div class="tabs">`)
-	if tableAt < 0 || tabsAt < 0 || tableAt > tabsAt {
-		t.Errorf("reusables table must render before the tab sections (table=%d tabs=%d)", tableAt, tabsAt)
+	// The table remains available without any review status tabs.
+	if !strings.Contains(html, `<table class="sections-table reusables-table">`) || strings.Contains(html, `<div class="tabs">`) {
+		t.Error("global reusable table missing or obsolete tabs remain")
 	}
 	// Every status class the generator can emit must exist in the stylesheet
 	// (or be deliberately unstyled): guard against a row class with no rule.
@@ -505,11 +503,8 @@ func TestReusableRendering(t *testing.T) {
 	if !strings.Contains(md, "top-fresh") || !strings.Contains(md, "top-unknown") {
 		t.Error("Markdown missing top-level reusable rows")
 	}
-	if !strings.Contains(md, "**Reusables:**") {
-		t.Error("Markdown missing per-file reusables line")
-	}
-	if !strings.Contains(md, "`fresh-include`") || !strings.Contains(md, "`unknown-include` (unknown)") {
-		t.Errorf("Markdown missing file-level reusable variants:\n%s", md)
+	if !strings.Contains(md, "| top-fresh | 2026-06-14 | 10 | Fresh |") || !strings.Contains(md, "| top-unknown | Unknown | — | Unknown |") {
+		t.Error("reusable dates/ages are inconsistent")
 	}
 
 	// --- JSON reusables ---

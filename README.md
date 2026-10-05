@@ -12,7 +12,7 @@ Find stale documentation using git history. Analyzes your documentation at the s
 - **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`); under `starlight`, MDX imports (`import X from "./_shared.mdx"` rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`, and `.astro` under `starlight`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
 - **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is about a 6.5x speedup (48.7 s to 7.5 s) and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
-- **Dual output**: Generates both Markdown and HTML reports
+- **Three output formats**: Generates JSON, Markdown and self-contained HTML reports
 - **Zero dependencies**: Uses only Go standard library
 - **Configurable thresholds**: Set custom staleness levels (warning, caution, critical)
 
@@ -275,6 +275,15 @@ This means if your content uses `{{< reusables/warning >}}` and that shortcode r
 
 The project root is auto-detected by walking up from `content_dir` (no further than the enclosing git repository root, though a submodule `content/` is walked through into its parent repository) until finding a `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config; finding one is also what selects the `hugo` profile. Set `project_root` / `--project-root` to override the detected root; on a site with none of those markers, pair it with `--profile hugo`.
 
+Templates, themes and their supporting files must stay within the selected
+project root after resolving symlinks. In-root symlinks and explicitly selected
+symlinked roots work; a discovered theme symlink to an external checkout is
+rejected. The legacy `reusables.dir` permits legacy file lookup within that
+directory only and does not grant Hugo templates permission to read it. Rejected
+files contribute no content fingerprints or Git dates. Missing or rejected
+support produces contextual diagnostics and partial dependency evidence in all
+reports, even when permitted support makes a section fresh.
+
 ### Mintlify Snippet Resolution
 
 Under the `mintlify` profile, a snippet include carries the file path outright,
@@ -439,82 +448,49 @@ Three reports are generated in the output directory:
 
 ### JSON Report (`stale-docs.json`)
 
-Machine-readable format for CI/CD integration:
+Schema `2.0` exports every analyzed section, including fresh and unknown sections,
+with portable file/repository IDs, content fingerprints, own and effective change
+evidence, snippet dependencies, repository revision/dirty/shallow context, effective
+configuration, diagnostics and coverage counters. Unknown dates and ages are null.
+Files group sections and have no age or last-updated score.
 
-```json
-{
-  "version": "1.0",
-  "generated_at": "2025-01-22T10:30:00Z",
-  "config": {
-    "threshold_days": 90,
-    "content_dir": "docs",
-    "profile": "markdown",
-    "profile_auto": true,
-    "content_extensions": [".md", ".markdown"],
-    "staleness_levels": { "warning": 90, "caution": 180, "critical": 365 }
-  },
-  "summary": {
-    "total_files": 150,
-    "stale_files": 45,
-    "stale_files_pct": 30.0,
-    "total_sections": 620,
-    "stale_sections": 89,
-    "stale_sections_pct": 14.35
-  },
-  "files": [
-    {
-      "path": "deployment/github-app.md",
-      "days_stale": 178,
-      "stale_sections": 2,
-      "sections": [
-        {
-          "title": "Prerequisites",
-          "start_line": 29,
-          "days_stale": 845,
-          "level": "critical"
-        }
-      ]
-    }
-  ]
-}
-```
+See the [JSON v2 contract and migration guide](docs/json-v2.md) and
+[complete example artifact](docs/examples/scan-v2.json). Consumers can filter
+`files[].sections[].is_stale` for a stale-only view. Check `history_status`,
+`diagnostics` and `coverage` before interpreting a clean run; shallow history and
+untracked files can limit the evidence available. Keep the checkout stable during
+analysis. One analysis timestamp drives classification and all exported ages.
 
-`config` records the run that produced the artifact: `profile` is the resolved
-profile name, `profile_auto` is `true` when it was auto-detected rather than
-passed with `--profile`, and `content_extensions` is the allowlist that was
-actually scanned — so a consumer can tell "nothing is stale" from "the run
-never looked at these files".
+Snippet provenance identifies which supporting file supplies a section's freshness.
+It does not say that the snippet changed since a previous run or that surrounding
+prose is correct. Historical comparisons, scheduling, storage and review decisions
+belong to the consuming application.
 
 ### Markdown Report (`stale-docs.md`)
 
-```markdown
-# Stale Documentation Report
-Generated: 2025-12-10 | Threshold: 90 days
-
-## Summary
-- **Files scanned:** 150
-- **Files with stale content:** 45 (30%)
-- **Stale sections:** 89 (14%)
-
-## deployment/github-app.md
-| Line | Section       | Last Updated | Days Stale | Author |
-| ---- | ------------- | ------------ | ---------- | ------ |
-| L29  | Prerequisites | 2022-08-18   | 845        | @john  |
-```
+Markdown groups stale sections by file and lists section dates, ages, effective
+authors, severity and snippet evidence. Separate sections show consuming sections
+made fresh by snippets, unknown or partial history, scan diagnostics and the
+reusable inventory. File groups have no page-age display.
 
 ### HTML Report (`stale-docs.html`)
 
-- Color-coded staleness levels (yellow/orange/red)
-- Collapsible file sections
-- Quick navigation sidebar
+- Self-contained, read-only report with a compact summary and navigation
+- Expandable file groups with section severity and snippet evidence
+- Fresh sections whose effective date comes from a newer snippet
+- Visible unknown/partial history details and scan diagnostics
+- Independent table sorting for dates, numeric ages/lines and text, with unknown
+  values last in either direction
+
+The report contains no persisted review state or review-status controls.
 
 ## How It Works
 
 1. **Resolves** a profile (`--profile`, or auto-detected from the content dir) and **scans** the files whose extensions it lists
-2. **Parses** content to identify sections by headers (`#`, `##`, `###`); content above the first header is analyzed as a leading `(preamble)` section, with any `---`/`+++` frontmatter block skipped
+2. **Parses** content to identify sections by headers (`#`, `##`, `###`); content above the first header is analyzed as a leading `(preamble)` section, with `---`/`+++` frontmatter and non-rendered MDX imports skipped; fenced code cannot introduce headings
 3. **Runs** `git blame` concurrently to get per-line modification dates
 4. **Detects** reusable components (Hugo shortcodes, JSX — `hugo` profile; `<Snippet file>` includes — `mintlify` profile) and checks their freshness
-5. **Calculates** section staleness based on the oldest line in each section
+5. **Calculates** section staleness from its most recent committed line, folded with resolved supporting snippet dates
 6. **Generates** reports in JSON, Markdown, and HTML
 
 ## GitHub Actions
@@ -527,7 +503,7 @@ Use the JSON output in CI/CD pipelines:
     rustydocs --content-dir ./docs --output-dir ./reports
 
     # Fail if critical stale content exists
-    if jq -e '.files[] | select(.sections[]?.level == "critical")' reports/stale-docs.json > /dev/null; then
+    if jq -e '.files[].sections[] | select(.is_stale and .severity == "critical")' reports/stale-docs.json > /dev/null; then
       echo "Critical stale documentation found!"
       exit 1
     fi
