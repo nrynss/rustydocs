@@ -1,0 +1,28 @@
+{
+  "name": "mintlify",
+  "description": "Mintlify docs: .md and .mdx content, ATX '#' headers, snippet includes (<Snippet file=\"foo.mdx\" />) and MDX imports (import X from \"/snippets/foo.mdx\", used as <X />) resolved as paths under snippets/ or _snippets/ at the project root; .jsx/.js/.css imports are deliberately skipped. Auto-detected from a docs.json (current) or mint.json (legacy) file whose contents look like a Mintlify config, at or above content_dir, searching no further than the enclosing git repository.",
+  "include_example": "<Snippet file=\"aws-config.mdx\" />",
+  "content_extensions": [
+    ".md",
+    ".mdx"
+  ],
+  "root_markers": [
+    "docs.json",
+    "mint.json"
+  ],
+  "reusable_patterns": [
+    "<Snippet\\b[^>]*\\bfile=\"([^\"]+)\"",
+    "<Snippet\\b[^>]*\\bfile='([^']+)'",
+    "<([A-Z][A-Za-z0-9_$]*)\\s*[^>]*/?>"
+  ],
+  "reusable_extensions": [
+    ".mdx",
+    ".md"
+  ],
+  "resolver": "path",
+  "import_map": true,
+  "marker_predicates": {
+    "docs.json": "mintlify-config",
+    "mint.json": "mintlify-config"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "starlight",
+  "description": "Astro Starlight docs: .md, .mdx and .mdoc content (Markdoc is experimental upstream) under src/content/docs/, ATX '#' headers, MDX imports (import X from \"./_shared.mdx\", used as <X />) and Markdoc partials ({% partial file=\"./_footer.mdoc\" /%}) resolved as paths within the project root; .astro/.js/.jsx imports, bare package specifiers (@astrojs/starlight/components) and unimported components — Starlight's built-ins and Markdoc's import-free tags alike — are deliberately skipped. Auto-detected from an astro.config.{mjs,js,ts,mts} that calls the starlight() integration, or a package.json depending on @astrojs/starlight, at or above content_dir.",
+  "include_example": "{% partial file=\"./_footer.mdoc\" /%}",
+  "content_extensions": [
+    ".md",
+    ".mdx",
+    ".mdoc"
+  ],
+  "root_markers": [
+    "astro.config.mjs",
+    "astro.config.js",
+    "astro.config.ts",
+    "astro.config.mts",
+    "package.json"
+  ],
+  "reusable_patterns": [
+    "\\{%\\s*partial\\b[^%]*\\bfile\\s*=\\s*\"([^\"]+)\"",
+    "\\{%\\s*partial\\b[^%]*\\bfile\\s*=\\s*'([^']+)'",
+    "<([A-Z][A-Za-z0-9_$]*)\\s*[^>]*/?>"
+  ],
+  "reusable_extensions": [
+    ".mdx",
+    ".md",
+    ".mdoc"
+  ],
+  "resolver": "path",
+  "import_map": true,
+  "marker_predicates": {
+    "astro.config.mjs": "starlight-config",
+    "astro.config.js": "starlight-config",
+    "astro.config.ts": "starlight-config",
+    "astro.config.mts": "starlight-config",
+    "package.json": "starlight-package"
+  },
+  "parser_capabilities": {
+    "skip_fenced_captures": true,
+    "skip_alias_shaped_includes": true
+  }
+}

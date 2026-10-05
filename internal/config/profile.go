@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -34,6 +36,54 @@ const (
 	ResolverPath Resolver = "path"
 )
 
+// PathBaseMode selects the bases searched for a direct path capture.
+type PathBaseMode string
+
+const (
+	// PathBaseSharedFirst preserves the legacy lookup order: shared snippet
+	// directories, project root, then page directory for bare captures. An
+	// explicitly relative capture tries the page directory first. The zero
+	// value keeps callers predating profiles on this behavior.
+	PathBaseSharedFirst PathBaseMode = ""
+	// PathBasePageOnly resolves relative captures against the page directory
+	// only. Root-absolute captures still resolve against the project root.
+	PathBasePageOnly PathBaseMode = "page-only"
+)
+
+// ParserCapabilities describes parsing and path-resolution behavior without
+// exposing a profile's identity or display metadata. Its zero value preserves
+// legacy parsing and reusable lookup behavior.
+type ParserCapabilities struct {
+	// MaskFencedChunking hides fenced headings and references before chunking,
+	// while keeping nonblank lines nonblank so their blame history is retained.
+	MaskFencedChunking bool
+	// SkipFencedCaptures ignores reusable examples inside fenced code. This is
+	// independent of chunk masking: a profile may need only capture skipping.
+	SkipFencedCaptures bool
+	// SkipURLCaptures ignores captures containing "://" rather than treating
+	// remote references as missing local files.
+	SkipURLCaptures bool
+	// SkipAliasShapedIncludes skips unresolved alias-shaped captures only when
+	// an include pattern produced them; component provenance is unaffected.
+	SkipAliasShapedIncludes bool
+	// PathCapturesOnly performs direct path lookup without legacy directory,
+	// shortcode, or cached-name fallbacks, preserving the root boundary.
+	PathCapturesOnly bool
+	// StripCaptureFragments removes #anchors and ?queries before path lookup.
+	StripCaptureFragments bool
+	// AllowedExplicitPathExtensions restricts extensions written in captures
+	// by exact, case-sensitive equality. Nil means unrestricted; extensionless
+	// captures remain allowed and try ReusableExtensions, including overrides.
+	AllowedExplicitPathExtensions []string
+	// PathBaseMode controls relative capture bases; its zero value is
+	// PathBaseSharedFirst. Root-absolute captures always use the project root.
+	PathBaseMode PathBaseMode
+	// IndexFileNames are extensionless directory entry names, in lookup order.
+	// Nil means ["index"]. For extensionless captures, candidates remain ordered
+	// by reusable extension first, then by these names within each extension.
+	IndexFileNames []string
+}
+
 // Built-in profile names.
 const (
 	// ProfileMarkdown is the baseline profile every other profile extends and
@@ -56,6 +106,11 @@ const (
 type Profile struct {
 	Name        string
 	Description string
+	// IncludeExample is the include syntax shown in CLI diagnostics when a
+	// project root could not be found. It is display metadata, not parser input.
+	IncludeExample string
+	// ParserCapabilities supplies the profile's parsing and lookup defaults.
+	ParserCapabilities ParserCapabilities
 	// ContentExtensions are the file extensions analyzed as documentation.
 	ContentExtensions []string
 	// RootMarkers are names searched upward from content_dir to locate the
@@ -247,40 +302,6 @@ func isMintlifyConfig(path string) (bool, error) {
 // element, not a component (PR #71 review).
 const MDXComponentPattern = `<([A-Z][A-Za-z0-9_$]*)\s*[^>]*/?>`
 
-// hugoReusablePatterns is the single source of truth for the Hugo profile's
-// reusable-reference regexes (parser.DefaultReusablePatterns builds from it).
-var hugoReusablePatterns = []string{
-	// Hugo shortcodes: {{< name >}}, {{% name %}}, {{< name param >}}, etc.
-	`\{\{[<%]\s*([a-zA-Z][\w/-]*)\s*[^%>]*[%>]\}\}`,
-	MDXComponentPattern,
-}
-
-// mintlifyReusablePatterns captures the two ways a Mintlify page includes
-// shared content.
-//
-// The first two capture the *path* in <Snippet file="aws-config.mdx" />, which
-// the path resolver looks up under the project's snippets directory (or against
-// the project root when the capture is root-absolute). Both MDX quote styles
-// are legal, so there are two patterns rather than one with two alternatives:
-// reusable detection reads capture group 1 of each pattern, and an alternation
-// would leave one group empty on every match. "<Snippet\b" (rather than a bare
-// "<Snippet") keeps a hypothetical <SnippetGroup file="…"> — a different
-// element with different semantics — from being read as a snippet include.
-//
-// The third captures component usage, for the import map (see ImportMap). It is
-// the form that actually appears in the wild: measured over a production
-// Mintlify site, <Snippet file=…> occurred zero times and every reusable
-// reference was an MDX import rendered as <X /> (#68). It could not be enabled
-// before the import map existed, because on its own it captures the name of
-// every <Card /> and <Tabs> on the page, none of which names a file; with the
-// map, a capture that no import introduced is *skipped* rather than reported
-// unresolved (see parser.ResolveReusable).
-var mintlifyReusablePatterns = []string{
-	`<Snippet\b[^>]*\bfile="([^"]+)"`,
-	`<Snippet\b[^>]*\bfile='([^']+)'`,
-	MDXComponentPattern,
-}
-
 // starlightPartialPatternDouble and starlightPartialPatternSingle capture the
 // path of Astro's Markdoc partial tag, one per quote style:
 //
@@ -299,33 +320,6 @@ const (
 	starlightPartialPatternDouble = `\{%\s*partial\b[^%]*\bfile\s*=\s*"([^"]+)"`
 	starlightPartialPatternSingle = `\{%\s*partial\b[^%]*\bfile\s*=\s*'([^']+)'`
 )
-
-// starlightReusablePatterns captures the two ways a Starlight page includes
-// shared content, plus component usage for the import map. MDX pages import
-// and render <X />; Markdoc pages use Astro's partial tag —
-// {% partial file="./_footer.mdoc" /%} (upstream: relative paths, an
-// underscore prefix so partials stay out of content queries), whose capture
-// is a path the resolver looks up. The two partial patterns are *include*
-// patterns, so a broken one is counted unresolved rather than skipped (see
-// the provenance rule in parser.ResolveReusable) — with one deliberate
-// exception for import-alias spellings, recorded in patternExtensionConstraints
-// and parser.ResolveReusable — and a partial's commit date folds into the
-// section that renders it. Both partial patterns are additionally gated to
-// .mdoc pages, where Markdoc tags are the only ones that render (#75).
-// Component usage is the
-// shared pattern alone: Starlight's built-in components are imported from
-// the bare package specifier "@astrojs/starlight/components" in MDX and come
-// import-free through the Markdoc preset, and the import map
-// (Profile.ImportMap) does the distinguishing — a content import resolves,
-// while a component import — or a capitalised tag no import introduced — is
-// skipped, never reported unresolved. That also covers the built-ins
-// without hardcoding their names, so components Starlight adds later are
-// handled by the same rules.
-var starlightReusablePatterns = []string{
-	starlightPartialPatternDouble,
-	starlightPartialPatternSingle,
-	MDXComponentPattern,
-}
 
 // patternExtensionConstraints binds individual built-in reusable patterns to
 // the content extensions they may run on; a pattern absent from the map is
@@ -363,157 +357,6 @@ func PatternExtensionConstraint(pattern string) []string {
 		return nil
 	}
 	return append([]string(nil), exts...)
-}
-
-// builtinProfiles is the profile registry. Order matters for auto-detection
-// only as a tie-breaker: detectProfile walks up from content_dir one level at
-// a time and the nearest level holding any profile's marker wins; when two
-// profiles' markers sit at the same level, the earlier one here is chosen.
-// The markdown profile has no markers and is the fallback.
-//
-// hugo precedes mintlify: at the same level, the Hugo markers are the stronger
-// evidence. A Hugo site's layouts/ or themes/ directory, or its hugo.toml, is
-// unambiguous, whereas a docs.json sitting next to them could belong to
-// anything — and picking mintlify there would silently turn Hugo shortcode
-// tracing off on a site that needs it. Mintlify's markers additionally have to
-// pass a content predicate (see isMintlifyConfig), so a file merely *named*
-// docs.json no longer selects the profile at all. A tie only arises when both
-// markers sit in the same directory; whenever a Mintlify docs tree is nested
-// below a Hugo marker (or vice versa) the nearer marker wins regardless of
-// this order.
-//
-// Starlight is registered last: its markers (an astro.config.* calling the
-// starlight() integration, a package.json depending on @astrojs/starlight) do
-// not collide with the other profiles' at any realistic level, and on a
-// pathological same-directory tie the older profiles' resolvers win.
-var builtinProfiles = []Profile{
-	{
-		Name: ProfileMarkdown,
-		Description: "Plain Markdown (CommonMark/GFM): .md and .markdown files, ATX '#' headers, " +
-			"no include mechanism (reusable detection off). Default when nothing else is detected.",
-		ContentExtensions: []string{".md", ".markdown"},
-		Resolver:          ResolverNone,
-	},
-	{
-		Name: ProfileGitBook,
-		Description: "GitBook git-synced docs: .md content with ATX '#' headers, " +
-			"content-ref and include paths resolved within the project root. " +
-			"Auto-detected from .gitbook.yaml or SUMMARY.md at or above content_dir.",
-		ContentExtensions: []string{".md"},
-		RootMarkers:       []string{".gitbook.yaml", "SUMMARY.md"},
-		markerPredicates: map[string]markerPredicate{
-			"SUMMARY.md": isGitBookSummary,
-		},
-		ReusablePatterns: []string{
-			`\{%\s*content-ref\b[^{}]*\burl\s*=\s*"([^"]+)"`,
-			`\{%\s*content-ref\b[^{}]*\burl\s*=\s*'([^']+)'`,
-			`\{%\s*include\s+"([^"]+)"`,
-			`\{%\s*include\s+'([^']+)'`,
-		},
-		ReusableExtensions: []string{".md"},
-		Resolver:           ResolverPath,
-	},
-	{
-		Name: ProfileHugo,
-		Description: "Hugo site: .md, .markdown and .mdx content, Hugo shortcode and MDX component " +
-			"detection, shortcodes resolved from layouts/shortcodes and each " +
-			"themes/<theme>/layouts/shortcodes. Auto-detected from a layouts/ or themes/ directory, " +
-			"a hugo.{toml,yaml,json} file, or a config/_default/ Hugo config at or above content_dir, " +
-			"searching no further than the enclosing git repository.",
-		ContentExtensions: []string{".md", ".markdown", ".mdx"},
-		// layouts/ alone is not enough: git does not track empty directories,
-		// so a fresh clone of a site that keeps its shortcodes in a theme has
-		// no layouts/ dir. Hugo's own config file names are unambiguous
-		// markers, as is a themes/ directory. Top-level config.toml/config.yaml
-		// are deliberately left out because too many other tools use them, but
-		// under config/_default/ (Hugo's split-config layout) the generic names
-		// are unambiguous, so both hugo.* and config.* are accepted there.
-		// Sites matching none of these markers must pass --profile hugo.
-		RootMarkers: []string{
-			"layouts/", "themes/",
-			"hugo.toml", "hugo.yaml", "hugo.json",
-			"config/_default/hugo.toml", "config/_default/hugo.yaml", "config/_default/hugo.json",
-			"config/_default/config.toml", "config/_default/config.yaml", "config/_default/config.json",
-		},
-		ReusablePatterns:   hugoReusablePatterns,
-		ReusableExtensions: []string{".md", ".mdx", ".html"},
-		Resolver:           ResolverHugo,
-	},
-	{
-		Name: ProfileMintlify,
-		Description: "Mintlify docs: .md and .mdx content, ATX '#' headers, snippet includes " +
-			"(<Snippet file=\"foo.mdx\" />) and MDX imports (import X from \"/snippets/foo.mdx\", " +
-			"used as <X />) resolved as paths under snippets/ or _snippets/ at " +
-			"the project root; .jsx/.js/.css imports are deliberately skipped. " +
-			"Auto-detected from a docs.json (current) or mint.json (legacy) file whose contents " +
-			"look like a Mintlify config, at or above content_dir, searching no further than the " +
-			"enclosing git repository.",
-		ContentExtensions: []string{".md", ".mdx"},
-		// Both are regular files (no trailing "/"): docs.json is the current
-		// Mintlify config, mint.json the legacy name. The directory holding one
-		// is the project root that snippet paths resolve against. Both are
-		// validated by content as well as by name, so an unrelated docs.json
-		// (or an unparsable one) does not select the profile — see
-		// markerPredicates and isMintlifyConfig.
-		RootMarkers: []string{"docs.json", "mint.json"},
-		markerPredicates: map[string]markerPredicate{
-			"docs.json": isMintlifyConfig,
-			"mint.json": isMintlifyConfig,
-		},
-		ReusablePatterns:   mintlifyReusablePatterns,
-		ReusableExtensions: []string{".mdx", ".md"},
-		Resolver:           ResolverPath,
-		ImportMap:          true,
-	},
-	{
-		Name: ProfileStarlight,
-		Description: "Astro Starlight docs: .md, .mdx and .mdoc content (Markdoc is experimental " +
-			"upstream) under src/content/docs/, ATX '#' headers, MDX imports (import X from " +
-			"\"./_shared.mdx\", used as <X />) and Markdoc partials ({% partial file=" +
-			"\"./_footer.mdoc\" /%}) resolved as paths within the project root; " +
-			".astro/.js/.jsx imports, bare package specifiers (@astrojs/starlight/components) and " +
-			"unimported components — Starlight's built-ins and Markdoc's import-free tags alike — " +
-			"are deliberately skipped. Auto-detected from an astro.config.{mjs,js,ts,mts} that calls " +
-			"the starlight() integration, or a package.json depending on @astrojs/starlight, at or " +
-			"above content_dir.",
-		ContentExtensions: []string{".md", ".mdx", ".mdoc"},
-		// Each astro.config.* spelling is listed individually because marker
-		// matching stats exact names (there is no glob). Astro's docs recommend
-		// astro.config.mjs and support .js and .ts; .mts is the same TypeScript
-		// spelling. package.json is a marker only through its predicate: the
-		// file alone is the most generic name in the ecosystem (which is why no
-		// profile used it before), but a package.json that depends on
-		// @astrojs/starlight is a Starlight project. Both markers are validated
-		// by content as well as by name — see isStarlightConfig and
-		// isStarlightPackage. Starlight's content collection config
-		// (src/content.config.ts, legacy src/content/config.ts) is deliberately
-		// not a marker: plain Astro content collections have one too, so it
-		// says nothing about Starlight. Content lives in src/content/docs/, so
-		// the walk from there finds these markers at the project root.
-		RootMarkers: []string{
-			"astro.config.mjs", "astro.config.js", "astro.config.ts", "astro.config.mts",
-			"package.json",
-		},
-		markerPredicates: map[string]markerPredicate{
-			"astro.config.mjs": isStarlightConfig,
-			"astro.config.js":  isStarlightConfig,
-			"astro.config.ts":  isStarlightConfig,
-			"astro.config.mts": isStarlightConfig,
-			"package.json":     isStarlightPackage,
-		},
-		ReusablePatterns: starlightReusablePatterns,
-		// ReusableExtensions includes .mdoc, so an extensionless capture
-		// ("./partial") resolves to partial.mdoc — but an explicit
-		// "./partial.mdoc" import is skipped, because the import map follows
-		// .md/.mdx only (parser.importContentExtensions). The asymmetry is by
-		// spelling, and on the safe side either way: MDX imports always carry
-		// an extension, so the extensionless form is theoretical for
-		// Starlight, and skipping an .mdoc import can only under-report
-		// freshness, never over-report it.
-		ReusableExtensions: []string{".mdx", ".md", ".mdoc"},
-		Resolver:           ResolverPath,
-		ImportMap:          true,
-	},
 }
 
 var gitBookSummaryLink = regexp.MustCompile(`(?m)^\s*[-*+]\s+\[[^]]+\]\([^\n)]*\.md(?:#[^\n)]*)?\)`)
@@ -646,6 +489,9 @@ func readMarkerFile(path string) ([]byte, error) {
 // clone returns a deep copy so callers can mutate slices without touching the
 // registry.
 func (p Profile) clone() Profile {
+	p.markerPredicates = maps.Clone(p.markerPredicates)
+	p.ParserCapabilities.AllowedExplicitPathExtensions = slices.Clone(p.ParserCapabilities.AllowedExplicitPathExtensions)
+	p.ParserCapabilities.IndexFileNames = slices.Clone(p.ParserCapabilities.IndexFileNames)
 	p.ContentExtensions = cloneStrings(p.ContentExtensions)
 	p.RootMarkers = cloneStrings(p.RootMarkers)
 	p.ReusablePatterns = cloneStrings(p.ReusablePatterns)

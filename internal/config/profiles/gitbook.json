@@ -1,0 +1,40 @@
+{
+  "name": "gitbook",
+  "description": "GitBook git-synced docs: .md content with ATX '#' headers, content-ref and include paths resolved within the project root. Auto-detected from .gitbook.yaml or SUMMARY.md at or above content_dir.",
+  "include_example": "{% include \"./shared.md\" %}",
+  "content_extensions": [
+    ".md"
+  ],
+  "root_markers": [
+    ".gitbook.yaml",
+    "SUMMARY.md"
+  ],
+  "reusable_patterns": [
+    "\\{%\\s*content-ref\\b[^{}]*\\burl\\s*=\\s*\"([^\"]+)\"",
+    "\\{%\\s*content-ref\\b[^{}]*\\burl\\s*=\\s*'([^']+)'",
+    "\\{%\\s*include\\s+\"([^\"]+)\"",
+    "\\{%\\s*include\\s+'([^']+)'"
+  ],
+  "reusable_extensions": [
+    ".md"
+  ],
+  "resolver": "path",
+  "marker_predicates": {
+    "SUMMARY.md": "gitbook-summary"
+  },
+  "parser_capabilities": {
+    "mask_fenced_chunking": true,
+    "skip_fenced_captures": true,
+    "skip_url_captures": true,
+    "path_captures_only": true,
+    "strip_capture_fragments": true,
+    "allowed_explicit_path_extensions": [
+      ".md"
+    ],
+    "path_base_mode": "page-only",
+    "index_file_names": [
+      "README",
+      "index"
+    ]
+  }
+}

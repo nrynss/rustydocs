@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refactored built-in profiles into embedded, validated JSON definitions and
+  identity-free parser capabilities; separated reusable resolution from Markdown
+  chunking. Existing profile behavior and user configuration are unchanged.
+
 ### Fixed
 
 - Starlight: `{% partial %}` tags are now captured on `.mdoc` pages only

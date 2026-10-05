@@ -1,0 +1,33 @@
+{
+  "name": "hugo",
+  "description": "Hugo site: .md, .markdown and .mdx content, Hugo shortcode and MDX component detection, shortcodes resolved from layouts/shortcodes and each themes/<theme>/layouts/shortcodes. Auto-detected from a layouts/ or themes/ directory, a hugo.{toml,yaml,json} file, or a config/_default/ Hugo config at or above content_dir, searching no further than the enclosing git repository.",
+  "include_example": "<Snippet file=\"aws-config.mdx\" />",
+  "content_extensions": [
+    ".md",
+    ".markdown",
+    ".mdx"
+  ],
+  "root_markers": [
+    "layouts/",
+    "themes/",
+    "hugo.toml",
+    "hugo.yaml",
+    "hugo.json",
+    "config/_default/hugo.toml",
+    "config/_default/hugo.yaml",
+    "config/_default/hugo.json",
+    "config/_default/config.toml",
+    "config/_default/config.yaml",
+    "config/_default/config.json"
+  ],
+  "reusable_patterns": [
+    "\\{\\{[<%]\\s*([a-zA-Z][\\w/-]*)\\s*[^%>]*[%>]\\}\\}",
+    "<([A-Z][A-Za-z0-9_$]*)\\s*[^>]*/?>"
+  ],
+  "reusable_extensions": [
+    ".md",
+    ".mdx",
+    ".html"
+  ],
+  "resolver": "hugo"
+}

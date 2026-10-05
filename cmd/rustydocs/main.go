@@ -439,12 +439,9 @@ func describeUnresolvedReusables(cfg *config.Config, unresolved int, refs []stri
 	// what turns the note into something actionable. The example is the
 	// resolved profile's own include shape, so the sentence reads like it is
 	// about the run at hand rather than about Mintlify.
-	example := `<Snippet file="aws-config.mdx" />`
-	switch cfg.ResolvedProfile.Name {
-	case config.ProfileGitBook:
-		example = `{% include "./shared.md" %}`
-	case config.ProfileStarlight:
-		example = `{% partial file="./_footer.mdoc" /%}`
+	example := cfg.ResolvedProfile.IncludeExample
+	if example == "" {
+		example = `<Snippet file="aws-config.mdx" />`
 	}
 	fmt.Fprintf(&b, " No project root was found — no %s at or above %s (the search stops at "+
 		"the enclosing git repository) — so include path references "+

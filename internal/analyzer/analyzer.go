@@ -668,7 +668,7 @@ func analyzeFile(filePath string, cfg *config.Config, baseDir string, cache *git
 		ReusablesDir: reusablesDir,
 		Root:         root,
 		Resolver:     cfg.ResolvedProfile.Resolver,
-		Profile:      cfg.ResolvedProfile.Name,
+		Capabilities: cfg.ResolvedProfile.ParserCapabilities,
 		ImportMap:    cfg.ResolvedProfile.ImportMap,
 		// Drives config.PatternExtensionConstraint: patterns matching syntax
 		// this file cannot render are dropped, so e.g. a Markdoc partial tag

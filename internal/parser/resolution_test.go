@@ -757,7 +757,7 @@ func TestResolveReusable_GitBookDoesNotFallBack(t *testing.T) {
 	rp, err := NewReusablePatternsFor(ReusableConfig{
 		Patterns: p.ReusablePatterns, Extensions: p.ReusableExtensions,
 		Root: repo.Path("docs"), ReusablesDir: repo.Path("outside"),
-		Resolver: p.Resolver, Profile: p.Name,
+		Resolver: p.Resolver, Capabilities: p.ParserCapabilities,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -775,7 +775,8 @@ func TestResolveReusable_GitBookDoesNotFallBack(t *testing.T) {
 		t.Logf("symlink regression unavailable: %v", err)
 	}
 	// The legacy lookup remains available to the other profiles.
-	rp.profile = config.ProfileMintlify
+	mint, _ := config.LookupProfile(config.ProfileMintlify)
+	rp.capabilities = mint.ParserCapabilities
 	if info, resolution := ResolveReusable("missing", repo.Path("docs/page.md"), rp); info == nil || resolution != ResolutionResolved {
 		t.Errorf("legacy fallback = %+v, %v, want resolved", info, resolution)
 	}
@@ -783,7 +784,7 @@ func TestResolveReusable_GitBookDoesNotFallBack(t *testing.T) {
 
 func TestGitBookContainerFences(t *testing.T) {
 	p, _ := config.LookupProfile(config.ProfileGitBook)
-	rp, err := NewReusablePatternsFor(ReusableConfig{Patterns: p.ReusablePatterns, Profile: p.Name})
+	rp, err := NewReusablePatternsFor(ReusableConfig{Patterns: p.ReusablePatterns, Capabilities: p.ParserCapabilities})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +870,7 @@ func TestGitBookPaths(t *testing.T) {
 	p, _ := config.LookupProfile(config.ProfileGitBook)
 	rp, err := NewReusablePatternsFor(ReusableConfig{
 		Patterns: p.ReusablePatterns, Extensions: p.ReusableExtensions,
-		Root: root, Resolver: p.Resolver, Profile: p.Name,
+		Root: root, Resolver: p.Resolver, Capabilities: p.ParserCapabilities,
 	})
 	if err != nil {
 		t.Fatal(err)

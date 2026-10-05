@@ -56,12 +56,12 @@ func newStarlightRepo(t *testing.T) *starlightRepo {
 		t.Fatal("starlight profile missing from config registry")
 	}
 	rp, err := NewReusablePatternsFor(ReusableConfig{
-		Patterns:   p.ReusablePatterns,
-		Extensions: p.ReusableExtensions,
-		Root:       repo.Dir,
-		Resolver:   p.Resolver,
-		Profile:    p.Name,
-		ImportMap:  p.ImportMap,
+		Patterns:     p.ReusablePatterns,
+		Extensions:   p.ReusableExtensions,
+		Root:         repo.Dir,
+		Resolver:     p.Resolver,
+		Capabilities: p.ParserCapabilities,
+		ImportMap:    p.ImportMap,
 	})
 	if err != nil {
 		t.Fatalf("NewReusablePatternsFor: %v", err)
@@ -327,7 +327,7 @@ func TestStarlightPartialPatternsRunOnMdocOnly(t *testing.T) {
 				Extensions:    p.ReusableExtensions,
 				Root:          sr.root,
 				Resolver:      p.Resolver,
-				Profile:       p.Name,
+				Capabilities:  p.ParserCapabilities,
 				ImportMap:     p.ImportMap,
 				FileExtension: tt.ext,
 			})
@@ -363,7 +363,7 @@ func TestStarlightPartialConstraintFollowsPatternIdentity(t *testing.T) {
 		Extensions:    p.ReusableExtensions,
 		Root:          sr.root,
 		Resolver:      p.Resolver,
-		Profile:       p.Name,
+		Capabilities:  p.ParserCapabilities,
 		ImportMap:     p.ImportMap,
 		FileExtension: ".md",
 	})
