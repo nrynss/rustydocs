@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Git lookup memoization now keeps the repository context of the caller's
+  directory. A file symlink into another repository no longer shares the
+  target's cached history (or error); whole-checkout directory aliases still
+  share entries. Analysis assumes the checkout stays stable during a run.
+
 - Starlight: `{% partial %}` tags are now captured on `.mdoc` pages only
   (#75). Markdoc tags render in `.mdoc` files, never in `.md` (literal text)
   or `.mdx` (an MDX build error), so an unfenced tag on such a page — stray,
@@ -326,8 +331,8 @@ components, of which 0.4.0 found not one.
   absolute symlink-resolved form so the several spellings one file arrives
   under share an entry. The same tree now runs in 2.1 s wall / 5.3 s user /
   8.7 s sys — a 5.3x speedup, and within 4% of that 2.1 s no-resolution floor.
-  Reports are unchanged: a run analyses one commit state, so every lookup in it
-  has exactly one right answer. Nothing is cached across runs or on disk, and
+  Reports are unchanged when the checkout stays stable during the run;
+  analysis does not pin HEAD or provide a repository snapshot. Nothing is cached across runs or on disk, and
   blame output is not cached.
 - **`hugo_root` is renamed `project_root`** (`--project-root`), and the Go
   field `Config.HugoRoot` is now `Config.ProjectRoot`. **Existing config files
