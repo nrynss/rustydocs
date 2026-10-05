@@ -382,3 +382,32 @@ func TestFileInfoCache_ZeroValueUsable(t *testing.T) {
 		t.Errorf("misses = %d, want 1", misses)
 	}
 }
+
+// A file symlink keeps the repository context of its parent directory. Cache
+// entries must not merge it with the target's answer, in either lookup order.
+func TestFileInfoCache_CrossRepositoryFileSymlink(t *testing.T) {
+	targetRepo := newSnippetRepo(t)
+	linkRepo := testutil.NewRepo(t)
+	linkRepo.Commit(commitTime, "initialize other repository", map[string]string{"README.md": "other\n"})
+	target := targetRepo.Path("snippets/shared.mdx")
+	link := linkRepo.Path("shared.mdx")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, paths := range [][]string{{target, link}, {link, target}} {
+		c := NewFileInfoCache()
+		for _, path := range paths {
+			want, wantErr := GetFileLastModified(path)
+			got, gotErr := c.FileLastModified(path)
+			if (gotErr == nil) != (wantErr == nil) || (got == nil) != (want == nil) {
+				t.Fatalf("lookup %s: cached (%+v, %v), uncached (%+v, %v)", path, got, gotErr, want, wantErr)
+			}
+			if want != nil && *got != *want {
+				t.Fatalf("lookup %s: %+v != %+v", path, *got, *want)
+			}
+		}
+		if _, misses := c.Stats(); misses != 2 {
+			t.Fatalf("different repository contexts shared an entry: %d misses", misses)
+		}
+	}
+}

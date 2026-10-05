@@ -14,17 +14,16 @@ import (
 // created per run (analyzer.AnalyzeWithProgress) and handed to the workers, so
 // nothing leaks between runs or between tests.
 //
-// Correctness rests on a single fact: one run analyses one commit state. Every
-// lookup in a run therefore has one right answer, and memoizing it cannot
-// change a report. Nothing here is written to disk and nothing survives the
-// run; blame output is not cached, only the per-file `git log` lookup.
+// Callers must keep the checkout (history, working tree, and symlinks) stable
+// during analysis. The analyzer does not pin HEAD or provide a snapshot. Only
+// per-file git log results are cached, and nothing survives the run.
 //
 // A nil *FileInfoCache is valid and means "no caching": every method falls
 // through to the plain function, so callers that have no cache work unchanged.
 // All methods are safe for concurrent use.
 type FileInfoCache struct {
 	mu      sync.Mutex
-	entries map[string]*fileInfoEntry
+	entries map[fileInfoKey]*fileInfoEntry
 	hits    int
 	misses  int
 
@@ -47,7 +46,7 @@ type fileInfoEntry struct {
 
 // NewFileInfoCache returns an empty cache ready for concurrent use.
 func NewFileInfoCache() *FileInfoCache {
-	return &FileInfoCache{entries: make(map[string]*fileInfoEntry)}
+	return &FileInfoCache{entries: make(map[fileInfoKey]*fileInfoEntry)}
 }
 
 // FileLastModified returns GetFileLastModified(filePath), memoized per
@@ -87,11 +86,11 @@ func (c *FileInfoCache) FileLastModified(filePath string) (*FileInfo, error) {
 // entryFor returns the entry for key, creating it if absent. The map lock is
 // held only for the lookup: the git subprocess runs under the entry's own
 // sync.Once, outside this mutex, so one slow lookup never serialises the pool.
-func (c *FileInfoCache) entryFor(key string) *fileInfoEntry {
+func (c *FileInfoCache) entryFor(key fileInfoKey) *fileInfoEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
-		c.entries = make(map[string]*fileInfoEntry)
+		c.entries = make(map[fileInfoKey]*fileInfoEntry)
 	}
 	if entry, ok := c.entries[key]; ok {
 		c.hits++
@@ -118,35 +117,35 @@ func (c *FileInfoCache) Stats() (hits, misses int) {
 	return c.hits, c.misses
 }
 
-// fileInfoCacheKey normalises a path to the identity the cache keys on.
-//
-// The key choice matters: GetFileLastModified itself does filepath.Abs plus
-// EvalSymlinks internally, so the very same file reaches it as several
-// different strings — relative and absolute spellings, and on macOS the
-// /var -> /private/var symlink alone gives every temp-dir path two forms.
-// Keying on the raw argument would leave those as separate entries and lose
-// most of the sharing the cache exists for, so the key is the absolute,
-// symlink-resolved path.
-//
-// Keying on the resolved path assumes both spellings of a file resolve to the
-// same git repository: GetFileLastModified derives its git root from the
-// *unresolved* filepath.Dir(filePath), so two spellings whose directories live
-// in different repositories (a snippet symlinked across a repo boundary, say)
-// would share one key while having different uncached answers — no resolver
-// reaches that today, but one that could would need the git root in the key.
-//
-// Normalisation is best effort: a path that cannot be made absolute or cannot
-// be resolved (it does not exist, which is a legitimate lookup that will be
-// cached as a negative result) falls back to the furthest form reached, and
-// ultimately to the raw string. Two spellings that fail to collapse cost an
-// extra entry, never a wrong answer.
-func fileInfoCacheKey(filePath string) string {
-	key := filePath
-	if abs, err := filepath.Abs(key); err == nil {
-		key = abs
+// Include the directory from which git selects its repository as well as the
+// resolved file. A file symlink in repository A pointing into repository B
+// does not have the same git-log answer as the target in B. Resolving directory
+// aliases still deduplicates whole-checkout symlinks (including /var on macOS).
+// Using the directory rather than probing git roots avoids adding subprocesses
+// for missing files and non-repositories. Different directories in the same
+// repository may conservatively retain separate entries.
+type fileInfoKey struct {
+	directory string
+	file      string
+}
+
+func fileInfoCacheKey(filePath string) fileInfoKey {
+	return fileInfoKey{
+		directory: normaliseCachePath(filepath.Dir(filePath)),
+		file:      normaliseCachePath(filePath),
 	}
-	if resolved, err := filepath.EvalSymlinks(key); err == nil {
-		key = resolved
+}
+
+// Failed normalization retains the caller's spelling so cached filesystem
+// errors do not accidentally borrow another caller's path context.
+func normaliseCachePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
 	}
-	return key
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return path
+	}
+	return resolved
 }
