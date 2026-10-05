@@ -1,70 +1,160 @@
 # Profile capability refactor plan
 
-## Scope
+## Scope and final design
 
-- Replace every per-tool branch in the parser and CLI with declarative capability fields on `config.Profile`, on a single branch off `main` (`refactor/profile-capabilities`), with **zero behavior change**.
-- The litmus test this buys: **adding a profile must require no edits to `internal/parser` or `cmd`** — the profile becomes pure registry data. Verified against the three queued profiles (#12 MkDocs, #13 Docusaurus, #15 VitePress) below; Docusaurus and MkDocs pass as pure data, MkDocs needs one *additive* capability value (a new `PathBaseMode`), VitePress needs one future capability sketched but not built here.
-- Explicitly **not** a per-tool package split. The flavours share the entire resolution machinery (`ResolverPath`, `caseExactUnder`, containment, the import map); GitBook, Mintlify and Starlight differ from each other in nine small, nameable ways, and those differences are the refactor's subject — not the package layout.
+Preserve the behavior of the five existing profiles (`markdown`, `gitbook`,
+`hugo`, `mintlify`, `starlight`) while replacing tool-identity gates with
+capabilities. Deliver five separately reviewed phases in one PR on
+`codex/profile-capabilities`, based on `main` at `d0f6dca`.
 
-## Current state (analysis, main @ ac14ff0)
+Profiles composing **existing** capabilities can be added as registry data,
+except when detection needs a new Go marker predicate and binding. New include
+or resolution semantics require generic parser code and tests. The parser must
+not branch on profile names; future profiles can still require parser edits.
 
-What is already flavour-agnostic and stays untouched: `internal/git`, `internal/report`, `internal/analyzer` (it only hands `cfg.ResolvedProfile` fields to the parser), the import map (`importmap.go` — its bare-specifier and content-extension skip rules already anticipated Docusaurus, see its own comment), and all of `config.go`. `Resolver` is already a strategy dispatch on data (`none`/`hugo`/`path`); it stays an enum.
+Keep the shared parser package. No new profiles, goldmark, TOML, runtime
+profile-loading API, external dependencies, or user-config format changes are
+part of this work.
 
-The flavour knowledge that is *not* data lives in ten sites:
+`Profile.ParserCapabilities` is a narrow value with no `Name`, `Resolver`, or
+`ImportMap`. The analyzer passes it as `ReusableConfig.Capabilities`, alongside
+the existing authoritative `Resolver` and `ImportMap` fields and the effective
+user-configured `Patterns` and `Extensions`. It does not pass the whole `Profile`.
+`IncludeExample` is CLI display metadata and never reaches the parser.
 
-| Site | Tool(s) | Behavior today | Becomes |
-|---|---|---|---|
-| `markdown.go:328` ParseChunks | gitbook | Fences masked before chunking (blame lines kept, headings/refs hidden) | `MaskFencedChunking bool` |
-| `markdown.go:649` FindReusables | gitbook, starlight | Captures inside fenced code are skipped (examples don't render) | `SkipFencedCaptures bool` |
-| `markdown.go:665` FindReusables | gitbook | Captures containing `://` are skipped | `SkipURLCaptures bool` |
-| `markdown.go:776` ResolveReusable | starlight | Alias-shaped include capture (`@…` or bare extensionless) that failed path resolution is `Skipped`, not unresolved (#74) | `SkipAliasShapedIncludes bool` |
-| `markdown.go:846` resolveExisting | gitbook | Direct path only — no legacy reusables-dir / cached-name fallbacks | `PathCapturesOnly bool` |
-| `markdown.go:908` resolveDirectPath | gitbook | `#anchor` / `?query` stripped from captures | `StripCaptureFragments bool` |
-| `markdown.go:915` resolveDirectPath | gitbook | Target must carry a content extension (`.md`) | `ResolveContentOnly bool` |
-| `markdown.go:1005` directPathBases | gitbook | Bare captures resolve against the page's directory only (vs the shared snippets-first bases) | `PathBaseMode` enum: `PathBasePageOnly` vs default `PathBaseSharedFirst` |
-| `markdown.go:1043` pathCandidates | gitbook | Extensionless captures also try `README.md` before `index.md` | `IndexFileNames []string` (`["README", "index"]` vs default `["index"]`) |
-| `main.go:444` unresolved-note | gitbook, starlight | Per-profile example include string in the stderr note | `IncludeExample string` |
+## Five phases
 
-Supporting couplings, and their verdicts:
+1. **Fields and defaults.** Add `ParserCapabilities`, `PathBaseMode`, and
+   `IncludeExample`; populate existing profiles without changing behavior.
+   Clone capability slices on registry lookup, preserving nil versus empty.
+2. **Consume capabilities without identity.** Replace parser name comparisons
+   with capability reads and CLI example selection with `IncludeExample`.
+   Remove profile-name transport, preserve effective overrides, and clone
+   parser input slices. Add capability-independence tests without changing
+   existing behavior expectations.
+3. **Separate responsibilities by pure moves.** Keep chunking in
+   `internal/parser/markdown.go`; move reusable detection, path/Hugo lookup,
+   and resolution into `reusable.go`. Keep the existing MDX `importmap.go` layer.
+   Marker algorithms remain in `config/profile.go`.
+4. **Embed validated definitions.** Store one JSON definition per built-in under
+   `internal/config/profiles/`, with explicit `registry.json` precedence.
+   `profile_loader.go` uses private wire types and standard-library `go:embed`;
+   predicate algorithms and bindings remain Go. Invalid assets fail at package
+   initialization as contextual developer errors. Test schema, parity, cloning,
+   and precedence.
+5. **Document the contract and validation.** Update this plan, architecture
+   guidance, contributor instructions, and Unreleased changelog. Each phase
+   receives independent review and remediation before the next phase.
 
-- `ReusablePatterns.profile` / `ReusableConfig.Profile` (a string carried into the parser purely so the nine branches can compare it): **removed**. `ReusableConfig.Profile` becomes the whole resolved `config.Profile`; `ReusablePatterns` copies out the capability fields it needs. A name the parser cannot compare against is a name it cannot grow new branches on.
-- `parser.hugoProfile()` (`markdown.go:288`, feeding the legacy `DefaultReusablePatterns` shim): kept — it is the pre-profile API's default, not a behavioral branch.
-- `ApplyProfile`'s three `mustProfile(ProfileHugo)` lookups and the legacy `hugo_root` → hugo fallback: kept as-is. They are legacy-compat *by definition* and live in the registry's own package.
-- `patternExtensionConstraints` (global map keyed by pattern *string*) and the provenance rule `p == config.MDXComponentPattern` (`markdown.go:261`): **kept, deferred** — see trade-offs. No queued profile breaks them.
+## Capability contract
 
-## Approach
+| Capability | Preserved behavior |
+|---|---|
+| `MaskFencedChunking` | Hide fenced headings/references during chunking while retaining nonblank blame lines. GitBook enables it. |
+| `SkipFencedCaptures` | Ignore reusable captures inside fences. GitBook and Starlight enable it independently of chunk masking. |
+| `SkipURLCaptures` | Skip captures containing `://`. GitBook enables it. |
+| `SkipAliasShapedIncludes` | Skip unresolved alias-shaped **include** captures; component provenance is unaffected. Starlight enables it. |
+| `PathCapturesOnly` | Direct path lookup before resolver dispatch, without legacy directory, shortcode, or cached-name fallbacks. GitBook enables it. |
+| `StripCaptureFragments` | Strip anchors and queries before direct path lookup. GitBook enables it. |
+| `AllowedExplicitPathExtensions` | Restrict extensions written in captures by exact, case-sensitive equality. GitBook uses `[".md"]`. |
+| `PathBaseMode` | Zero value `""` means shared-first; `"page-only"` means page directory for all non-root-absolute captures. GitBook uses page-only. |
+| `IndexFileNames` | Extensionless directory entry stems; nil defaults to `["index"]`. GitBook uses `["README", "index"]`. |
 
-Three commits, one PR, each shippable:
+Flags default to false. An omitted or JSON `null` extension allowlist means
+nil/unrestricted; `[]` rejects every explicitly written extension.
+Extensionless captures remain eligible and try effective reusable extensions,
+including user overrides. GitBook's explicit `.md` restriction does not become
+a broader content-extension test and does not accept `.MD` or `.mdx`.
 
-1. **Fields + defaults, no behavior change.** Add the capability fields to `config.Profile` (names provisional) with doc comments carrying the rationale from the current branch sites; every existing profile gets its values set so behavior is identical when nothing else changes. `PathBaseMode` gets two values. `IndexFileNames` nil means `["index"]`.
-2. **Replace the ten sites.** Each branch becomes a read of the capability field; the conditions' internal logic (provenance via `includeCaptures`, `isPartialAliasShape`, fence scanning, base ordering) is unchanged — only the *gate* changes from tool identity to capability. `ReusableConfig.Profile` switches to the whole `config.Profile`; mechanical test updates follow (tests construct from `LookupProfile(name)` instead of a name string).
-3. **File splits, pure moves.** `markdown.go` (1,525 lines) splits into `markdown.go` (chunking: ParseChunks/preamble/paragraphs, lines 1–640) and `reusable.go` (detection + resolution + Hugo lookup, lines 641–1555) — aligning code with the existing test files (`resolution_test.go` etc.). Optionally split the marker predicates out of `config/profile.go` into `config/markers.go`. No code changes, `git log --follow` preserved.
+An omitted or `null` index list defaults to `["index"]`; `[]` disables directory
+index candidates. An extensionless capture tries the literal path, then each
+extension-suffixed path, then directory entries ordered by **extension first,
+index name second**. With extensions `[".md", ".mdx"]` and GitBook's names,
+index candidates are `README.md`, `index.md`, `README.mdx`, `index.mdx`.
+Both capability slices are cloned at registry lookup and parser construction,
+preserving nil versus empty and preventing mutation of shared defaults.
 
-Invariants the implementation must preserve (each currently implicit in a branch comment):
+Root-absolute captures always use the project root. Shared-first bare captures
+try `snippets/`, `_snippets/`, root, then page directory; explicit `./` or `../`
+captures try page directory before shared bases. Page-only mode applies before
+those shared fallbacks. Root containment and exact path-case checks are unchanged.
 
-- `MaskFencedChunking` and `SkipFencedCaptures` stay **independent**: starlight wants only the capture-level skip, gitbook both. Do not collapse them into one fence-handling enum.
-- `SkipAliasShapedIncludes` keeps its interaction with provenance: it applies only to captures an *include* pattern produced (`fromIncludePattern`), never to component-pattern captures — the #68/#74 rules compose through the flag the same way they compose through the name check today.
-- `PathCapturesOnly` gates the early return in `resolveExisting` *before* the resolver dispatch, exactly as the gitbook check does now — it must not silently become "no fallbacks for every `ResolverPath` profile", which would change Mintlify/Starlight behavior when a legacy `reusables_dir` is configured.
-- A new `PathBaseMode` value later is additive parser work (one case in `directPathBases`) — that is capability semantics arriving, not tool identity creeping back; the grep gate below still holds.
+Fence masking and capture skipping stay independent. Alias skipping still
+requires include-pattern provenance and failed path resolution; a missing
+relative partial remains unresolved. `PathCapturesOnly` does not remove legacy
+`reusables_dir` fallback for other path-resolver profiles.
 
-What the queued profiles then cost — the refactor's payoff, checked against upstream docs:
+## Embedded definitions and boundaries
 
-- **Docusaurus (#13)** — pure data, zero parser edits. `.md`/`.mdx`; markers `docusaurus.config.{js,mjs,ts}` (name alone is unambiguous) plus a `package.json` predicate for the quoted `@docusaurus/core` dependency (the `isStarlightPackage` shape); patterns `[MDXComponentPattern]`; `ImportMap: true`; `ResolverPath`; `SkipFencedCaptures: true`. Its `_partials/` convention is page-relative MDX imports — the import map's explicit-relative resolution already covers it, and `@site/…`/`@theme/…` bare specifiers are already skipped by `isBareModuleSpecifier`.
-- **MkDocs (#12)** — pure data plus one new `PathBaseMode` value. Pattern for pymdownx.snippets' `--8<-- "path"` (include pattern, both quote styles); upstream resolves snippets against the `base_path` option, whose default is the config directory — modelled as a root-only base mode (reading `base_path` out of YAML is stdlib-hostile and out of scope; documented limitation, safe direction since root-only ⊇ the common setup). Marker `mkdocs.yml` with a text predicate (a bounded read matching `site_name:`, required by upstream in every config) so a random `mkdocs.yml`-named file doesn't select the profile.
-- **VitePress (#15)** — `<!--@include: ./parts/x.md-->` is an explicit-relative path capture and works through today's `PathBaseSharedFirst`. Its `<<< @/snippets/x.ts` embeds *code* — the import map's content-extension allowlist already skips `.ts`, which is the right answer for freshness. If `@/`-prefixed *markdown* includes ever need resolving, that is a new "alias prefix maps to root" capability — the **opposite** of `SkipAliasShapedIncludes` (starlight's rule is skip-because-unresolvable; VitePress's would be resolve-because-documented). Design it at #15; do not stretch the starlight capability to cover both.
+Registry order is `markdown`, `gitbook`, `hugo`, `mintlify`, `starlight`.
+Nearest marker wins; only same-directory ties use this order. Public profile
+listing stays alphabetically sorted. Definitions are compiled into the single
+binary, not installed/read as external runtime config files. The private
+snake_case manifest schema does not change public user-config JSON.
 
-## Accepted trade-offs
+Validation rejects unknown/duplicate JSON fields, trailing data, wrong types,
+missing/unlisted assets, name mismatches, invalid/duplicate list values,
+unsupported resolver/base modes, invalid regexes or capture counts, and unknown
+predicate bindings. Markdown fallback must exist. Predicate names bind Go
+functions and listed file markers; directory markers cannot have predicates.
 
-- **Capability bools over a strategy interface.** Ten fields is at the edge of where an interface would be cleaner, but the fields stay declarative (comparable, printable, registry-defined), need no plumbing per implementation, and every one maps to a real upstream distinction rather than a hypothetical. Revisit toward an interface only if a future capability needs more than a bool/enum/small list.
-- **`patternExtensionConstraints` and component-provenance stay string-keyed.** Moving them into per-profile pattern structs would churn `Config.Reusables.Patterns` (user wire format `[]string`) and the "user pattern identical to a built-in inherits its semantics" rule, for no benefit any queued profile needs: Docusaurus reuses `MDXComponentPattern` unconstrained; MkDocs/VitePress have no component usage. Trigger to revisit: a profile needing *different* constraints for the same pattern string, or a second component-usage pattern.
-- **The parser loses the profile name entirely** (including for diagnostics). The stderr note reads `cfg.ResolvedProfile.Name` at the CLI, where the name belongs; tests that assert per-profile behavior set capabilities from `LookupProfile`, so they keep pinning behavior, not spelling.
-- **`IncludeExample` moves display wording into the registry.** That is the point — the example is per-profile documentation, already de facto maintained in two places.
-- **MkDocs `base_path` unread** (above) and **`mkdocs-macros` Jinja includes out of scope** initially: a plugin-dependent include mechanism with no default-on corpus presence is a worse first cut than the snippets extension, which is upstream-documented and common.
+Keep the legacy Hugo default shim and compatibility lookups in Go.
+`patternExtensionConstraints` remains keyed by exact regex string, and equality
+with `config.MDXComponentPattern` determines component provenance. A user
+pattern identical to a built-in inherits those semantics. Revisit separately
+if the same pattern needs different constraints or another component-usage
+pattern is introduced.
 
-## Validation
+## Future profile work (not implemented here)
 
-- The refactor's gate is **zero test-expectation changes**: `resolution_test.go`, `profile_test.go`, `starlight_test.go`, the GitBook cases and `integration_test.go` pin the behavior being relocated; only construction sites change mechanically (commit 2). Any expectation edit during the refactor is a bug in the refactor.
-- `go build ./... && go test ./... && go test -race ./... && go vet ./... && gofmt -l .` clean; `go test -cover ./...` keeps ≥80% per package.
-- **Grep gate (definition of done):** `grep -rn "ProfileGitBook\|ProfileStarlight\|ProfileHugo\|ProfileMintlify" internal/parser cmd --include="*.go" | grep -v _test.go` returns only the legacy shim's `hugoProfile()` lookup and nothing else.
-- **Corpus diff:** build the binary at `main` and at the branch; run both over the real-world Starlight corpora (`~/work/lambo/site`, `~/work/mooshik/docs`) with identical flags; every report (Markdown/HTML/JSON) must be byte-identical.
-- Update `CLAUDE.md` (the `internal/config` and `internal/parser` architecture bullets describe the branch sites), `README.md` only if it documents behavior (it should not need to), and `CHANGELOG.md` under Unreleased as an internal refactor with no user-visible change.
+- **Docusaurus (#13):** relative MDX imports can compose existing path/import-map
+  behavior; a new package marker predicate would live in Go. A follow-up must
+  validate support and corpus behavior; this sketch is not a shipped profile.
+- **MkDocs (#12):** [PyMdown Snippets documentation](https://facelessuser.github.io/pymdown-extensions/extensions/snippets/)
+  specifies current working directory as the default snippet base and supports
+  ordered `base_path` locations. It processes snippets inside fences. Root-only
+  lookup would be an assumption, not a safe superset of upstream resolution.
+  New base semantics/configuration handling belong in a separate implementation;
+  this refactor does not prove MkDocs is data-only.
+- **VitePress (#15):** [Markdown inclusion](https://vitepress.dev/guide/markdown#markdown-file-inclusion)
+  supports `<!--@include: ./parts/x.md-->` and `@`-prefixed paths whose source root
+  follows `srcDir`. Root-alias resolution is future generic capability work,
+  distinct from Starlight's skip-unresolved-alias policy. `<<<` code snippets
+  bypass the MDX import map, so its `.ts` skip rule says nothing about their
+  handling. Code freshness/drift and source-root semantics need separate
+  follow-ups; no VitePress support is claimed here.
+
+## Validation gate and record
+
+- Preserve existing resolution, profile, Starlight, GitBook, and integration
+  expectations; adapt construction sites mechanically. Additional tests pin
+  independent fence gates, provenance, fallback ordering, exact extensions,
+  overrides, renamed/synthetic capabilities, cloning, manifest strictness/data
+  parity, and actual marker tie precedence.
+- Run `go build ./...`, `go test ./...`, `go test -race ./...`, `go vet ./...`, and
+  `gofmt -l .` (empty), plus at least 80% coverage per production package.
+  `internal/testutil` is a test-only helper and exempt from the coverage floor.
+- Search production parser/CLI code for built-in profile constants. The only
+  retained parser identity lookup is the pre-profile Hugo default shim; CLI
+  diagnostics consume resolved display metadata.
+- Compare baseline `d0f6dca` and refactor output with identical flags and pinned
+  corpus revisions. Fix clocks in tests or run paired contemporary CLIs;
+  normalize **only generated report metadata**, never age/staleness values.
+  Compare Markdown, HTML, JSON, stderr, and `--list-profiles` output.
+
+The corpus gate covered 20 cases: five profiles in section/paragraph/file modes
+(15), legacy reusable-directory cases for GitBook/Mintlify/Starlight (3), and
+two real trees with automatic detection (2). The temporary synthetic fixture
+commit was `3363f9d037c58fc3713bfc2dcc67d89ab8fc68be` (January 1, 2025, 12:00 UTC),
+with an untracked GitBook draft. It covered includes/imports, fenced examples,
+alias/unresolved references, extensionless README lookup, and missing history;
+this local fixture and its runner are not shipped repository assets. Real
+corpora were `lambo/site` at `e11fb06ba61a480c8400d89ad6e40bbc39fc46c0` and
+`mooshik/docs` at `47d4e91848047584b587b58e4bc26d7323dc2c5c`.
+
+An early saved baseline and later phase-4 run straddled the fixture's 24-hour
+age boundary, changing an age from 641 to 642 days. A paired rerun passed all
+20 cases after generated timestamps were normalized, with exact stderr and
+profile-list equality. Uncontrolled, separately timed runs must not be called
+literally byte-identical. Final build/tests/race/vet/formatting/coverage gates
+passed; production-package coverage was 92.3–94.4%.
