@@ -409,7 +409,7 @@ func TestBlamelessSectionShowsFoldedDate(t *testing.T) {
 		for _, s := range f.Sections {
 			switch s.Title {
 			case "Guide":
-				guideLevel, guideDate = s.Level, s.LastUpdated
+				guideLevel, guideDate = s.Level, s.EffectiveLastChange.Date.Format(time.RFC3339)
 			case "Mystery":
 				mysteryLevel = s.Level
 			}

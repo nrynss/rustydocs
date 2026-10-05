@@ -1,0 +1,641 @@
+{
+  "version": "2.0",
+  "generated_at": "2026-06-24T12:00:00Z",
+  "tool": {
+    "version": "example",
+    "build_revision": "example-revision"
+  },
+  "repositories": [
+    {
+      "id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": ".",
+      "revision": "example-revision",
+      "dirty": true,
+      "shallow": false,
+      "status": "available"
+    }
+  ],
+  "config": {
+    "threshold_days": 90,
+    "content_dir": {
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs"
+    },
+    "project_root": {
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "."
+    },
+    "profile": "mintlify",
+    "profile_auto": false,
+    "content_extensions": [
+      ".md",
+      ".mdx"
+    ],
+    "staleness_levels": {
+      "warning": 90,
+      "caution": 180,
+      "critical": 365
+    },
+    "exclude_patterns": [],
+    "exclude_dirs": [],
+    "no_default_excludes": false,
+    "file_level_only": false,
+    "paragraph_level": false,
+    "reusables": {
+      "dir": null,
+      "patterns": [
+        "\u003cSnippet\\b[^\u003e]*\\bfile=\"([^\"]+)\"",
+        "\u003cSnippet\\b[^\u003e]*\\bfile='([^']+)'",
+        "\u003c([A-Z][A-Za-z0-9_$]*)\\s*[^\u003e]*/?\u003e"
+      ],
+      "extensions": [
+        ".mdx",
+        ".md"
+      ],
+      "resolver": "path",
+      "import_map": true
+    }
+  },
+  "coverage": {
+    "analyzed_files": 7,
+    "failed_files": 0,
+    "excluded_files": 0,
+    "git_ignored_files": 0,
+    "extension_skipped_files": 0,
+    "default_pruned_directories": 0,
+    "excluded_directories": 0,
+    "skipped_extensions": [],
+    "pruned_directory_names": []
+  },
+  "summary": {
+    "total_files": 7,
+    "stale_files": 4,
+    "stale_files_pct": 57.142857142857146,
+    "total_sections": 9,
+    "stale_sections": 4,
+    "stale_sections_pct": 44.44444444444444,
+    "fresh_sections": 4,
+    "unknown_sections": 1,
+    "files_missing_history": 1,
+    "total_reusables": 2
+  },
+  "files": [
+    {
+      "id": "file:1d2a70e3906869093de8f5ac9076422cbb95c1d4b6a8ae894f5da49cce14cc42",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/tie.mdx",
+      "content_path": "tie.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 1,
+      "stale_sections": 1,
+      "sections": [
+        {
+          "id": "section:6cbdb73274f6337ecf9e003b8a90326f11da32bda3c0ed3589e27e490f94bceb",
+          "title": "Tie",
+          "heading_path": [
+            "Tie"
+          ],
+          "start_line": 1,
+          "end_line": 3,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 200,
+          "is_stale": true,
+          "severity": "caution",
+          "content_fingerprint": "sha256:b91222c3138ff5a789972cdfcd5f17c65b2dbfd8d303e7e76a9de33bfcd2dbda",
+          "dependency_fingerprint": "sha256:069cef3e4f1194caefd3f097f8705044cff11a1e368dc15fa1d86e5baacdb1aa",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            },
+            {
+              "kind": "reusable",
+              "reusable_id": "reusable:a0eaec997aaf7348e6f83e5227dbdc26424588f831a2698e448f6c576e137a2d"
+            }
+          ],
+          "dependencies": [
+            {
+              "reference": "Snippet",
+              "line": 2,
+              "column": 2,
+              "status": "skipped",
+              "reusable_ids": []
+            },
+            {
+              "reference": "../snippets/tied.mdx",
+              "line": 2,
+              "column": 16,
+              "status": "resolved",
+              "reusable_ids": [
+                "reusable:a0eaec997aaf7348e6f83e5227dbdc26424588f831a2698e448f6c576e137a2d"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "file:21a29d1292e201a96432d4a24d60c0cbd61aed0198e24920ccf366543ee251ba",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/boundary.mdx",
+      "content_path": "boundary.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 1,
+      "stale_sections": 0,
+      "sections": [
+        {
+          "id": "section:7fdbcf3f519cfc803259e53e900edb002a852cd1836af758ce2a78fe565f99e3",
+          "title": "Boundary",
+          "heading_path": [
+            "Boundary"
+          ],
+          "start_line": 1,
+          "end_line": 3,
+          "own_last_change": {
+            "date": "2026-03-26T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2026-03-26T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 90,
+          "is_stale": false,
+          "severity": "warning",
+          "content_fingerprint": "sha256:1814c08095928305d7af3df4e64f5f0dd9d8f6bf954b54222331a39ff7827a56",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "file:2dbbd9cbdc467ba462382c8c8d03e81fa34aa0f59e25c3a6ef9b9fa8dfb91d93",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/unresolved.mdx",
+      "content_path": "unresolved.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 1,
+      "stale_sections": 1,
+      "sections": [
+        {
+          "id": "section:2ed482259ba8ce1b99df9010de19e7c3851530cfbcf00bc57d2e318cb9076fcb",
+          "title": "Broken",
+          "heading_path": [
+            "Broken"
+          ],
+          "start_line": 1,
+          "end_line": 3,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 200,
+          "is_stale": true,
+          "severity": "caution",
+          "content_fingerprint": "sha256:a202e5d626649f6f3ef468087b496cd66ec010fe8a877379cbe3b4f1a68a1e8a",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            }
+          ],
+          "dependencies": [
+            {
+              "reference": "Snippet",
+              "line": 2,
+              "column": 2,
+              "status": "skipped",
+              "reusable_ids": []
+            },
+            {
+              "reference": "../snippets/missing.mdx",
+              "line": 2,
+              "column": 16,
+              "status": "unresolved",
+              "reusable_ids": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "file:93b5ad92a65d1fc4550e7158b0d93eb546a258e7d361c1ef0195143faa37343c",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/mixed.mdx",
+      "content_path": "mixed.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 3,
+      "stale_sections": 1,
+      "sections": [
+        {
+          "id": "section:32cef2c7da80d78b66254b6240f94d1f2552e42284f130259dfb278c71b04207",
+          "title": "Old",
+          "heading_path": [
+            "Old"
+          ],
+          "start_line": 1,
+          "end_line": 3,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 200,
+          "is_stale": true,
+          "severity": "caution",
+          "content_fingerprint": "sha256:92541ae9ac08c4985f5f424e3c76456471379fd4205a9235b2b70e03c265fa20",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            }
+          ],
+          "dependencies": []
+        },
+        {
+          "id": "section:8bbbe5ba042a806d8e5b6adcd83cd29f695619aebf9ae40a512af2ac3e8b0edc",
+          "title": "Included",
+          "heading_path": [
+            "Included"
+          ],
+          "start_line": 4,
+          "end_line": 6,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2026-06-14T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 10,
+          "is_stale": false,
+          "severity": "fresh",
+          "content_fingerprint": "sha256:921d8f3db8a3df5904a69c5734c224274974a0a628f1cc05e2c5c8efa0756a05",
+          "dependency_fingerprint": "sha256:ce84a5915d87d50980d9be87a39f7def68e61c961a9b366a6a5c087553738de0",
+          "freshness_sources": [
+            {
+              "kind": "reusable",
+              "reusable_id": "reusable:8c31aee9f6eebad8ae420a10d05642105630cced627cd6f05a654f28007e9326"
+            }
+          ],
+          "dependencies": [
+            {
+              "reference": "Snippet",
+              "line": 5,
+              "column": 2,
+              "status": "skipped",
+              "reusable_ids": []
+            },
+            {
+              "reference": "../snippets/shared.mdx",
+              "line": 5,
+              "column": 16,
+              "status": "resolved",
+              "reusable_ids": [
+                "reusable:8c31aee9f6eebad8ae420a10d05642105630cced627cd6f05a654f28007e9326"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "section:48b4f7a24ec3e8cd8c76124c6cdb1ced07e56a59bfacebf291c408146d1711cc",
+          "title": "Recent",
+          "heading_path": [
+            "Recent"
+          ],
+          "start_line": 7,
+          "end_line": 9,
+          "own_last_change": {
+            "date": "2026-06-19T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2026-06-19T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 5,
+          "is_stale": false,
+          "severity": "fresh",
+          "content_fingerprint": "sha256:282a14d779b2837861d68ac7a9cc8fa90d9c2a991924e2d49c2386dd0d4fd07b",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "file:9ac7b8a6e4ea8d13abc97e7621ad0c484a48d2c34f074bfc33a201e0bf548a02",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/imported.mdx",
+      "content_path": "imported.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 1,
+      "stale_sections": 0,
+      "sections": [
+        {
+          "id": "section:21948840f798edf1280088aef77181f7e113c133c12fca8de362ee0530765dea",
+          "title": "Import use",
+          "heading_path": [
+            "Import use"
+          ],
+          "start_line": 3,
+          "end_line": 5,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2026-06-14T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 10,
+          "is_stale": false,
+          "severity": "fresh",
+          "content_fingerprint": "sha256:4fd2dcaedbd00216ffeb6b807c7d34e1f14681066cf38730cd74f5aceeccecbd",
+          "dependency_fingerprint": "sha256:ce84a5915d87d50980d9be87a39f7def68e61c961a9b366a6a5c087553738de0",
+          "freshness_sources": [
+            {
+              "kind": "reusable",
+              "reusable_id": "reusable:8c31aee9f6eebad8ae420a10d05642105630cced627cd6f05a654f28007e9326"
+            }
+          ],
+          "dependencies": [
+            {
+              "reference": "Shared",
+              "line": 4,
+              "column": 2,
+              "status": "resolved",
+              "reusable_ids": [
+                "reusable:8c31aee9f6eebad8ae420a10d05642105630cced627cd6f05a654f28007e9326"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "file:c21bb264ba1dca56a55553872b7a2786fe0cb7c2fd7322ed37e0f76ff105c069",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/untracked.mdx",
+      "content_path": "untracked.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "missing",
+      "total_sections": 1,
+      "stale_sections": 0,
+      "sections": [
+        {
+          "id": "section:6e6f6ecb5a08fdd362d234c72a210f5e1ae738dc8bc29845cee8869addccd704",
+          "title": "Unknown",
+          "heading_path": [
+            "Unknown"
+          ],
+          "start_line": 1,
+          "end_line": 3,
+          "own_last_change": {
+            "date": null,
+            "authors": [],
+            "commits": []
+          },
+          "effective_last_change": {
+            "date": null,
+            "authors": [],
+            "commits": []
+          },
+          "age_days": null,
+          "is_stale": false,
+          "severity": "unknown",
+          "content_fingerprint": "sha256:408d1c7242bd39df49a766645cf7f8a97bf178a3e7e2f4d0d2f6071de43aec60",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "file:c77b6c11ba341cded9b68f77ac30f8ee6dee95c821957c4d7dcbef79825397ff",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "docs/fence.mdx",
+      "content_path": "fence.mdx",
+      "analysis_status": "analyzed",
+      "history_status": "available",
+      "total_sections": 1,
+      "stale_sections": 1,
+      "sections": [
+        {
+          "id": "section:34ea196d37660d789d5fb776d58c0cf7525e24e92d70c4c95274b424bb2270e2",
+          "title": "Fence",
+          "heading_path": [
+            "Fence"
+          ],
+          "start_line": 1,
+          "end_line": 5,
+          "own_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "effective_last_change": {
+            "date": "2025-12-06T12:00:00Z",
+            "authors": [
+              "Test User"
+            ],
+            "commits": [
+              "example-commit"
+            ]
+          },
+          "age_days": 200,
+          "is_stale": true,
+          "severity": "caution",
+          "content_fingerprint": "sha256:6b07da32a0106c1867493f25b699f9612c21a62957c45a375415153f94a378f3",
+          "dependency_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "freshness_sources": [
+            {
+              "kind": "own",
+              "reusable_id": null
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    }
+  ],
+  "reusables": [
+    {
+      "id": "reusable:8c31aee9f6eebad8ae420a10d05642105630cced627cd6f05a654f28007e9326",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "snippets/shared.mdx",
+      "last_change": {
+        "date": "2026-06-14T12:00:00Z",
+        "authors": [
+          "Test User"
+        ],
+        "commits": [
+          "example-commit"
+        ]
+      },
+      "age_days": 10,
+      "severity": "fresh",
+      "content_fingerprint": "sha256:5d1eda7b4d426561a7d6684c2d069802fcc52abec97033dd2c8c495dc8d5ea62",
+      "resolution_status": "resolved",
+      "history_status": "available"
+    },
+    {
+      "id": "reusable:a0eaec997aaf7348e6f83e5227dbdc26424588f831a2698e448f6c576e137a2d",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "path": "snippets/tied.mdx",
+      "last_change": {
+        "date": "2025-12-06T12:00:00Z",
+        "authors": [
+          "Test User"
+        ],
+        "commits": [
+          "example-commit"
+        ]
+      },
+      "age_days": 200,
+      "severity": "caution",
+      "content_fingerprint": "sha256:dbff749e17687b2c10f56c2c382a482ef9cb38f93cb1519892f99d580bee06e8",
+      "resolution_status": "resolved",
+      "history_status": "available"
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "blame_failed",
+      "severity": "warning",
+      "message": "Git blame unavailable",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "file_id": "file:c21bb264ba1dca56a55553872b7a2786fe0cb7c2fd7322ed37e0f76ff105c069",
+      "section_id": null,
+      "reference": null,
+      "line": null
+    },
+    {
+      "code": "history_missing",
+      "severity": "warning",
+      "message": "File has no resolvable Git history",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "file_id": "file:c21bb264ba1dca56a55553872b7a2786fe0cb7c2fd7322ed37e0f76ff105c069",
+      "section_id": null,
+      "reference": null,
+      "line": null
+    },
+    {
+      "code": "reusable_unresolved",
+      "severity": "warning",
+      "message": "Reusable reference has no resolved history",
+      "repository_id": "repo:cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8",
+      "file_id": "file:2dbbd9cbdc467ba462382c8c8d03e81fa34aa0f59e25c3a6ef9b9fa8dfb91d93",
+      "section_id": "section:2ed482259ba8ce1b99df9010de19e7c3851530cfbcf00bc57d2e318cb9076fcb",
+      "reference": "../snippets/missing.mdx",
+      "line": 2
+    }
+  ]
+}
