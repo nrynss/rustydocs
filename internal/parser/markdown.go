@@ -110,9 +110,9 @@ var (
 // ReusablePatterns holds compiled regex patterns for detecting reusables and
 // the settings that decide how a detected reference is resolved to a file.
 type ReusablePatterns struct {
-	patterns   []*regexp.Regexp
-	extensions []string
-	profile    string
+	patterns     []*regexp.Regexp
+	extensions   []string
+	capabilities config.ParserCapabilities
 	// root is the resolved profile's project root: the Hugo site root holding
 	// layouts/ and data/ under ResolverHugo, the docs project root that snippet
 	// paths resolve against under ResolverPath. Empty when the profile has no
@@ -206,7 +206,7 @@ type ReusableConfig struct {
 	ReusablesDir string
 	Root         string
 	Resolver     config.Resolver
-	Profile      string
+	Capabilities config.ParserCapabilities
 	// ImportMap enables the MDX import-map layer on top of the resolver; see
 	// config.Profile.ImportMap (#68).
 	ImportMap bool
@@ -227,8 +227,8 @@ type ReusableConfig struct {
 // reusable settings. Returns an error if any pattern fails to compile.
 func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 	rp := &ReusablePatterns{
-		extensions:     rc.Extensions,
-		profile:        rc.Profile,
+		extensions:     slices.Clone(rc.Extensions),
+		capabilities:   rc.Capabilities,
 		root:           rc.Root,
 		resolver:       rc.Resolver,
 		reusablesDir:   rc.ReusablesDir,
@@ -237,6 +237,10 @@ func NewReusablePatternsFor(rc ReusableConfig) (*ReusablePatterns, error) {
 		cache:          rc.Cache,
 		importMap:      rc.ImportMap,
 	}
+	// Retain nil versus empty capability lists while isolating this parser
+	// from later mutations to the caller's configuration.
+	rp.capabilities.AllowedExplicitPathExtensions = slices.Clone(rc.Capabilities.AllowedExplicitPathExtensions)
+	rp.capabilities.IndexFileNames = slices.Clone(rc.Capabilities.IndexFileNames)
 	for _, p := range rc.Patterns {
 		// Extension-constrained patterns (config.patternExtensionConstraints)
 		// run only on the file kinds whose syntax they detect (#75): a pattern
@@ -325,7 +329,7 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	// section titles or content. Line counts are unchanged (split is still on
 	// "\n"), so git-blame line-number alignment is preserved.
 	content = strings.ReplaceAll(content, "\r\n", "\n")
-	if rp != nil && rp.profile == config.ProfileGitBook {
+	if rp != nil && rp.capabilities.MaskFencedChunking {
 		// Keep nonblank fenced lines nonblank so paragraph chunks retain
 		// their blame history, while hiding headings and references.
 		masked := []byte(content)
@@ -646,7 +650,7 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 	var reusables []string
 	seen := make(map[string]bool)
 	var fences [][2]int
-	if rp.profile == config.ProfileGitBook || rp.profile == config.ProfileStarlight {
+	if rp.capabilities.SkipFencedCaptures {
 		// Fenced content does not render, so references shown *as examples*
 		// must not be captured: for GitBook a fenced include is the shape of
 		// its documented examples, and for Starlight a fenced {% partial %}
@@ -662,7 +666,7 @@ func FindReusables(content string, rp *ReusablePatterns) []string {
 				continue
 			}
 			ref := content[match[2]:match[3]]
-			if rp.profile == config.ProfileGitBook && strings.Contains(ref, "://") {
+			if rp.capabilities.SkipURLCaptures && strings.Contains(ref, "://") {
 				continue
 			}
 			// Record provenance before the de-duplication, not after: a
@@ -773,7 +777,7 @@ func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*gi
 	// specifiers. Path-shaped captures ("./_footer.mdoc", "_partial.mdoc" —
 	// upstream's own fixture spelling — "my-partials/_diagram.mdoc") are
 	// unaffected and keep the include rule: missing means unresolved.
-	if rp.profile == config.ProfileStarlight &&
+	if rp.capabilities.SkipAliasShapedIncludes &&
 		rp.fromIncludePattern(reusableName) && isPartialAliasShape(reusableName) {
 		return nil, ResolutionSkipped
 	}
@@ -843,7 +847,7 @@ func (rp *ReusablePatterns) resolveExisting(reusableName, sourceFile string) *gi
 	// GitBook captures are page-relative paths, never legacy reusable names.
 	// Falling back after a missing, uncommitted, or rejected target would
 	// bypass the direct resolver's project-root boundary.
-	if rp.profile == config.ProfileGitBook {
+	if rp.capabilities.PathCapturesOnly {
 		return rp.lookupDirectPath(reusableName, sourceFile)
 	}
 	// The path resolver takes the capture literally: it is a file path, not a
@@ -905,15 +909,15 @@ func (rp *ReusablePatterns) lookupDirectPath(ref, sourceFile string) *git.FileIn
 // relative capture do not collapse into one reported row (#7).
 func (rp *ReusablePatterns) resolveDirectPath(ref, sourceFile string) (string, bool) {
 	ref = filepath.ToSlash(strings.TrimSpace(ref))
-	if rp.profile == config.ProfileGitBook {
+	if rp.capabilities.StripCaptureFragments {
 		ref = strings.SplitN(ref, "#", 2)[0]
 		ref = strings.SplitN(ref, "?", 2)[0]
 	}
 	if ref == "" || rp.root == "" {
 		return "", false
 	}
-	if rp.profile == config.ProfileGitBook {
-		if ext := filepath.Ext(ref); ext != "" && ext != ".md" {
+	if allowed := rp.capabilities.AllowedExplicitPathExtensions; allowed != nil {
+		if ext := filepath.Ext(ref); ext != "" && !slices.Contains(allowed, ext) {
 			return "", false
 		}
 	}
@@ -1002,7 +1006,7 @@ func (rp *ReusablePatterns) directPathBases(ref, sourceFile string) (bases []str
 	if sourceFile != "" {
 		pageDir = filepath.Dir(sourceFile)
 	}
-	if rp.profile == config.ProfileGitBook {
+	if rp.capabilities.PathBaseMode == config.PathBasePageOnly {
 		if pageDir != "" {
 			return []string{pageDir}, ref
 		}
@@ -1034,16 +1038,19 @@ func (rp *ReusablePatterns) pathCandidates(base, ref string) []string {
 	if filepath.Ext(ref) != "" {
 		return []string{filepath.Clean(joined)}
 	}
-	candidates := make([]string, 0, 1+2*len(rp.extensions))
+	indexNames := rp.capabilities.IndexFileNames
+	if indexNames == nil {
+		indexNames = []string{"index"}
+	}
+	candidates := make([]string, 0, 1+(1+len(indexNames))*len(rp.extensions))
 	candidates = append(candidates, filepath.Clean(joined))
 	for _, ext := range rp.extensions {
 		candidates = append(candidates, filepath.Clean(joined+ext))
 	}
 	for _, ext := range rp.extensions {
-		if rp.profile == config.ProfileGitBook {
-			candidates = append(candidates, filepath.Clean(filepath.Join(joined, "README"+ext)))
+		for _, name := range indexNames {
+			candidates = append(candidates, filepath.Clean(filepath.Join(joined, name+ext)))
 		}
-		candidates = append(candidates, filepath.Clean(filepath.Join(joined, "index"+ext)))
 	}
 	return candidates
 }
