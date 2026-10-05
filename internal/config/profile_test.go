@@ -40,6 +40,114 @@ func TestLookupProfile_ReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestBuiltinProfiles_ParserCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		want    ParserCapabilities
+		example string
+	}{
+		{ProfileMarkdown, ParserCapabilities{}, `<Snippet file="aws-config.mdx" />`},
+		{ProfileHugo, ParserCapabilities{}, `<Snippet file="aws-config.mdx" />`},
+		{ProfileMintlify, ParserCapabilities{}, `<Snippet file="aws-config.mdx" />`},
+		{
+			ProfileGitBook,
+			ParserCapabilities{
+				MaskFencedChunking:            true,
+				SkipFencedCaptures:            true,
+				SkipURLCaptures:               true,
+				PathCapturesOnly:              true,
+				StripCaptureFragments:         true,
+				AllowedExplicitPathExtensions: []string{".md"},
+				PathBaseMode:                  PathBasePageOnly,
+				IndexFileNames:                []string{"README", "index"},
+			},
+			`{% include "./shared.md" %}`,
+		},
+		{
+			ProfileStarlight,
+			ParserCapabilities{
+				SkipFencedCaptures:      true,
+				SkipAliasShapedIncludes: true,
+			},
+			`{% partial file="./_footer.mdoc" /%}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, ok := LookupProfile(tc.name)
+			if !ok {
+				t.Fatal("profile missing from registry")
+			}
+			if !reflect.DeepEqual(p.ParserCapabilities, tc.want) {
+				t.Errorf("capabilities = %+v, want %+v", p.ParserCapabilities, tc.want)
+			}
+			if p.IncludeExample != tc.example {
+				t.Errorf("include example = %q, want %q", p.IncludeExample, tc.example)
+			}
+		})
+	}
+	var zero PathBaseMode
+	if zero != PathBaseSharedFirst {
+		t.Errorf("zero path base mode = %q, want shared-first", zero)
+	}
+}
+
+func TestProfileCapabilities_ReturnsCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		get  func() Profile
+	}{
+		{"LookupProfile", func() Profile {
+			p, _ := LookupProfile(ProfileGitBook)
+			return p
+		}},
+		{"AllProfiles", func() Profile {
+			for _, p := range AllProfiles() {
+				if p.Name == ProfileGitBook {
+					return p
+				}
+			}
+			panic("gitbook profile missing")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.get()
+			p.ParserCapabilities.AllowedExplicitPathExtensions[0] = ".MDX"
+			p.ParserCapabilities.IndexFileNames[0] = "mutated"
+			again := tc.get()
+			if !reflect.DeepEqual(again.ParserCapabilities.AllowedExplicitPathExtensions, []string{".md"}) {
+				t.Error("mutating allowed extensions changed the registry")
+			}
+			if !reflect.DeepEqual(again.ParserCapabilities.IndexFileNames, []string{"README", "index"}) {
+				t.Error("mutating index names changed the registry")
+			}
+		})
+	}
+}
+
+func TestProfileClone_CapabilitySliceDefaults(t *testing.T) {
+	// Nil selects unrestricted explicit extensions and the default index name;
+	// an explicitly empty list must not accidentally acquire either default.
+	for _, tc := range []struct {
+		name   string
+		values []string
+	}{
+		{"nil", nil},
+		{"empty", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Profile{ParserCapabilities: ParserCapabilities{
+				AllowedExplicitPathExtensions: tc.values,
+				IndexFileNames:                tc.values,
+			}}
+			got := p.clone().ParserCapabilities
+			if !reflect.DeepEqual(got.AllowedExplicitPathExtensions, tc.values) ||
+				!reflect.DeepEqual(got.IndexFileNames, tc.values) {
+				t.Errorf("clone changed nil/empty capability semantics: %+v", got)
+			}
+		})
+	}
+}
+
 func TestProfiles_Sorted(t *testing.T) {
 	names := Profiles()
 	want := []string{"gitbook", "hugo", "markdown", "mintlify", "starlight"}

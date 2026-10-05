@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -34,6 +35,54 @@ const (
 	ResolverPath Resolver = "path"
 )
 
+// PathBaseMode selects the bases searched for a direct path capture.
+type PathBaseMode string
+
+const (
+	// PathBaseSharedFirst preserves the legacy lookup order: shared snippet
+	// directories, project root, then page directory for bare captures. An
+	// explicitly relative capture tries the page directory first. The zero
+	// value keeps callers predating profiles on this behavior.
+	PathBaseSharedFirst PathBaseMode = ""
+	// PathBasePageOnly resolves relative captures against the page directory
+	// only. Root-absolute captures still resolve against the project root.
+	PathBasePageOnly PathBaseMode = "page-only"
+)
+
+// ParserCapabilities describes parsing and path-resolution behavior without
+// exposing a profile's identity or display metadata. Its zero value preserves
+// legacy parsing and reusable lookup behavior.
+type ParserCapabilities struct {
+	// MaskFencedChunking hides fenced headings and references before chunking,
+	// while keeping nonblank lines nonblank so their blame history is retained.
+	MaskFencedChunking bool
+	// SkipFencedCaptures ignores reusable examples inside fenced code. This is
+	// independent of chunk masking: a profile may need only capture skipping.
+	SkipFencedCaptures bool
+	// SkipURLCaptures ignores captures containing "://" rather than treating
+	// remote references as missing local files.
+	SkipURLCaptures bool
+	// SkipAliasShapedIncludes skips unresolved alias-shaped captures only when
+	// an include pattern produced them; component provenance is unaffected.
+	SkipAliasShapedIncludes bool
+	// PathCapturesOnly performs direct path lookup without legacy directory,
+	// shortcode, or cached-name fallbacks, preserving the root boundary.
+	PathCapturesOnly bool
+	// StripCaptureFragments removes #anchors and ?queries before path lookup.
+	StripCaptureFragments bool
+	// AllowedExplicitPathExtensions restricts extensions written in captures
+	// by exact, case-sensitive equality. Nil means unrestricted; extensionless
+	// captures remain allowed and try ReusableExtensions, including overrides.
+	AllowedExplicitPathExtensions []string
+	// PathBaseMode controls relative capture bases; its zero value is
+	// PathBaseSharedFirst. Root-absolute captures always use the project root.
+	PathBaseMode PathBaseMode
+	// IndexFileNames are extensionless directory entry names, in lookup order.
+	// Nil means ["index"]. For extensionless captures, candidates remain ordered
+	// by reusable extension first, then by these names within each extension.
+	IndexFileNames []string
+}
+
 // Built-in profile names.
 const (
 	// ProfileMarkdown is the baseline profile every other profile extends and
@@ -56,6 +105,11 @@ const (
 type Profile struct {
 	Name        string
 	Description string
+	// IncludeExample is the include syntax shown in CLI diagnostics when a
+	// project root could not be found. It is display metadata, not parser input.
+	IncludeExample string
+	// ParserCapabilities supplies the profile's parsing and lookup defaults.
+	ParserCapabilities ParserCapabilities
 	// ContentExtensions are the file extensions analyzed as documentation.
 	ContentExtensions []string
 	// RootMarkers are names searched upward from content_dir to locate the
@@ -393,6 +447,7 @@ var builtinProfiles = []Profile{
 			"no include mechanism (reusable detection off). Default when nothing else is detected.",
 		ContentExtensions: []string{".md", ".markdown"},
 		Resolver:          ResolverNone,
+		IncludeExample:    `<Snippet file="aws-config.mdx" />`,
 	},
 	{
 		Name: ProfileGitBook,
@@ -412,6 +467,17 @@ var builtinProfiles = []Profile{
 		},
 		ReusableExtensions: []string{".md"},
 		Resolver:           ResolverPath,
+		IncludeExample:     `{% include "./shared.md" %}`,
+		ParserCapabilities: ParserCapabilities{
+			MaskFencedChunking:            true,
+			SkipFencedCaptures:            true,
+			SkipURLCaptures:               true,
+			PathCapturesOnly:              true,
+			StripCaptureFragments:         true,
+			AllowedExplicitPathExtensions: []string{".md"},
+			PathBaseMode:                  PathBasePageOnly,
+			IndexFileNames:                []string{"README", "index"},
+		},
 	},
 	{
 		Name: ProfileHugo,
@@ -438,6 +504,7 @@ var builtinProfiles = []Profile{
 		ReusablePatterns:   hugoReusablePatterns,
 		ReusableExtensions: []string{".md", ".mdx", ".html"},
 		Resolver:           ResolverHugo,
+		IncludeExample:     `<Snippet file="aws-config.mdx" />`,
 	},
 	{
 		Name: ProfileMintlify,
@@ -464,6 +531,7 @@ var builtinProfiles = []Profile{
 		ReusableExtensions: []string{".mdx", ".md"},
 		Resolver:           ResolverPath,
 		ImportMap:          true,
+		IncludeExample:     `<Snippet file="aws-config.mdx" />`,
 	},
 	{
 		Name: ProfileStarlight,
@@ -513,6 +581,11 @@ var builtinProfiles = []Profile{
 		ReusableExtensions: []string{".mdx", ".md", ".mdoc"},
 		Resolver:           ResolverPath,
 		ImportMap:          true,
+		IncludeExample:     `{% partial file="./_footer.mdoc" /%}`,
+		ParserCapabilities: ParserCapabilities{
+			SkipFencedCaptures:      true,
+			SkipAliasShapedIncludes: true,
+		},
 	},
 }
 
@@ -646,6 +719,8 @@ func readMarkerFile(path string) ([]byte, error) {
 // clone returns a deep copy so callers can mutate slices without touching the
 // registry.
 func (p Profile) clone() Profile {
+	p.ParserCapabilities.AllowedExplicitPathExtensions = slices.Clone(p.ParserCapabilities.AllowedExplicitPathExtensions)
+	p.ParserCapabilities.IndexFileNames = slices.Clone(p.ParserCapabilities.IndexFileNames)
 	p.ContentExtensions = cloneStrings(p.ContentExtensions)
 	p.RootMarkers = cloneStrings(p.RootMarkers)
 	p.ReusablePatterns = cloneStrings(p.ReusablePatterns)
