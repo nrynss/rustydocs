@@ -1,0 +1,10 @@
+{
+  "name": "markdown",
+  "description": "Plain Markdown (CommonMark/GFM): .md and .markdown files, ATX '#' headers, no include mechanism (reusable detection off). Default when nothing else is detected.",
+  "include_example": "<Snippet file=\"aws-config.mdx\" />",
+  "content_extensions": [
+    ".md",
+    ".markdown"
+  ],
+  "resolver": "none"
+}
