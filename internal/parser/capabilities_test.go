@@ -23,6 +23,7 @@ func renamedProfileRP(t *testing.T, p config.Profile, rc ReusableConfig) *Reusab
 	return rp
 }
 
+// TestCapabilities_FenceGatesAreIndependent keeps reusable fence policies independent from heading detection.
 func TestCapabilities_FenceGatesAreIndependent(t *testing.T) {
 	pattern := `include="([^"]+)"`
 	body := "# Page\n```\n# Example\ninclude=\"fenced.md\"\n```\ninclude=\"live.md\"\n"
@@ -46,7 +47,7 @@ func TestCapabilities_FenceGatesAreIndependent(t *testing.T) {
 						foundExample = true
 					}
 				}
-				if foundExample == mask {
+				if foundExample {
 					t.Errorf("mask=%v skip=%v paragraphs=%v: example heading present=%v", mask, skip, paragraphs, foundExample)
 				}
 			}

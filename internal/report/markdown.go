@@ -1,153 +1,74 @@
-// Package report provides report generators for rustydocs.
+// Package report provides portable single-run scan exports.
 package report
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-
 	"github.com/nrynss/rustydocs/internal/analyzer"
 	"github.com/nrynss/rustydocs/internal/config"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
-// GenerateMarkdown generates a markdown report of stale documentation.
+// GenerateMarkdown writes section findings, snippet provenance and diagnostics.
 func GenerateMarkdown(results *analyzer.Results, cfg *config.Config, outputPath string) error {
+	data := readableData(results, cfg)
 	var sb strings.Builder
-
-	// Header
-	sb.WriteString("# Stale Documentation Report\n\n")
-	sb.WriteString(fmt.Sprintf("Generated: %s | Threshold: %d days\n\n",
-		results.GeneratedAt.Format("2006-01-02 15:04"), cfg.ThresholdDays))
-
-	// Summary
-	sb.WriteString("## Summary\n\n")
-	sb.WriteString(fmt.Sprintf("- **Files scanned:** %d\n", results.TotalFiles()))
-	sb.WriteString(fmt.Sprintf("- **Files with stale content:** %d (%.1f%%)\n",
-		results.StaleFiles(), results.StaleFilesPct()))
-	sb.WriteString(fmt.Sprintf("- **Sections analyzed:** %d\n", results.TotalSections()))
-	sb.WriteString(fmt.Sprintf("- **Stale sections:** %d (%.1f%%)\n",
-		results.StaleSections(), results.StaleSectionsPct()))
-
-	if missing := results.FilesMissingHistory(); missing > 0 {
-		sb.WriteString(fmt.Sprintf("- **Files with no git history (staleness unknown):** %d\n", missing))
+	fmt.Fprintf(&sb, "# Stale Documentation Report\n\nGenerated: %s | Threshold: %d days\n\n", data.GeneratedDate, data.ThresholdDays)
+	fmt.Fprintf(&sb, "## Summary\n\n- **Files scanned:** %d\n- **Files with stale content:** %d (%.1f%%)\n- **Sections analyzed:** %d\n- **Stale sections:** %d (%.1f%%)\n- **Fresh sections:** %d\n- **Unknown sections:** %d\n", data.Summary.TotalFiles, data.Summary.StaleFiles, data.Summary.StaleFilesPct, data.Summary.TotalSections, data.Summary.StaleSections, data.Summary.StaleSectionsPct, data.Summary.FreshSections, data.Summary.UnknownSections)
+	if data.Summary.FilesMissingHistory > 0 {
+		fmt.Fprintf(&sb, "- **Files with no git history (own staleness unknown):** %d\n", data.Summary.FilesMissingHistory)
 	}
-
-	if oldest := results.OldestFile(); oldest != nil {
-		sb.WriteString(fmt.Sprintf("- **Oldest content:** %s (%d days)\n",
-			oldest.RelativePath, oldest.OldestSectionDays))
+	sb.WriteString("\n")
+	if data.FileLevelOnly {
+		sb.WriteString("File-only mode: sections were not analyzed; this is not a complete section inventory.\n\n")
 	}
-	sb.WriteString("\n---\n\n")
-
-	// Sort files by oldest section (files with oldest content first)
-	staleFiles := make([]analyzer.FileAnalysis, 0)
-	for _, f := range results.Files {
-		if f.IsStale() {
-			staleFiles = append(staleFiles, f)
+	writeFiles := func(title string, files []FileData, empty string) {
+		fmt.Fprintf(&sb, "## %s\n\n", title)
+		if len(files) == 0 {
+			fmt.Fprintf(&sb, "%s\n\n", empty)
+		}
+		for _, f := range files {
+			fmt.Fprintf(&sb, "### %s\n\nHistory: %s\n\n", escapeMDCell(f.Path), f.HistoryStatus)
+			if len(f.Sections) == 0 {
+				sb.WriteString("No unknown section rows are available. See diagnostics for the file’s history or analysis status.\n\n")
+				continue
+			}
+			sb.WriteString("| Line | Section | Effective Updated | Age (days) | Effective Author | Severity | Snippet evidence |\n|------|---------|-------------------|------------|------------------|----------|------------------|\n")
+			for _, s := range f.Sections {
+				age := "—"
+				if s.DateKnown {
+					age = fmt.Sprint(s.DaysStale)
+				}
+				evidence := s.Evidence
+				if evidence == "" {
+					evidence = "Own content"
+				}
+				fmt.Fprintf(&sb, "| L%d | %s | %s | %s | %s | %s | %s |\n", s.StartLine, escapeMDCell(s.Title), s.DateStr, age, escapeMDCell(s.Author), s.StalenessClass, escapeMDCell(evidence))
+			}
+			sb.WriteString("\n")
 		}
 	}
-	sort.Slice(staleFiles, func(i, j int) bool {
-		return staleFiles[i].OldestSectionDays > staleFiles[j].OldestSectionDays
-	})
-
-	if len(staleFiles) == 0 {
-		sb.WriteString("*No stale documentation found!*\n")
-	} else {
-		for _, fileAnalysis := range staleFiles {
-			sb.WriteString(fmt.Sprintf("## %s\n\n", fileAnalysis.RelativePath))
-
-			if fileAnalysis.EffectiveLastUpdated != nil {
-				dateStr := fileAnalysis.EffectiveLastUpdated.Format("2006-01-02")
-				sb.WriteString(fmt.Sprintf("**File last updated:** %s (%d days ago)\n\n",
-					dateStr, fileAnalysis.DaysStale))
-			}
-
-			// Sections table
-			if len(fileAnalysis.StaleSections) > 0 {
-				sb.WriteString("| Line | Section | Last Updated | Days Stale | Author |\n")
-				sb.WriteString("|------|---------|--------------|------------|--------|\n")
-
-				for _, section := range fileAnalysis.StaleSections {
-					title := truncateRunes(section.Title, 35)
-
-					// No resolvable date at all renders as "Unknown"/"—"
-					// consistently with the HTML and JSON reports, rather than
-					// a fabricated 0. See #56. Otherwise DisplayDate is the
-					// date the classification used — own latest folded with
-					// includes — so the row's date and day count always match
-					// the count.
-					dateStr := "Unknown"
-					daysStr := "—"
-					if lastUpdated := section.DisplayDate(); lastUpdated != nil {
-						dateStr = lastUpdated.Format("2006-01-02")
-						daysStr = fmt.Sprintf("%d", int(nowFunc().Sub(*lastUpdated).Hours()/24))
-					}
-
-					author := section.LastAuthor()
-					if author == "" {
-						author = "Unknown"
-					}
-
-					sb.WriteString(fmt.Sprintf("| L%d | %s | %s | %s | %s |\n",
-						section.StartLine, escapeMDCell(title), dateStr, daysStr, escapeMDCell(author)))
-				}
-				sb.WriteString("\n")
-			}
-
-			// Reusables info
-			if len(fileAnalysis.Reusables) > 0 {
-				var reusableStrs []string
-				for _, r := range fileAnalysis.Reusables {
-					if r.LastUpdated != nil {
-						dateStr := r.LastUpdated.Format("2006-01-02")
-						status := "fresh"
-						if !r.IsFresh {
-							status = "stale"
-						}
-						reusableStrs = append(reusableStrs,
-							fmt.Sprintf("`%s` (updated %s - %s)", r.Name, dateStr, status))
-					} else {
-						reusableStrs = append(reusableStrs,
-							fmt.Sprintf("`%s` (unknown)", r.Name))
-					}
-				}
-				sb.WriteString(fmt.Sprintf("**Reusables:** %s\n\n", strings.Join(reusableStrs, ", ")))
-			}
-
-			sb.WriteString("---\n\n")
+	writeFiles("Stale sections", data.Files, "No stale documentation found.")
+	sb.WriteString("Snippet freshness describes the effective Git date, not whether surrounding prose is correct.\n\n")
+	writeFiles("Sections made fresh by snippets", data.SnippetFiles, "No sections made fresh by snippets.")
+	writeFiles("Unknown or partial history", data.UnknownFiles, "No files with unknown or partial history.")
+	sb.WriteString("## Diagnostics\n\n")
+	if len(data.Diagnostics) == 0 {
+		sb.WriteString("No scan diagnostics.\n\n")
+	}
+	for _, d := range data.Diagnostics {
+		fmt.Fprintf(&sb, "- %s\n", escapeMDCell(d))
+	}
+	if len(data.Reusables) > 0 {
+		sb.WriteString("\n## Reusable Components\n\n| Component | Last Updated | Age (days) | Status | Author |\n|-----------|--------------|------------|--------|--------|\n")
+		for _, r := range data.Reusables {
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s |\n", escapeMDCell(r.Name), r.DateStr, r.Age, r.Status, escapeMDCell(r.Author))
 		}
 	}
-
-	// Add reusables summary section
-	if len(results.AllReusables) > 0 {
-		sb.WriteString("\n## Reusable Components\n\n")
-		sb.WriteString("| Component | Last Updated | Status |\n")
-		sb.WriteString("|-----------|--------------|--------|\n")
-
-		for _, r := range results.AllReusables {
-			var dateStr, status string
-			if r.LastUpdated != nil {
-				dateStr = r.LastUpdated.Format("2006-01-02")
-				if r.IsFresh {
-					status = "Fresh"
-				} else {
-					status = "Stale"
-				}
-			} else {
-				dateStr = "Unknown"
-				status = "Unknown"
-			}
-			sb.WriteString(fmt.Sprintf("| `%s` | %s | %s |\n", r.Name, dateStr, status))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Ensure output directory exists
 	if err := os.MkdirAll(filepath.Clean(filepath.Dir(outputPath)), 0750); err != nil {
 		return err
 	}
-
 	return os.WriteFile(filepath.Clean(outputPath), []byte(sb.String()), 0600)
 }
 

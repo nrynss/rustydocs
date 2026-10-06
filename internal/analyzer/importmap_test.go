@@ -90,18 +90,16 @@ import { YamlTable } from "/snippets/yaml-table.jsx";
 	}
 
 	// The section rendering the import is fresh; the one rendering only
-	// skipped components keeps the page's own ancient date. The third section
-	// is the preamble holding the two import statements, which since #70 is
-	// analyzed like any other chunk and carries the page's ancient date.
-	if len(file.Sections) != 3 {
-		t.Fatalf("sections = %d, want 3 (preamble + two headers)", len(file.Sections))
+	// skipped components keeps the page's own ancient date. Imports do not render.
+	if len(file.Sections) != 2 {
+		t.Fatalf("sections = %d, want 2 (imports are not rendered sections)", len(file.Sections))
 	}
 	staleTitles := make([]string, 0, len(file.StaleSections))
 	for _, s := range file.StaleSections {
 		staleTitles = append(staleTitles, s.Title)
 	}
-	if !reflect.DeepEqual(staleTitles, []string{"(preamble)", "Uses only a component"}) {
-		t.Errorf("stale sections = %v, want [(preamble) Uses only a component]", staleTitles)
+	if !reflect.DeepEqual(staleTitles, []string{"Uses only a component"}) {
+		t.Errorf("stale sections = %v, want [Uses only a component]", staleTitles)
 	}
 
 	// Nothing is reported broken: <Card>, <Tabs> and the .jsx import are out of

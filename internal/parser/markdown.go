@@ -12,6 +12,12 @@ import (
 
 // Chunk represents a chunk of content (paragraph or section) within a markdown file.
 type Chunk struct {
+	LogicalKey   string
+	HeadingPath  []string
+	Fingerprint  string
+	Dependencies []Dependency
+	IsStale      bool
+
 	Title     string // Header title or "Paragraph N"
 	Level     int    // Header level (1 for #, 2 for ##, etc.) or 0 for paragraph
 	StartLine int
@@ -57,6 +63,9 @@ func (c *Chunk) LastUpdated() *time.Time {
 		if line.Timestamp.After(latest) {
 			latest = line.Timestamp
 		}
+	}
+	if latest.IsZero() {
+		return nil
 	}
 	return &latest
 }
@@ -110,12 +119,14 @@ func ParseSections(content string, linesInfo []git.LineInfo, rp *ReusablePattern
 
 // ParseChunks parses markdown content into chunks.
 // If paragraphLevel is true, it also splits by paragraphs within sections.
-func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, rp *ReusablePatterns) []Chunk {
+func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, rp *ReusablePatterns) (chunks []Chunk) {
+	original := strings.ReplaceAll(content, "\r\n", "\n")
+	defer func() { enrichChunks(chunks, original, rp) }()
 	// Normalize CRLF so Windows line endings don't leave a trailing \r in
 	// section titles or content. Line counts are unchanged (split is still on
 	// "\n"), so git-blame line-number alignment is preserved.
 	content = strings.ReplaceAll(content, "\r\n", "\n")
-	if rp != nil && rp.capabilities.MaskFencedChunking {
+	{
 		// Keep nonblank fenced lines nonblank so paragraph chunks retain
 		// their blame history, while hiding headings and references.
 		masked := []byte(content)
@@ -133,6 +144,20 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 			}
 		}
 		content = string(masked)
+	}
+	if rp != nil && rp.importMap {
+		var ignored map[int]bool
+		content, ignored = maskImports(content)
+		kept := make([]git.LineInfo, 0, len(linesInfo))
+		for _, line := range linesInfo {
+			if !ignored[line.LineNumber] {
+				kept = append(kept, line)
+			}
+		}
+		linesInfo = kept
+		if strings.TrimSpace(content) == "" {
+			return nil
+		}
 	}
 	contentLines := strings.Split(content, "\n")
 
@@ -162,8 +187,6 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	}
 
 	// Create chunks from headers
-	var chunks []Chunk
-
 	// Anything above the first header is the page preamble: prose, a note, or
 	// a rendered include sitting under the frontmatter and before any heading.
 	// It used to be discarded outright, which hid its blame dates and, worse,

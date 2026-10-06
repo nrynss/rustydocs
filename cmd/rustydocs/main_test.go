@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +26,7 @@ func TestRunArgs_Version(t *testing.T) {
 	}
 }
 
+// TestRunArgs_RequiresContentDir rejects a scan without an explicit content location.
 func TestRunArgs_RequiresContentDir(t *testing.T) {
 	var out, errb bytes.Buffer
 	if err := runArgs([]string{}, &out, &errb); err == nil {
@@ -34,6 +34,7 @@ func TestRunArgs_RequiresContentDir(t *testing.T) {
 	}
 }
 
+// TestRunArgs_ContentDirMustExist rejects scans whose content directory does not exist.
 func TestRunArgs_ContentDirMustExist(t *testing.T) {
 	var out, errb bytes.Buffer
 	missing := filepath.Join(t.TempDir(), "nope")
@@ -44,6 +45,10 @@ func TestRunArgs_ContentDirMustExist(t *testing.T) {
 
 // minimal shape for asserting on the JSON report.
 type jsonReport struct {
+	Tool struct {
+		Version       *string `json:"version"`
+		BuildRevision *string `json:"build_revision"`
+	} `json:"tool"`
 	Config struct {
 		Profile           string   `json:"profile"`
 		ProfileAuto       bool     `json:"profile_auto"`
@@ -53,10 +58,14 @@ type jsonReport struct {
 		FilesMissingHistory int `json:"files_missing_history"`
 	} `json:"summary"`
 	Files []struct {
-		Path     string `json:"path"`
+		Path     string `json:"content_path"`
 		Sections []struct {
-			Title string `json:"title"`
-			Level string `json:"level"`
+			Title        string `json:"title"`
+			Level        string `json:"severity"`
+			Dependencies []struct {
+				Reference string `json:"reference"`
+				Status    string `json:"status"`
+			} `json:"dependencies"`
 		} `json:"sections"`
 	} `json:"files"`
 	Reusables []jsonReusable `json:"reusables"`
@@ -64,9 +73,11 @@ type jsonReport struct {
 
 // jsonReusable is one row of the report's cross-file reusables table.
 type jsonReusable struct {
-	Name        string `json:"name"`
-	LastUpdated string `json:"last_updated"`
-	Level       string `json:"level"`
+	Name       string `json:"path"`
+	LastChange struct {
+		Date string `json:"date"`
+	} `json:"last_change"`
+	Level string `json:"severity"`
 }
 
 func readJSONReport(t *testing.T, dir string) jsonReport {
@@ -208,23 +219,15 @@ func TestRunArgs_ProfileBanner(t *testing.T) {
 		"docs/page.md": "# A\n\nSee <Foo /> and {{< bar >}}.\n",
 	})
 
-	type jsonWithReusables struct {
-		Reusables []struct {
-			Name string `json:"name"`
-		} `json:"reusables"`
-	}
 	readReusables := func(dir string) []string {
-		data, err := os.ReadFile(filepath.Join(dir, "stale-docs.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var r jsonWithReusables
-		if err := json.Unmarshal(data, &r); err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, x := range r.Reusables {
-			names = append(names, x.Name)
+		r := readJSONReport(t, dir)
+		names := []string{}
+		for _, f := range r.Files {
+			for _, s := range f.Sections {
+				for _, d := range s.Dependencies {
+					names = append(names, d.Reference)
+				}
+			}
 		}
 		return names
 	}
@@ -875,18 +878,18 @@ func TestRunArgs_MintlifyEndToEnd(t *testing.T) {
 		t.Fatalf("the bare <Snippet file=\"aws-access-key-config.mdx\" /> did not resolve "+
 			"out of snippets/: %+v", rep.Reusables)
 	}
-	if bare.LastUpdated == "" || bare.Level == "unknown" {
+	if bare.LastChange.Date == "" || bare.Level == "unknown" {
 		t.Errorf("bare snippet was not resolved to a date: %+v", bare)
 	}
 	snippet, ok := byName["snippets/foo.mdx"]
 	if !ok {
 		t.Fatalf("reusables = %+v, want snippets/foo.mdx", rep.Reusables)
 	}
-	if snippet.LastUpdated == "" || snippet.Level == "unknown" {
+	if snippet.LastChange.Date == "" || snippet.Level == "unknown" {
 		t.Errorf("snippet was not resolved to a date: %+v", snippet)
 	}
-	if want := snippetDate.Format("2006-01-02"); !strings.HasPrefix(snippet.LastUpdated, want) {
-		t.Errorf("snippet last_updated = %q, want it to start with %q", snippet.LastUpdated, want)
+	if want := snippetDate.UTC().Format(time.RFC3339); snippet.LastChange.Date != want {
+		t.Errorf("snippet last_updated = %q, want %q", snippet.LastChange.Date, want)
 	}
 	// Everything resolved, so the unresolved-reusables note must stay quiet.
 	if strings.Contains(errb.String(), "could not be resolved") {
@@ -1303,8 +1306,8 @@ func TestRunArgs_UnresolvedReusablesNote(t *testing.T) {
 			t.Errorf("a root was found; the note must not claim otherwise:\n%s", stderr)
 		}
 		rep := readJSONReport(t, outDir)
-		if len(rep.Reusables) != 1 || rep.Reusables[0].Level != "unknown" {
-			t.Errorf("reusables = %+v, want the unresolved snippet reported unknown", rep.Reusables)
+		if len(rep.Reusables) != 0 || !hasReference(rep, "typo.mdx", "unresolved") {
+			t.Errorf("unresolved reference missing: %+v", rep)
 		}
 	})
 
@@ -1339,16 +1342,10 @@ func TestRunArgs_UnresolvedReusablesNote(t *testing.T) {
 			t.Errorf("the hugo run must not print the unresolved-reusables note:\n%s", stderr)
 		}
 		rep := readJSONReport(t, outDir)
-		var unknown int
-		for _, r := range rep.Reusables {
-			if r.Level == "unknown" {
-				unknown++
-			}
+		if !hasReference(rep, "Tabs", "unresolved") {
+			t.Errorf("unresolved component evidence missing: %+v", rep)
 		}
-		if unknown == 0 {
-			t.Errorf("reusables = %+v, want the unresolvable components still reported unknown",
-				rep.Reusables)
-		}
+
 	})
 
 	t.Run("mintlify: a broken snippet is named", func(t *testing.T) {
@@ -1628,14 +1625,83 @@ func TestRunArgs_ExtensionlessBrokenSnippetNote(t *testing.T) {
 	}
 
 	rep := readJSONReport(t, outDir)
-	var names []string
-	for _, r := range rep.Reusables {
-		names = append(names, r.Name)
+	if !hasReference(rep, "AlsoMissing", "unresolved") || !hasReference(rep, "Card", "skipped") {
+		t.Errorf("resolution evidence missing: %+v", rep)
 	}
-	if !slices.Contains(names, "AlsoMissing") {
-		t.Errorf("reusables = %v, want a row for the broken include", names)
+}
+
+// hasReference finds a rendered dependency with the expected resolution status.
+func hasReference(r jsonReport, reference, status string) bool {
+	for _, f := range r.Files {
+		for _, s := range f.Sections {
+			for _, d := range s.Dependencies {
+				if d.Reference == reference && d.Status == status {
+					return true
+				}
+			}
+		}
 	}
-	if slices.Contains(names, "Card") {
-		t.Errorf("reusables = %v, a built-in component must not earn a row", names)
+	return false
+}
+
+// TestReportBuildInfo distinguishes unavailable display defaults from release
+// versions and Git revisions resolved through the normal build-info fallback.
+func TestReportBuildInfo(t *testing.T) {
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	tests := []struct {
+		name, version, revision   string
+		info                      *debug.BuildInfo
+		wantVersion, wantRevision string
+	}{
+		{name: "unavailable", version: defaultVersion, revision: defaultCommit},
+		{name: "ldflags", version: "v0.8.0", revision: "abcdef123456", wantVersion: "v0.8.0", wantRevision: "abcdef123456"},
+		{name: "module without vcs", version: defaultVersion, revision: defaultCommit, info: &debug.BuildInfo{Main: debug.Module{Version: "v0.8.0"}}, wantVersion: "v0.8.0"},
+		{name: "dirty development checkout", version: defaultVersion, revision: defaultCommit, info: &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: revision}, {Key: "vcs.modified", Value: "true"}}}, wantRevision: revision[:12] + "-dirty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resolvedVersion, resolvedRevision := resolveBuildInfo(tc.version, tc.revision, tc.info, tc.info != nil)
+			gotVersion, gotRevision := reportBuildInfo(resolvedVersion, resolvedRevision)
+			if gotVersion != tc.wantVersion || gotRevision != tc.wantRevision {
+				t.Fatalf("metadata=(%q,%q), want (%q,%q)", gotVersion, gotRevision, tc.wantVersion, tc.wantRevision)
+			}
+		})
+	}
+}
+
+// TestRunArgs_ReportBuildMetadata verifies null placeholders and known dirty
+// revisions in the artifact produced by the complete CLI pipeline.
+func TestRunArgs_ReportBuildMetadata(t *testing.T) {
+	oldV, oldC := version, commit
+	t.Cleanup(func() { version, commit = oldV, oldC })
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Now(), "page", map[string]string{"docs/page.md": "# Page\nbody\n"})
+	for _, tc := range []struct{ name, version, revision string }{
+		{"defaults", defaultVersion, defaultCommit},
+		{"known dirty revision", "v0.8.0", "0123456789ab-dirty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version, commit = tc.version, tc.revision
+			resolvedVersion, resolvedRevision, _ := buildInfo()
+			outDir := t.TempDir()
+			var out, errb bytes.Buffer
+			if err := runArgs([]string{"--content-dir", repo.Path("docs"), "--output-dir", outDir}, &out, &errb); err != nil {
+				t.Fatal(err)
+			}
+			metadata := readJSONReport(t, outDir).Tool
+			check := func(name string, got *string, want, unavailable string) {
+				if want == unavailable {
+					if got != nil {
+						t.Errorf("%s=%q, want null", name, *got)
+					}
+					return
+				}
+				if got == nil || *got != want {
+					t.Errorf("%s=%v, want %q", name, got, want)
+				}
+			}
+			check("version", metadata.Version, resolvedVersion, defaultVersion)
+			check("build_revision", metadata.BuildRevision, resolvedRevision, defaultCommit)
+		})
 	}
 }

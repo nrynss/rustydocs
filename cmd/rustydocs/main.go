@@ -100,6 +100,18 @@ func buildInfo() (string, string, string) {
 	return v, c, date
 }
 
+// reportBuildInfo converts CLI display sentinels to unavailable scan metadata.
+// Real release versions and revisions, including -dirty suffixes, are preserved.
+func reportBuildInfo(v, c string) (string, string) {
+	if v == defaultVersion {
+		v = ""
+	}
+	if c == defaultCommit {
+		c = ""
+	}
+	return v, c
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -284,6 +296,8 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unable to analyze: %w", err)
 	}
 
+	toolVersion, buildRevision, _ := buildInfo()
+	results.ToolVersion, results.BuildRevision = reportBuildInfo(toolVersion, buildRevision)
 	// Generate reports
 	outputPath := cfg.OutputDir
 	if err := os.MkdirAll(filepath.Clean(outputPath), 0750); err != nil {

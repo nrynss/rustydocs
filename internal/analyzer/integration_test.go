@@ -25,6 +25,7 @@ func pinNow(t *testing.T, at time.Time) {
 	t.Cleanup(func() { nowFunc = old })
 }
 
+// TestAnalyze_GitBookReferences retains GitBook include resolution through the full scan pipeline.
 func TestAnalyze_GitBookReferences(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	pinNow(t, now)
@@ -88,6 +89,30 @@ func TestAnalyze_GitBookReferences(t *testing.T) {
 	}
 	if res.UnresolvedReusables() != 2 {
 		t.Errorf("unresolved with outside target = %d, want 2", res.UnresolvedReusables())
+	}
+}
+
+// TestAnalyzeFileReadFailureRetainsKnownGitHistory keeps read failures distinct from missing Git evidence.
+func TestAnalyzeFileReadFailureRetainsKnownGitHistory(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -2), "tracked content", map[string]string{"docs/gone.md": "# Gone\nbody\n"})
+	path := repo.Path("docs/gone.md")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.ContentDir = repo.Path("docs")
+	cache := git.NewFileInfoCache()
+	file, err := analyzeFileAt(path, cfg, cfg.ContentDir, cache, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.AnalysisStatus != "failed" || file.HistoryMissing || file.FileInfo == nil {
+		t.Fatalf("failed read lost known history: %+v", file)
+	}
+	if file.FileInfo.LastAuthor == "" || file.FileInfo.LastModified.IsZero() {
+		t.Fatalf("git lookup returned no history evidence: %+v", file.FileInfo)
 	}
 }
 
@@ -179,15 +204,14 @@ func TestAnalyze_StarlightImports(t *testing.T) {
 		t.Fatal("guide.mdx not analyzed")
 	}
 	// Intro renders only the imported partial, whose fresh commit must keep
-	// the section out of the stale list. Two sections are stale: the
-	// "(preamble)" chunk holding the page's import block (#70) and Components,
+	// the section out of the stale list. Components is stale,
 	// whose only unattributable reference is the broken import.
 	staleTitles := make(map[string]bool)
 	for _, section := range guide.StaleSections {
 		staleTitles[section.Title] = true
 	}
-	if len(guide.StaleSections) != 2 || !staleTitles["(preamble)"] || !staleTitles["Components"] {
-		t.Errorf("stale sections = %+v, want (preamble) and Components", guide.StaleSections)
+	if len(guide.StaleSections) != 1 || !staleTitles["Components"] {
+		t.Errorf("stale sections = %+v, want Components", guide.StaleSections)
 	}
 	byName := make(map[string]*time.Time)
 	for _, ref := range res.AllReusables {
