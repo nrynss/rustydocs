@@ -16,7 +16,8 @@ import (
 //
 // Callers must keep the checkout (history, working tree, and symlinks) stable
 // during analysis. The analyzer does not pin HEAD or provide a snapshot. Only
-// per-file git log results are cached, and nothing survives the run.
+// per-file results and optional repository batches are cached; nothing survives
+// the run. The batch accelerator is opt-in via NewFileInfoCacheWithLastModified.
 //
 // A nil *FileInfoCache is valid and means "no caching": every method falls
 // through to the plain function, so callers that have no cache work unchanged.
@@ -27,8 +28,15 @@ type FileInfoCache struct {
 	hits    int
 	misses  int
 
+	lastModified bool
+	repositories map[string]*lastModifiedEntry
+	directories  map[string]*fileInfoRootEntry
+	// runGit is a test seam for accelerator commands only. Set before sharing.
+	runGit func(root, input string, args ...string) ([]byte, error)
+
 	// lookup is the underlying, uncached query. It is nil everywhere in the
-	// CLI, which means GetFileLastModified; only tests set it, so they can
+	// CLI, which means the selected strategy with GetFileLastModified fallback;
+	// only tests set it, so they can
 	// count real invocations and assert the deduplication guarantee directly
 	// rather than through the hit/miss counters the cache keeps about itself.
 	// It is written once, before the cache is shared, and only read after.
@@ -49,6 +57,15 @@ func NewFileInfoCache() *FileInfoCache {
 	return &FileInfoCache{entries: make(map[fileInfoKey]*fileInfoEntry)}
 }
 
+// NewFileInfoCacheWithLastModified opts into a batch last-modified lookup once
+// per repository. Unsupported Git, unsafe histories, and invalid output fall
+// back to the same memoized GetFileLastModified queries as NewFileInfoCache.
+func NewFileInfoCacheWithLastModified() *FileInfoCache {
+	c := NewFileInfoCache()
+	c.lastModified = true
+	return c
+}
+
 // FileLastModified returns GetFileLastModified(filePath), memoized per
 // normalised path. Negative results are cached too — both shapes the function
 // can return, the (nil, err) of a path git cannot answer for and the
@@ -63,7 +80,7 @@ func (c *FileInfoCache) FileLastModified(filePath string) (*FileInfo, error) {
 
 	lookup := c.lookup
 	if lookup == nil {
-		lookup = GetFileLastModified
+		lookup = c.lookupFileLastModified
 	}
 
 	entry := c.entryFor(fileInfoCacheKey(filePath))
@@ -103,8 +120,9 @@ func (c *FileInfoCache) entryFor(key fileInfoKey) *fileInfoEntry {
 }
 
 // Stats returns the number of lookups served from an existing entry (hits) and
-// the number that created one (misses). Misses equal the number of underlying
-// `git log` invocations, since each entry runs its lookup exactly once. It
+// the number that created one (misses). Each miss runs one underlying lookup,
+// but an opted-in repository batch can serve many misses without per-file
+// `git log` subprocesses. Counters describe entries, not subprocesses. It
 // exists for tests and ad-hoc profiling; nothing in the CLI reports it.
 //
 // A nil cache reports zeroes.

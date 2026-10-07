@@ -441,10 +441,47 @@ Options:
                           spelling: "project_root" (deprecated: "hugo_root")
   --list-profiles         List built-in profiles and exit
   --file-level-only       Skip section-level analysis (faster)
+  --git-last-modified     Opt into experimental batch file dates (default: off;
+                          falls back to git log). Config: "git_last_modified"
   --paragraph-level       Analyze at paragraph level (more granular)
   --workers INT           Number of parallel workers (default: number of CPUs)
   --version               Show version and exit
 ```
+
+### Optional Git accelerator
+
+`--git-last-modified` enables an optional Git accelerator for file-level and
+reusable-file dates. It does not replace per-line blame or change section-level
+analysis. Without this flag (or `"git_last_modified": true` in config), rustydocs
+uses the existing cached per-file `git log` lookups and does not probe the
+experimental command. Pass `--git-last-modified=false` to override an enabled
+config setting. Older Git versions and unsupported or unusable accelerator
+results fall back to the existing lookup path.
+
+The fast path requires Git's recursive NUL-delimited `last-modified` output
+(available in Git 2.54). Capability and output checks decide eligibility rather
+than the version string. For correctness, merge histories, shallow repositories,
+replacement objects/grafts, and history/pathspec overrides use the fallback.
+Setting `GIT_CONFIG` also disables the fast path: it can redirect configuration
+probes without redirecting history commands.
+Paths absent from HEAD, missing paths, directories and special pathspec spellings
+also use the existing per-file lookup. A failed batch is not retried for every
+file during the same scan. Keep the checkout stable during analysis as usual.
+
+Batching is intended for many distinct file/reusable lookups, not repeated hits
+on one already-cached snippet. To compare both workloads on your machine:
+
+```bash
+go test ./internal/git -run '^$' -bench BenchmarkFileInfoCache -benchmem -benchtime=3x
+```
+
+Each benchmark iteration creates a fresh run-scoped cache against eight linear
+commits, with repository-root discovery warmed for both modes. It measures Git
+lookups only, not a complete documentation scan. On Apple M3 Pro / Git 2.54,
+one three-iteration sample took 831 ms vs 159 ms for 32 distinct paths and
+6.79 s vs 166 ms for 256 distinct paths (cached log vs batch). Repeated lookups
+of one shared path were slower with batch initialization (33 ms vs 157 ms at
+32 lookups). Results depend on repository history, filesystem and Git version.
 
 ## Output
 

@@ -52,6 +52,7 @@ type JSONConfig struct {
 	ExcludeDirs       []string               `json:"exclude_dirs"`
 	NoDefaultExcludes bool                   `json:"no_default_excludes"`
 	FileLevelOnly     bool                   `json:"file_level_only"`
+	GitLastModified   bool                   `json:"git_last_modified"`
 	ParagraphLevel    bool                   `json:"paragraph_level"`
 	Reusables         JSONReusableConfig     `json:"reusables"`
 }
@@ -365,7 +366,7 @@ func buildJSON(results *analyzer.Results, cfg *config.Config) JSONReport {
 	out := JSONReport{Version: "2.0", GeneratedAt: now.UTC().Format(time.RFC3339Nano),
 		Tool:         JSONTool{Version: stringPointer(results.ToolVersion), BuildRevision: stringPointer(results.BuildRevision)},
 		Repositories: nonnil(results.Repositories),
-		Config:       JSONConfig{ThresholdDays: cfg.ThresholdDays, ContentDir: location(results, cfg.ContentDir, "."), ProjectRoot: directory(results, cfg.ProjectRoot), Profile: cfg.ResolvedProfile.Name, ProfileAuto: cfg.ProfileAuto, ContentExtensions: nonnil(cfg.ContentExtensions), StalenessLevels: cfg.StalenessLevels, ExcludePatterns: nonnil(cfg.ExcludePatterns), ExcludeDirs: nonnil(cfg.ExcludeDirs), NoDefaultExcludes: cfg.NoDefaultExcludes, FileLevelOnly: cfg.FileLevelOnly, ParagraphLevel: cfg.ParagraphLevel, Reusables: JSONReusableConfig{Dir: directory(results, reusableDir), Patterns: nonnil(cfg.Reusables.Patterns), Extensions: nonnil(cfg.Reusables.Extensions), Resolver: cfg.ResolvedProfile.Resolver, ImportMap: cfg.ResolvedProfile.ImportMap}},
+		Config:       JSONConfig{ThresholdDays: cfg.ThresholdDays, ContentDir: location(results, cfg.ContentDir, "."), ProjectRoot: directory(results, cfg.ProjectRoot), Profile: cfg.ResolvedProfile.Name, ProfileAuto: cfg.ProfileAuto, ContentExtensions: nonnil(cfg.ContentExtensions), StalenessLevels: cfg.StalenessLevels, ExcludePatterns: nonnil(cfg.ExcludePatterns), ExcludeDirs: nonnil(cfg.ExcludeDirs), NoDefaultExcludes: cfg.NoDefaultExcludes, FileLevelOnly: cfg.FileLevelOnly, GitLastModified: cfg.GitLastModified, ParagraphLevel: cfg.ParagraphLevel, Reusables: JSONReusableConfig{Dir: directory(results, reusableDir), Patterns: nonnil(cfg.Reusables.Patterns), Extensions: nonnil(cfg.Reusables.Extensions), Resolver: cfg.ResolvedProfile.Resolver, ImportMap: cfg.ResolvedProfile.ImportMap}},
 		Coverage:     JSONCoverage{ExcludedFiles: results.FilesExcluded(), GitIgnoredFiles: results.FilesGitIgnored(), ExtensionSkippedFiles: results.FilesSkippedByExtension(), DefaultPrunedDirectories: results.DirsSkipped(), ExcludedDirectories: results.DirsExcluded(), SkippedExtensions: results.SkippedExtensions(), PrunedDirectoryNames: results.SkippedDirNames()},
 		Files:        []JSONFile{}, Reusables: []JSONReusable{}, Diagnostics: nonnil(results.Diagnostics),
 	}

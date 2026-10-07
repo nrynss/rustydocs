@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `--git-last-modified` batch accelerator for file-level and reusable
+  Git dates (#46), with graceful fallback to cached `git log` lookups.
+  Disabled by default; section-level blame is unchanged.
+
 - Docusaurus profile (#13): `.md`/`.mdx` ATX content, detected from
   `docusaurus.config.js` or `.ts` or selected with `--profile docusaurus`.
   Static relative Markdown partial imports rendered as components contribute

@@ -1024,6 +1024,9 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 	// and shared by every worker: a shared include is resolved once rather
 	// than once per referencing page (#65).
 	fileInfoCache := git.NewFileInfoCache()
+	if cfg.GitLastModified {
+		fileInfoCache = git.NewFileInfoCacheWithLastModified()
+	}
 
 	// Determine number of workers
 	workers := cfg.Workers

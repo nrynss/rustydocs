@@ -113,8 +113,11 @@ type Config struct {
 	NoDefaultExcludes bool            `json:"no_default_excludes"`
 	StalenessLevels   StalenessLevels `json:"staleness_levels"`
 	FileLevelOnly     bool            `json:"file_level_only"`
-	ParagraphLevel    bool            `json:"paragraph_level"`
-	Workers           int             `json:"workers"`
+	// GitLastModified opts into the experimental batch Git accelerator.
+	// Unsupported commands or unusable results fall back to per-file git log.
+	GitLastModified bool `json:"git_last_modified"`
+	ParagraphLevel  bool `json:"paragraph_level"`
+	Workers         int  `json:"workers"`
 }
 
 // DefaultConfig returns a new Config with default values. Profile-dependent

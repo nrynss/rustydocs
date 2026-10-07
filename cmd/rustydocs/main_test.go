@@ -53,6 +53,7 @@ type jsonReport struct {
 		Profile           string   `json:"profile"`
 		ProfileAuto       bool     `json:"profile_auto"`
 		ContentExtensions []string `json:"content_extensions"`
+		GitLastModified   bool     `json:"git_last_modified"`
 	} `json:"config"`
 	Summary struct {
 		FilesMissingHistory int `json:"files_missing_history"`
@@ -296,6 +297,42 @@ func TestRunArgs_BadConfig(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.json")
 	if err := runArgs([]string{"--config", missing}, &out, &errb); err == nil {
 		t.Error("expected error for a missing --config file")
+	}
+}
+
+// TestRunArgs_GitLastModifiedOptIn verifies CLI/config precedence, including false.
+func TestRunArgs_GitLastModifiedOptIn(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	repo.Commit(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "page", map[string]string{
+		"docs/page.md": "# Page\n\nBody.\n",
+	})
+	for _, tc := range []struct {
+		name   string
+		config string
+		flags  []string
+		want   bool
+	}{
+		{name: "default", config: `{}`},
+		{name: "flag", config: `{}`, flags: []string{"--git-last-modified"}, want: true},
+		{name: "config", config: `{"git_last_modified":true}`, want: true},
+		{name: "disable config", config: `{"git_last_modified":true}`, flags: []string{"--git-last-modified=false"}},
+		{name: "enable config", config: `{"git_last_modified":false}`, flags: []string{"--git-last-modified=true"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(cfgPath, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			outDir := t.TempDir()
+			args := append([]string{"--config", cfgPath, "--content-dir", repo.Path("docs"), "--output-dir", outDir}, tc.flags...)
+			var out, errb bytes.Buffer
+			if err := runArgs(args, &out, &errb); err != nil {
+				t.Fatalf("runArgs: %v\n%s", err, errb.String())
+			}
+			if got := readJSONReport(t, outDir).Config.GitLastModified; got != tc.want {
+				t.Fatalf("enabled=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

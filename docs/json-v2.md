@@ -22,6 +22,8 @@ metadata and content are collected during analysis, without pinning HEAD.
   exclusions, default-exclusion switch, file/paragraph mode, project/content
   locations, reusable directory/patterns/extensions, resolver and import-map flag.
   Locations have nullable `repository_id` and `path`; an unset directory is null.
+  `git_last_modified` records the optional accelerator setting (default false),
+  not whether it succeeded; unsupported or unusable results fall back to Git log.
 - `coverage`: `analyzed_files`, `failed_files`, `excluded_files`,
   `git_ignored_files`, `extension_skipped_files`, `default_pruned_directories`,
   `excluded_directories`, plus `skipped_extensions` and `pruned_directory_names`.
