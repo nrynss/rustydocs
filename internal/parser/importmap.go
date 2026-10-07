@@ -140,9 +140,11 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 	}
 	src := string(data)
 	fences := fencedSpans(src)
-	comments := mdxCommentSpans(src, fences)
+	frontmatterEnd := frontmatterByteEnd(src)
+	inlineCode := markdownInlineCodeSpans(src, fences, frontmatterEnd)
+	comments := mdxCommentSpans(src, fences, inlineCode, frontmatterEnd)
 	for _, m := range importStatementPattern.FindAllStringSubmatchIndex(src, -1) {
-		if inSpans(fences, m[0]) || overlapsSpans(comments, m[0], m[1]) {
+		if inSpans(fences, m[0]) || overlapsSpans(inlineCode, m[0], m[1]) || overlapsSpans(comments, m[0], m[1]) {
 			continue
 		}
 		target := rp.resolveImportPath(src[m[4]:m[5]], sourceFile)
@@ -156,28 +158,17 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 }
 
 // mdxCommentSpans returns byte ranges for MDX JSX comments, excluding comment
-// openers that occur inside fenced examples or Markdown code spans. The source
-// is not rewritten, so import matches and later provenance continue to use
-// original byte offsets and line numbers.
-func mdxCommentSpans(content string, fences [][2]int) [][2]int {
+// openers inside fenced examples or matched Markdown inline code spans. The
+// source is not rewritten, so imports and provenance retain original offsets.
+func mdxCommentSpans(content string, fences, inlineCode [][2]int, frontmatterEnd int) [][2]int {
 	var spans [][2]int
-	for pos := frontmatterByteEnd(content); pos < len(content); {
-		if inSpans(fences, pos) {
-			for _, fence := range fences {
-				if pos >= fence[0] && pos < fence[1] {
-					pos = fence[1]
-					break
-				}
-			}
+	for pos := frontmatterEnd; pos < len(content); {
+		if end, ok := spanEndAt(fences, pos); ok {
+			pos = end
 			continue
 		}
-		if content[pos] == '\\' && pos+1 < len(content) &&
-			(content[pos+1] == '\\' || content[pos+1] == '`') {
-			pos += 2
-			continue
-		}
-		if content[pos] == '`' {
-			pos = mdxCodeSpanEnd(content, pos, fences)
+		if end, ok := spanEndAt(inlineCode, pos); ok {
+			pos = end
 			continue
 		}
 		if !strings.HasPrefix(content[pos:], "{/*") {
@@ -196,37 +187,107 @@ func mdxCommentSpans(content string, fences [][2]int) [][2]int {
 	return spans
 }
 
-// mdxCodeSpanEnd skips a code span closed by a backtick run of the same length.
-// An unmatched run is literal text; fences and blank lines end the inline block.
-func mdxCodeSpanEnd(content string, start int, fences [][2]int) int {
-	openEnd := start
-	for openEnd < len(content) && content[openEnd] == '`' {
-		openEnd++
-	}
-	for pos := openEnd; pos < len(content) && !inSpans(fences, pos); {
-		if content[pos] == '\n' {
-			next := pos + 1
-			for next < len(content) && (content[next] == ' ' || content[next] == '\t' || content[next] == '\r') {
-				next++
-			}
-			if next < len(content) && content[next] == '\n' {
-				break
-			}
+type backtickRun struct {
+	start        int
+	end          int
+	escapedFirst bool
+}
+
+// markdownInlineCodeSpans returns matched backtick-delimited inline code spans.
+// Each fence-separated region is paired independently; runs without a later
+// run of the same length remain literal. Delimiter and span offsets refer to
+// the original source, and line endings may occur inside a matched span.
+func markdownInlineCodeSpans(content string, fences [][2]int, start int) [][2]int {
+	var spans [][2]int
+	cursor := start
+	for _, fence := range fences {
+		if fence[1] <= cursor {
+			continue
 		}
+		if fence[0] > cursor {
+			spans = append(spans, pairBacktickRuns(content, cursor, fence[0])...)
+		}
+		cursor = fence[1]
+	}
+	if cursor < len(content) {
+		spans = append(spans, pairBacktickRuns(content, cursor, len(content))...)
+	}
+	return spans
+}
+
+func pairBacktickRuns(content string, start, end int) [][2]int {
+	var spans [][2]int
+	paragraphStart := start
+	for pos := start; pos < end; {
+		lineEnd, nextLine := end, end
+		if newline := strings.IndexByte(content[pos:end], '\n'); newline >= 0 {
+			lineEnd = pos + newline
+			nextLine = lineEnd + 1
+		}
+		if strings.Trim(content[pos:lineEnd], " \t\r") == "" {
+			spans = append(spans, pairBacktickRunsInParagraph(content, paragraphStart, pos)...)
+			paragraphStart = nextLine
+		}
+		pos = nextLine
+	}
+	spans = append(spans, pairBacktickRunsInParagraph(content, paragraphStart, end)...)
+	return spans
+}
+
+func pairBacktickRunsInParagraph(content string, start, end int) [][2]int {
+	// Closing runs are indexed by their raw length: inside an already-open
+	// code span, backslashes are literal and do not escape a closing delimiter.
+	var runs []backtickRun
+	for pos := start; pos < end; {
 		if content[pos] != '`' {
 			pos++
 			continue
 		}
-		end := pos
-		for end < len(content) && content[end] == '`' {
-			end++
+		runEnd := pos + 1
+		for runEnd < end && content[runEnd] == '`' {
+			runEnd++
 		}
-		if end-pos == openEnd-start {
-			return end
+		backslashes := 0
+		for i := pos - 1; i >= start && content[i] == '\\'; i-- {
+			backslashes++
 		}
-		pos = end
+		runs = append(runs, backtickRun{start: pos, end: runEnd, escapedFirst: backslashes%2 == 1})
+		pos = runEnd
 	}
-	return openEnd
+
+	nextClosingRun := make([]int, len(runs))
+	lastByLength := make(map[int]int, len(runs))
+	for i := len(runs) - 1; i >= 0; i-- {
+		openingLength := runs[i].end - runs[i].start
+		if runs[i].escapedFirst {
+			openingLength--
+		}
+		nextClosingRun[i] = -1
+		if openingLength > 0 {
+			if next, ok := lastByLength[openingLength]; ok {
+				nextClosingRun[i] = next
+			}
+		}
+		lastByLength[runs[i].end-runs[i].start] = i
+	}
+
+	var spans [][2]int
+	for i := 0; i < len(runs); {
+		close := nextClosingRun[i]
+		if close < 0 {
+			i++
+			continue
+		}
+		spanStart := runs[i].start
+		if runs[i].escapedFirst {
+			// Outside a code span, the preceding backslash escapes the first
+			// tick; any remaining ticks can still open a shorter delimiter.
+			spanStart++
+		}
+		spans = append(spans, [2]int{spanStart, runs[close].end})
+		i = close + 1
+	}
+	return spans
 }
 
 // frontmatterByteEnd returns the original-source byte offset after a closed
@@ -432,15 +493,20 @@ func fencedSpans(content string) [][2]int {
 // inSpans reports whether offset falls inside any of the (ascending, disjoint)
 // ranges.
 func inSpans(spans [][2]int, offset int) bool {
+	_, ok := spanEndAt(spans, offset)
+	return ok
+}
+
+func spanEndAt(spans [][2]int, offset int) (int, bool) {
 	for _, s := range spans {
 		if offset < s[0] {
-			return false
+			return 0, false
 		}
 		if offset < s[1] {
-			return true
+			return s[1], true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // resolveImportPath turns one module path into a target. A leading "/" is

@@ -254,3 +254,165 @@ import Foo from './_foo.mdx';
 	}
 	t.Fatal("page.mdx missing from analysis")
 }
+
+func TestAnalyze_DocusaurusInlineCodeOpenerPreservesImportFreshness(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	old, recent := now.AddDate(0, 0, -300), now.AddDate(0, 0, -10)
+	repo := testutil.NewRepo(t)
+	repo.Commit(old, "page and partial", map[string]string{
+		"docusaurus.config.js": "export default {};\n",
+		"docs/page.mdx":        "---\ntitle: Guide\n---\nLiteral `{/* inline code` opener.\nimport Foo from './_foo.mdx';\n\n# Guide\n\n<Foo />\n",
+		"docs/_foo.mdx":        "old partial body\n",
+	})
+	repo.Commit(recent, "update partial", map[string]string{
+		"docs/_foo.mdx": "recent partial body\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir, cfg.Profile, cfg.ThresholdDays = repo.Path("docs"), config.ProfileDocusaurus, 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range res.Files {
+		if file.RelativePath != "page.mdx" {
+			continue
+		}
+		for _, section := range file.Sections {
+			if section.Title != "Guide" {
+				continue
+			}
+			if section.EffectiveLastUpdated == nil || !section.EffectiveLastUpdated.Equal(recent) || section.IsStale {
+				t.Fatalf("inline-code opener hid real import: effective=%v stale=%v; want %v and fresh", section.EffectiveLastUpdated, section.IsStale, recent)
+			}
+			for _, dependency := range section.Dependencies {
+				if dependency.Reference == "Foo" {
+					if dependency.Line != 9 || dependency.Status != "resolved" || len(dependency.Files) != 1 || dependency.Files[0].Path != repo.Path("docs/_foo.mdx") {
+						t.Fatalf("Foo provenance = %+v; want resolved use on original line 9", dependency)
+					}
+					return
+				}
+			}
+			t.Fatal("Guide section did not retain Foo dependency provenance")
+		}
+		t.Fatalf("Guide section missing from %+v", file.Sections)
+	}
+	t.Fatal("page.mdx missing from analysis")
+}
+
+func TestAnalyze_DocusaurusEscapedBackticksDoNotBindCommentedImport(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	old, recent := now.AddDate(0, 0, -300), now.AddDate(0, 0, -10)
+	repo := testutil.NewRepo(t)
+	repo.Commit(old, "page and partial", map[string]string{
+		"docusaurus.config.js": "export default {};\n",
+		"docs/page.mdx":        "# Guide\nLiteral \\` opener.\n{/*\nimport Foo from './_foo.mdx';\n*/}\n\\` closer.\n\n<Foo />\n",
+		"docs/_foo.mdx":        "old partial body\n",
+	})
+	repo.Commit(recent, "update partial", map[string]string{
+		"docs/_foo.mdx": "recent partial body\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir, cfg.Profile, cfg.ThresholdDays = repo.Path("docs"), config.ProfileDocusaurus, 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range res.Files {
+		if file.RelativePath != "page.mdx" {
+			continue
+		}
+		for _, section := range file.Sections {
+			if section.Title != "Guide" {
+				continue
+			}
+			if section.EffectiveLastUpdated == nil || !section.EffectiveLastUpdated.Equal(old) || !section.IsStale {
+				t.Fatalf("escaped ticks hid JSX comment: effective=%v stale=%v; want %v and stale", section.EffectiveLastUpdated, section.IsStale, old)
+			}
+			sawFoo := false
+			for _, dependency := range section.Dependencies {
+				if dependency.Reference == "Foo" {
+					sawFoo = true
+					if dependency.Status != "skipped" || len(dependency.Files) != 0 {
+						t.Fatalf("commented import contributed provenance: %+v", dependency)
+					}
+				}
+			}
+			if !sawFoo {
+				t.Fatal("Guide section did not retain Foo's skipped dependency provenance")
+			}
+			return
+		}
+		t.Fatalf("Guide section missing from %+v", file.Sections)
+	}
+	t.Fatal("page.mdx missing from analysis")
+}
+
+func TestAnalyze_DocusaurusInlineCodeImportDoesNotRefreshButRealImportDoes(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	old, recent := now.AddDate(0, 0, -300), now.AddDate(0, 0, -10)
+	repo := testutil.NewRepo(t)
+	repo.Commit(old, "page and partials", map[string]string{
+		"docusaurus.config.js": "export default {};\n",
+		"docs/page.mdx":        "`{/*\nimport Fake from './_foo.mdx';\n*/}`\nimport Real from './_real.mdx';\n\n# Guide\n\n<Fake />\n\n# Legitimate\n\n<Real />\n",
+		"docs/_foo.mdx":        "old fake partial\n",
+		"docs/_real.mdx":       "old real partial\n",
+	})
+	repo.Commit(recent, "update partials", map[string]string{
+		"docs/_foo.mdx":  "recent fake partial\n",
+		"docs/_real.mdx": "recent real partial\n",
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.ContentDir, cfg.Profile, cfg.ThresholdDays = repo.Path("docs"), config.ProfileDocusaurus, 90
+	res, err := Analyze(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range res.Files {
+		if file.RelativePath != "page.mdx" {
+			continue
+		}
+		var guideFound, legitimateFound bool
+		for _, section := range file.Sections {
+			switch section.Title {
+			case "Guide":
+				guideFound = true
+				if section.EffectiveLastUpdated == nil || !section.EffectiveLastUpdated.Equal(old) || !section.IsStale {
+					t.Fatalf("fake inline-code import refreshed Guide: %+v", section)
+				}
+				for _, dependency := range section.Dependencies {
+					if dependency.Reference == "Fake" && (dependency.Status != "skipped" || len(dependency.Files) != 0) {
+						t.Fatalf("fake import contributed dependency provenance: %+v", dependency)
+					}
+				}
+			case "Legitimate":
+				legitimateFound = true
+				if section.EffectiveLastUpdated == nil || !section.EffectiveLastUpdated.Equal(recent) || section.IsStale {
+					t.Fatalf("later real import did not refresh Legitimate: %+v", section)
+				}
+				var realFound bool
+				for _, dependency := range section.Dependencies {
+					if dependency.Reference == "Real" {
+						realFound = true
+						if dependency.Status != "resolved" || len(dependency.Files) != 1 || dependency.Files[0].Path != repo.Path("docs/_real.mdx") || dependency.Line != 12 {
+							t.Fatalf("real import provenance = %+v", dependency)
+						}
+					}
+				}
+				if !realFound {
+					t.Fatal("Legitimate section did not retain Real dependency provenance")
+				}
+			}
+		}
+		if !guideFound || !legitimateFound {
+			t.Fatalf("sections found: Guide=%v Legitimate=%v", guideFound, legitimateFound)
+		}
+		return
+	}
+	t.Fatal("page.mdx missing from analysis")
+}

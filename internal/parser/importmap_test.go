@@ -600,7 +600,10 @@ func TestBuildImportMap_CodeSpansDoNotStartMDXComments(t *testing.T) {
 			}
 			body := tc.prefix + comment + "\nimport Real from \"/snippets/shared.mdx\";\n"
 			wantSpans := [][2]int{{len(tc.prefix), len(tc.prefix) + len(comment)}}
-			if got := mdxCommentSpans(body, fencedSpans(body)); !reflect.DeepEqual(got, wantSpans) {
+			fences := fencedSpans(body)
+			frontmatterEnd := frontmatterByteEnd(body)
+			inlineCode := markdownInlineCodeSpans(body, fences, frontmatterEnd)
+			if got := mdxCommentSpans(body, fences, inlineCode, frontmatterEnd); !reflect.DeepEqual(got, wantSpans) {
 				t.Fatalf("mdxCommentSpans = %v, want original offsets %v", got, wantSpans)
 			}
 			page := ir.page(fmt.Sprintf("guides/code-span-%d.mdx", i), body)
@@ -635,6 +638,98 @@ func TestBuildImportMap_FrontmatterDoesNotStartMDXComment(t *testing.T) {
 				t.Fatalf("real import = %+v, present=%v; want %q", got, ok, want)
 			}
 		})
+	}
+}
+
+func TestBuildImportMap_InlineCodeDoesNotStartMDXComment(t *testing.T) {
+	ir := newImportRepo(t)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "single backtick span",
+			body: "Literal `{/* code` opener.\nimport Real from \"./snippets/shared.mdx\";\n",
+		},
+		{
+			name: "multiline multi-backtick span",
+			body: "Literal ``{/* code\nstill code`` opener.\nimport Real from \"./snippets/shared.mdx\";\n",
+		},
+		{
+			name: "four-backtick span",
+			body: "Literal ````{/* code```` opener.\nimport Real from \"./snippets/shared.mdx\";\n",
+		},
+		{
+			name: "unmatched run leaves JSX comments active",
+			body: "Literal ` unmatched opener.\n{/*\nimport Commented from \"./snippets/other.mdx\";\n*/}\nimport Real from \"./snippets/shared.mdx\";\n",
+		},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			page := ir.repo.Write(fmt.Sprintf("docs/inline-%d.mdx", i), tc.body+"\n# Guide\n\n<Real /><Commented />\n")
+			m := ir.rp.buildImportMap(page)
+			if _, ok := m["Commented"]; ok {
+				t.Fatalf("commented import was bound: %+v", m["Commented"])
+			}
+			want := filepath.Join(ir.root, "snippets", "shared.mdx")
+			if got, ok := m["Real"]; !ok || got.path != want || got.skipped {
+				t.Fatalf("real import = %+v, present=%v; want %q", got, ok, want)
+			}
+		})
+	}
+}
+
+func TestBuildImportMap_EscapedBackticksAndJSXComments(t *testing.T) {
+	ir := newImportRepo(t)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "escaped single ticks leave comment active",
+			body: "Literal \\` opener.\n{/*\nimport Foo from \"./snippets/other.mdx\";\n*/}\n\\` closer.\nimport Real from \"./snippets/shared.mdx\";\n",
+		},
+		{
+			name: "even backslashes do not escape delimiter",
+			body: "Literal \\\\`{/* inline code` opener.\nimport Real from \"./snippets/shared.mdx\";\n{/*\nimport Commented from \"./snippets/other.mdx\";\n*/}\n",
+		},
+		{
+			name: "backslash does not escape closer inside code span",
+			body: "Literal `{/* inline \\` closer.\nimport Real from \"./snippets/shared.mdx\";\n{/*\nimport Commented from \"./snippets/other.mdx\";\n*/}\n",
+		},
+		{
+			name: "escaped multi-run leaves remaining delimiter",
+			body: "Literal \\``{/* inline code` opener.\nimport Real from \"./snippets/shared.mdx\";\n{/*\nimport Commented from \"./snippets/other.mdx\";\n*/}\n",
+		},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			page := ir.repo.Write(fmt.Sprintf("docs/escaped-%d.mdx", i), tc.body+"\n# Guide\n\n<Foo /><Real /><Commented />\n")
+			m := ir.rp.buildImportMap(page)
+			if _, ok := m["Foo"]; ok {
+				t.Fatalf("import inside escaped JSX comment was bound: %+v", m["Foo"])
+			}
+			if _, ok := m["Commented"]; ok {
+				t.Fatalf("import inside JSX comment was bound: %+v", m["Commented"])
+			}
+			want := filepath.Join(ir.root, "snippets", "shared.mdx")
+			if got, ok := m["Real"]; !ok || got.path != want || got.skipped {
+				t.Fatalf("real import = %+v, present=%v; want %q", got, ok, want)
+			}
+		})
+	}
+}
+
+func TestBuildImportMap_ImportInsideInlineCodeIsSkipped(t *testing.T) {
+	ir := newImportRepo(t)
+	page := ir.repo.Write("docs/inline-import.mdx", "`{/*\nimport Fake from \"./snippets/other.mdx\";\n*/}`\nimport Real from \"./snippets/shared.mdx\";\n\n# Guide\n\n<Fake /><Real />\n")
+	m := ir.rp.buildImportMap(page)
+	if _, ok := m["Fake"]; ok {
+		t.Fatalf("inline-code import was bound: %+v", m["Fake"])
+	}
+	want := filepath.Join(ir.root, "snippets", "shared.mdx")
+	if got, ok := m["Real"]; !ok || got.path != want || got.skipped {
+		t.Fatalf("later real import = %+v, present=%v; want %q", got, ok, want)
 	}
 }
 
