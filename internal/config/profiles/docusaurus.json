@@ -1,0 +1,16 @@
+{
+  "name": "docusaurus",
+  "description": "Docusaurus docs: .md and .mdx content, ATX '#' headers, static Markdown partial imports (import Foo from \"./_foo.mdx\", used as <Foo />) resolved within the project root. Relative and project-root-relative paths are supported; @site, @theme and custom aliases, package/code imports and unimported components are skipped. Configuration is not executed. Auto-detected from a docusaurus.config.js or docusaurus.config.ts file at or above content_dir.",
+  "include_example": "import Foo from \"./_foo.mdx\"; <Foo />",
+  "content_extensions": [".md", ".mdx"],
+  "root_markers": ["docusaurus.config.js", "docusaurus.config.ts"],
+  "reusable_patterns": ["<([A-Z][A-Za-z0-9_$]*)\\s*[^>]*/?>"],
+  "reusable_extensions": [".mdx", ".md"],
+  "resolver": "path",
+  "import_map": true,
+  "parser_capabilities": {
+    "skip_fenced_captures": true,
+    "path_captures_only": true,
+    "path_base_mode": "page-only"
+  }
+}

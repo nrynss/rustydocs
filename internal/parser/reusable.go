@@ -345,6 +345,11 @@ func ResolveReusable(reusableName, sourceFile string, rp *ReusablePatterns) (*gi
 			// never been committed: a real defect, reported unknown.
 			return nil, ResolutionUnresolved
 		}
+		// A path-only profile has no legacy name lookup: an unbound JSX
+		// symbol must not accidentally resolve to a same-named Markdown file.
+		if rp.capabilities.PathCapturesOnly && isComponentSymbol(reusableName) && !rp.fromIncludePattern(reusableName) {
+			return nil, ResolutionSkipped
+		}
 	}
 
 	if info := rp.resolveExisting(reusableName, sourceFile); info != nil {

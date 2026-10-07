@@ -28,10 +28,10 @@ func TestEmbeddedProfileParity(t *testing.T) {
 		{"mintlify", "04730b285e427d7691aa0261513a24fb409a1755732d51b386201004b8f0f623"},
 		{"starlight", "b0c73bdd0b490f56d39fc54fe23ac21beac8d6a02247437f9cf7029beca8cfd5"},
 	}
-	if len(profiles) != len(want) {
-		t.Fatalf("got %d profiles, want %d", len(profiles), len(want))
+	if len(profiles) != len(want)+1 || profiles[len(want)].Name != ProfileDocusaurus {
+		t.Fatalf("expected original profiles followed by docusaurus, got %v", profiles)
 	}
-	for i, profile := range profiles {
+	for i, profile := range profiles[:len(want)] {
 		data, err := json.Marshal(profile)
 		if err != nil {
 			t.Fatal(err)

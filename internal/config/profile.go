@@ -97,6 +97,8 @@ const (
 	ProfileGitBook = "gitbook"
 	// ProfileStarlight is the Astro Starlight docs profile.
 	ProfileStarlight = "starlight"
+	// ProfileDocusaurus is the Docusaurus Markdown/MDX docs profile.
+	ProfileDocusaurus = "docusaurus"
 )
 
 // Profile describes how a documentation tool lays out its content: which

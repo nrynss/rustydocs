@@ -140,8 +140,11 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 	}
 	src := string(data)
 	fences := fencedSpans(src)
+	frontmatterEnd := frontmatterByteEnd(src)
+	inlineCode := markdownInlineCodeSpans(src, fences, frontmatterEnd)
+	comments := mdxCommentSpans(src, fences, inlineCode, frontmatterEnd)
 	for _, m := range importStatementPattern.FindAllStringSubmatchIndex(src, -1) {
-		if inSpans(fences, m[0]) {
+		if inSpans(fences, m[0]) || overlapsSpans(inlineCode, m[0], m[1]) || overlapsSpans(comments, m[0], m[1]) {
 			continue
 		}
 		target := rp.resolveImportPath(src[m[4]:m[5]], sourceFile)
@@ -152,6 +155,172 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 		}
 	}
 	return out
+}
+
+// mdxCommentSpans returns byte ranges for MDX JSX comments, excluding comment
+// openers inside fenced examples or matched Markdown inline code spans. The
+// source is not rewritten, so imports and provenance retain original offsets.
+func mdxCommentSpans(content string, fences, inlineCode [][2]int, frontmatterEnd int) [][2]int {
+	var spans [][2]int
+	for pos := frontmatterEnd; pos < len(content); {
+		if end, ok := spanEndAt(fences, pos); ok {
+			pos = end
+			continue
+		}
+		if end, ok := spanEndAt(inlineCode, pos); ok {
+			pos = end
+			continue
+		}
+		if !strings.HasPrefix(content[pos:], "{/*") {
+			pos++
+			continue
+		}
+
+		start, body := pos, pos+3
+		end := len(content)
+		if close := strings.Index(content[body:], "*/}"); close >= 0 {
+			end = body + close + len("*/}")
+		}
+		spans = append(spans, [2]int{start, end})
+		pos = end
+	}
+	return spans
+}
+
+type backtickRun struct {
+	start        int
+	end          int
+	escapedFirst bool
+}
+
+// markdownInlineCodeSpans returns matched backtick-delimited inline code spans.
+// Each fence-separated region is paired independently; runs without a later
+// run of the same length remain literal. Delimiter and span offsets refer to
+// the original source, and line endings may occur inside a matched span.
+func markdownInlineCodeSpans(content string, fences [][2]int, start int) [][2]int {
+	var spans [][2]int
+	cursor := start
+	for _, fence := range fences {
+		if fence[1] <= cursor {
+			continue
+		}
+		if fence[0] > cursor {
+			spans = append(spans, pairBacktickRuns(content, cursor, fence[0])...)
+		}
+		cursor = fence[1]
+	}
+	if cursor < len(content) {
+		spans = append(spans, pairBacktickRuns(content, cursor, len(content))...)
+	}
+	return spans
+}
+
+func pairBacktickRuns(content string, start, end int) [][2]int {
+	var spans [][2]int
+	paragraphStart := start
+	for pos := start; pos < end; {
+		lineEnd, nextLine := end, end
+		if newline := strings.IndexByte(content[pos:end], '\n'); newline >= 0 {
+			lineEnd = pos + newline
+			nextLine = lineEnd + 1
+		}
+		if strings.Trim(content[pos:lineEnd], " \t\r") == "" {
+			spans = append(spans, pairBacktickRunsInParagraph(content, paragraphStart, pos)...)
+			paragraphStart = nextLine
+		}
+		pos = nextLine
+	}
+	spans = append(spans, pairBacktickRunsInParagraph(content, paragraphStart, end)...)
+	return spans
+}
+
+func pairBacktickRunsInParagraph(content string, start, end int) [][2]int {
+	// Closing runs are indexed by their raw length: inside an already-open
+	// code span, backslashes are literal and do not escape a closing delimiter.
+	var runs []backtickRun
+	for pos := start; pos < end; {
+		if content[pos] != '`' {
+			pos++
+			continue
+		}
+		runEnd := pos + 1
+		for runEnd < end && content[runEnd] == '`' {
+			runEnd++
+		}
+		backslashes := 0
+		for i := pos - 1; i >= start && content[i] == '\\'; i-- {
+			backslashes++
+		}
+		runs = append(runs, backtickRun{start: pos, end: runEnd, escapedFirst: backslashes%2 == 1})
+		pos = runEnd
+	}
+
+	nextClosingRun := make([]int, len(runs))
+	lastByLength := make(map[int]int, len(runs))
+	for i := len(runs) - 1; i >= 0; i-- {
+		openingLength := runs[i].end - runs[i].start
+		if runs[i].escapedFirst {
+			openingLength--
+		}
+		nextClosingRun[i] = -1
+		if openingLength > 0 {
+			if next, ok := lastByLength[openingLength]; ok {
+				nextClosingRun[i] = next
+			}
+		}
+		lastByLength[runs[i].end-runs[i].start] = i
+	}
+
+	var spans [][2]int
+	for i := 0; i < len(runs); {
+		close := nextClosingRun[i]
+		if close < 0 {
+			i++
+			continue
+		}
+		spanStart := runs[i].start
+		if runs[i].escapedFirst {
+			// Outside a code span, the preceding backslash escapes the first
+			// tick; any remaining ticks can still open a shorter delimiter.
+			spanStart++
+		}
+		spans = append(spans, [2]int{spanStart, runs[close].end})
+		i = close + 1
+	}
+	return spans
+}
+
+// frontmatterByteEnd returns the original-source byte offset after a closed
+// YAML or TOML frontmatter block, using the same boundary rules as section
+// parsing. Normalize only for delimiter detection; offsets remain in content.
+func frontmatterByteEnd(content string) int {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lineCount := frontmatterLines(strings.Split(normalized, "\n"))
+	if lineCount == 0 {
+		return 0
+	}
+
+	offset := 0
+	for i := 0; i < lineCount; i++ {
+		newline := strings.IndexByte(content[offset:], '\n')
+		if newline < 0 {
+			return len(content)
+		}
+		offset += newline + 1
+	}
+	return offset
+}
+
+func overlapsSpans(spans [][2]int, start, end int) bool {
+	for _, span := range spans {
+		if span[0] >= end {
+			return false
+		}
+		if start < span[1] && span[0] < end {
+			return true
+		}
+	}
+	return false
 }
 
 // fenceLinePattern matches a fenced code-block delimiter: CommonMark allows up
@@ -324,15 +493,20 @@ func fencedSpans(content string) [][2]int {
 // inSpans reports whether offset falls inside any of the (ascending, disjoint)
 // ranges.
 func inSpans(spans [][2]int, offset int) bool {
+	_, ok := spanEndAt(spans, offset)
+	return ok
+}
+
+func spanEndAt(spans [][2]int, offset int) (int, bool) {
 	for _, s := range spans {
 		if offset < s[0] {
-			return false
+			return 0, false
 		}
 		if offset < s[1] {
-			return true
+			return s[1], true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // resolveImportPath turns one module path into a target. A leading "/" is
