@@ -156,9 +156,9 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 }
 
 // mdxCommentSpans returns byte ranges for MDX JSX comments, excluding comment
-// openers that occur inside fenced examples. The source is not rewritten, so
-// import matches and later provenance continue to use original byte offsets
-// and line numbers.
+// openers that occur inside fenced examples or Markdown code spans. The source
+// is not rewritten, so import matches and later provenance continue to use
+// original byte offsets and line numbers.
 func mdxCommentSpans(content string, fences [][2]int) [][2]int {
 	var spans [][2]int
 	for pos := frontmatterByteEnd(content); pos < len(content); {
@@ -169,6 +169,15 @@ func mdxCommentSpans(content string, fences [][2]int) [][2]int {
 					break
 				}
 			}
+			continue
+		}
+		if content[pos] == '\\' && pos+1 < len(content) &&
+			(content[pos+1] == '\\' || content[pos+1] == '`') {
+			pos += 2
+			continue
+		}
+		if content[pos] == '`' {
+			pos = mdxCodeSpanEnd(content, pos, fences)
 			continue
 		}
 		if !strings.HasPrefix(content[pos:], "{/*") {
@@ -185,6 +194,39 @@ func mdxCommentSpans(content string, fences [][2]int) [][2]int {
 		pos = end
 	}
 	return spans
+}
+
+// mdxCodeSpanEnd skips a code span closed by a backtick run of the same length.
+// An unmatched run is literal text; fences and blank lines end the inline block.
+func mdxCodeSpanEnd(content string, start int, fences [][2]int) int {
+	openEnd := start
+	for openEnd < len(content) && content[openEnd] == '`' {
+		openEnd++
+	}
+	for pos := openEnd; pos < len(content) && !inSpans(fences, pos); {
+		if content[pos] == '\n' {
+			next := pos + 1
+			for next < len(content) && (content[next] == ' ' || content[next] == '\t' || content[next] == '\r') {
+				next++
+			}
+			if next < len(content) && content[next] == '\n' {
+				break
+			}
+		}
+		if content[pos] != '`' {
+			pos++
+			continue
+		}
+		end := pos
+		for end < len(content) && content[end] == '`' {
+			end++
+		}
+		if end-pos == openEnd-start {
+			return end
+		}
+		pos = end
+	}
+	return openEnd
 }
 
 // frontmatterByteEnd returns the original-source byte offset after a closed

@@ -572,6 +572,47 @@ import Real from "./snippets/shared.mdx";
 	}
 }
 
+func TestBuildImportMap_CodeSpansDoNotStartMDXComments(t *testing.T) {
+	ir := newImportRepo(t)
+	for i, tc := range []struct {
+		name    string
+		prefix  string
+		comment string
+	}{
+		{name: "single backtick", prefix: "Use `{/*` to open a comment.\n"},
+		{name: "matching runs", prefix: "Use `` `{/*` `` to show backticks.\n"},
+		{name: "longer interior run", prefix: "Use ` `` {/* ` in code.\n"},
+		{name: "multiline span", prefix: "Use `a\n{/*\nb` in code.\n"},
+		{name: "backslash inside span", prefix: "Use `{/* \\` in code.\n"},
+		{name: "escaped backslash", prefix: "Use \\\\`{/*` in code.\n"},
+		{name: "unmatched backtick", prefix: "An unmatched ` is literal.\n"},
+		{name: "escaped backtick", prefix: "An escaped \\` is literal.\n", comment: "{/* `\nimport Commented from \"/snippets/other.mdx\";\n*/}"},
+		{name: "fenced opener", prefix: "```mdx\n{/* `\n```\n"},
+		{name: "tilde fenced opener", prefix: "~~~mdx\n{/* `\n~~~\n"},
+		{name: "span cannot close in fence", prefix: "An unmatched `.\n```mdx\n`\n{/*\n```\n", comment: "{/* `\nimport Commented from \"/snippets/other.mdx\";\n*/}"},
+		{name: "span cannot cross blank line", prefix: "An unmatched `.\n \t\n", comment: "{/* `\nimport Commented from \"/snippets/other.mdx\";\n*/}"},
+		{name: "original CRLF and UTF-8 offsets", prefix: "---\r\ntitle: Guide\r\n---\r\nUse `é {/*`.\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comment := tc.comment
+			if comment == "" {
+				comment = "{/*\nimport Commented from \"/snippets/other.mdx\";\n*/}"
+			}
+			body := tc.prefix + comment + "\nimport Real from \"/snippets/shared.mdx\";\n"
+			wantSpans := [][2]int{{len(tc.prefix), len(tc.prefix) + len(comment)}}
+			if got := mdxCommentSpans(body, fencedSpans(body)); !reflect.DeepEqual(got, wantSpans) {
+				t.Fatalf("mdxCommentSpans = %v, want original offsets %v", got, wantSpans)
+			}
+			page := ir.page(fmt.Sprintf("guides/code-span-%d.mdx", i), body)
+			m := ir.rp.buildImportMap(page)
+			want := ir.repo.Path("snippets/shared.mdx")
+			if got, ok := m["Real"]; len(m) != 1 || !ok || got.path != want || got.skipped {
+				t.Fatalf("imports = %+v, want only Real resolving to %q", m, want)
+			}
+		})
+	}
+}
+
 func TestBuildImportMap_FrontmatterDoesNotStartMDXComment(t *testing.T) {
 	ir := newImportRepo(t)
 	for _, tc := range []struct {

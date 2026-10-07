@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MDX comment scanning ignores `{/*` inside Markdown code spans so examples
+  cannot hide later imports. Fenced examples and original source offsets are
+  preserved.
 - Authorize reusable supporting files within the resolver's physical root before
   template reads, Git history queries and fingerprints. Hugo traversal and
   external symlink targets (including discovered theme checkouts) are rejected;
