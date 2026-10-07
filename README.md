@@ -8,8 +8,8 @@ Find stale documentation using git history. Analyzes your documentation at the s
 
 - **Section-level analysis**: Uses `git blame` to analyze staleness per section, not just per file
 - **Works on any Markdown repo out of the box**: the default `markdown` profile analyzes `.md`/`.markdown` files with no setup
-- **Tool profiles**: `hugo`, `mintlify`, `gitbook`, and `starlight` profiles add tool-specific include tracking; see [Profiles](#profiles)
-- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`); under `starlight`, MDX imports (`import X from "./_shared.mdx"` rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`) — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`, and `.astro` under `starlight`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
+- **Tool profiles**: `hugo`, `mintlify`, `gitbook`, `starlight`, and `docusaurus` profiles add tool-specific include tracking; see [Profiles](#profiles)
+- **Component tracking**: Under the `hugo` profile, detects Hugo shortcodes (`{{< >}}`, `{{% %}}`) and JSX/MDX components (`<Component>`); under `mintlify`, both `<Snippet file="foo.mdx" />` includes and MDX imports (`import X from "/snippets/x.mdx"` rendered as `<X />`); under `starlight`, MDX imports (`import X from "./_shared.mdx"` rendered as `<X />`) and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`); under `docusaurus`, static relative Markdown imports rendered as components — and folds their freshness into the section that uses them. Component imports (`.jsx`/`.js`/`.css`, and `.astro` under `starlight`) are deliberately skipped, since a restyle must not make every page that uses them look fresh
 - **Scans documentation, not tooling**: dot-directories, vendored and build trees, nested standalone repositories (but not submodules) and git-ignored files are excluded by default (`--no-default-excludes` to opt out) — on a real 4,000-file docs repo that is about a 6.5x speedup (48.7 s to 7.5 s) and 1,078 fewer spurious *unknown* rows
 - **Parallel processing**: Analyzes multiple files concurrently using goroutines
 - **Three output formats**: Generates JSON, Markdown and self-contained HTML reports
@@ -61,6 +61,7 @@ wins.
 | ---------- | -------------------------- | ------------------- | ---------------------------------------------------- |
 | `markdown` | `.md`, `.markdown`         | none                | **off** (plain CommonMark/GFM has no include mechanism) |
 | `gitbook`  | `.md`                      | `.gitbook.yaml` or `SUMMARY.md` | `{% content-ref url="…" %}` and `{% include "…" %}` paths |
+| `docusaurus` | `.md`, `.mdx`            | `docusaurus.config.js` or `docusaurus.config.ts` file | Static Markdown partial imports (`import Foo from './_foo.mdx'` rendered as `<Foo />`), using relative or project-root-relative paths; fenced examples, code/package imports and aliases (including `@site` and `@theme`) are skipped. See [supported subset](docs/docusaurus.md). |
 | `mintlify` | `.md`, `.mdx`              | `docs.json` (current) or `mint.json` (legacy) file whose contents look like a Mintlify config | `<Snippet file="…" />` (either quote style) and MDX imports rendered as `<X />`, resolved as a **path** under `snippets/` / `_snippets/` or the project root; `.jsx`/`.js`/`.css` imports are skipped |
 | `hugo`     | `.md`, `.markdown`, `.mdx` | `layouts/` or `themes/` directory, a `hugo.{toml,yaml,json}` file, or a `config/_default/` Hugo config | Hugo shortcodes + MDX/JSX components, resolved via `layouts/shortcodes` and `themes/*/layouts/shortcodes` |
 | `starlight` | `.md`, `.mdx`, `.mdoc`    | an `astro.config.{mjs,js,ts,mts}` whose contents register the `starlight()` integration (whole-line comments are ignored), or a `package.json` depending on `@astrojs/starlight` | MDX imports (`import X from "./_shared.mdx"`) rendered as `<X />` and Markdoc partials (`{% partial file="./_footer.mdoc" /%}`, captured on `.mdoc` pages — where Markdoc tags render — only), resolved as a **path** within the project root; fenced examples are not captured; `.astro`/`.js` imports, bare package specifiers and tsconfig path aliases (`@/…`), and unimported components — Starlight's built-ins and Markdoc's import-free tags alike — are skipped |
@@ -75,7 +76,9 @@ or `config.*` under that directory — selects `hugo` (the config-file and
 `themes/` markers matter for fresh clones of theme-based sites, since git does
 not track an empty `layouts/` directory); and an `astro.config.{mjs,js,ts,mts}`
 that registers the `starlight()` integration — or a `package.json` depending
-on `@astrojs/starlight` — selects `starlight`. A nested docs tree therefore
+on `@astrojs/starlight` — selects `starlight`. A `docusaurus.config.js` or
+`docusaurus.config.ts` file selects `docusaurus` by name and file kind; its
+JavaScript/TypeScript contents are not executed. A nested docs tree therefore
 wins over a marker further up: a Mintlify `docs.json` inside a repo that also
 has a `layouts/` at its root selects `mintlify`.
 
@@ -93,8 +96,9 @@ markers of more than one profile sit in the *same* directory does registry
 order decide, and the earlier-registered profile wins — which is why
 **`hugo` beats `mintlify`** there (`layouts/` and `hugo.toml` are unambiguous
 evidence, and picking `mintlify` would silently switch shortcode tracing off
-on a Hugo site that happens to ship a `docs.json`) and why `starlight`,
-registered last, loses any same-directory tie. Pass `--profile` to override.
+on a Hugo site that happens to ship a `docs.json`). The same-directory order is
+`gitbook`, `hugo`, `mintlify`, `starlight`, then `docusaurus`; Docusaurus is
+appended to preserve existing precedence. Pass `--profile` to override.
 
 If nothing is found, the `markdown` profile is used. **A project root you
 supply never selects a profile**: `--project-root` / `project_root` says where
@@ -158,6 +162,12 @@ rustydocs --content-dir ./docs --profile gitbook
 # report.
 rustydocs --content-dir ./src/content/docs --profile starlight
 
+# Docusaurus: docusaurus.config.js/.ts selects it automatically. Static relative
+# Markdown imports contribute freshness only in sections rendering the component.
+rustydocs --content-dir ./docs --profile docusaurus
+# Without a marker, specify both the profile and the site root.
+rustydocs --content-dir ./docs --profile docusaurus --project-root .
+
 # --project-root alone never changes the profile: on a repo with a docs.json
 # this is still a mintlify run.
 rustydocs --content-dir ./docs --project-root .
@@ -212,7 +222,7 @@ Create a `config.json` file:
 | Option                 | Description                                        | Default                      |
 | ---------------------- | -------------------------------------------------- | ---------------------------- |
 | `threshold_days`       | Days before content is considered stale            | 90                           |
-| `profile`              | Documentation profile (`markdown`, `gitbook`, `mintlify`, `hugo`); empty = auto-detect | (auto-detect)   |
+| `profile`              | Documentation profile (`markdown`, `gitbook`, `mintlify`, `hugo`, `starlight`, `docusaurus`); empty = auto-detect | (auto-detect)   |
 | `content_dir`          | Directory containing documentation files           | (required)                   |
 | `content_extensions`   | File extensions to analyze                         | from profile                 |
 | `project_root`         | Project root reusables resolve against — the Hugo site root, the Mintlify snippet root, or the GitBook root bounding page-relative includes and content references (auto-detected for any profile with root markers). Never influences which profile is selected. CLI: `--project-root` | (auto-detect)   |
@@ -423,7 +433,7 @@ Options:
                           --exclude-dirs / --exclude-patterns still apply.
                           Config-file spelling: "no_default_excludes"
   --extensions STRING     Comma-separated documentation extensions to analyze (default: from profile)
-  --profile NAME          Documentation profile: hugo, markdown, mintlify (default: auto-detect)
+  --profile NAME          Documentation profile (see --list-profiles; default: auto-detect)
   --project-root PATH     Project root that reusable references resolve against (Hugo site
                           root, Mintlify docs root); default: detected from the profile's
                           markers. It never selects a profile on its own, so pair it with

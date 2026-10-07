@@ -140,8 +140,9 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 	}
 	src := string(data)
 	fences := fencedSpans(src)
+	comments := mdxCommentSpans(src, fences)
 	for _, m := range importStatementPattern.FindAllStringSubmatchIndex(src, -1) {
-		if inSpans(fences, m[0]) {
+		if inSpans(fences, m[0]) || overlapsSpans(comments, m[0], m[1]) {
 			continue
 		}
 		target := rp.resolveImportPath(src[m[4]:m[5]], sourceFile)
@@ -152,6 +153,71 @@ func (rp *ReusablePatterns) buildImportMap(sourceFile string) map[string]importT
 		}
 	}
 	return out
+}
+
+// mdxCommentSpans returns byte ranges for MDX JSX comments, excluding comment
+// openers that occur inside fenced examples. The source is not rewritten, so
+// import matches and later provenance continue to use original byte offsets
+// and line numbers.
+func mdxCommentSpans(content string, fences [][2]int) [][2]int {
+	var spans [][2]int
+	for pos := frontmatterByteEnd(content); pos < len(content); {
+		if inSpans(fences, pos) {
+			for _, fence := range fences {
+				if pos >= fence[0] && pos < fence[1] {
+					pos = fence[1]
+					break
+				}
+			}
+			continue
+		}
+		if !strings.HasPrefix(content[pos:], "{/*") {
+			pos++
+			continue
+		}
+
+		start, body := pos, pos+3
+		end := len(content)
+		if close := strings.Index(content[body:], "*/}"); close >= 0 {
+			end = body + close + len("*/}")
+		}
+		spans = append(spans, [2]int{start, end})
+		pos = end
+	}
+	return spans
+}
+
+// frontmatterByteEnd returns the original-source byte offset after a closed
+// YAML or TOML frontmatter block, using the same boundary rules as section
+// parsing. Normalize only for delimiter detection; offsets remain in content.
+func frontmatterByteEnd(content string) int {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lineCount := frontmatterLines(strings.Split(normalized, "\n"))
+	if lineCount == 0 {
+		return 0
+	}
+
+	offset := 0
+	for i := 0; i < lineCount; i++ {
+		newline := strings.IndexByte(content[offset:], '\n')
+		if newline < 0 {
+			return len(content)
+		}
+		offset += newline + 1
+	}
+	return offset
+}
+
+func overlapsSpans(spans [][2]int, start, end int) bool {
+	for _, span := range spans {
+		if span[0] >= end {
+			return false
+		}
+		if start < span[1] && span[0] < end {
+			return true
+		}
+	}
+	return false
 }
 
 // fenceLinePattern matches a fenced code-block delimiter: CommonMark allows up

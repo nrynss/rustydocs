@@ -20,7 +20,7 @@ var profileAssets embed.FS
 
 // registry.json fixes tie precedence independently of file names. The nearest
 // marker still wins; only same-directory ties use this order. Markdown is the
-// fallback, GitBook precedes Hugo, Hugo precedes Mintlify, and Starlight is last.
+// fallback, followed by GitBook, Hugo, Mintlify, Starlight, then Docusaurus.
 var builtinProfiles = mustLoadProfileRegistry(profileAssets)
 
 // Predicate algorithms stay in Go. Definitions can reuse an existing binding

@@ -191,7 +191,7 @@ func TestRunArgs_ListProfiles(t *testing.T) {
 	if err := runArgs([]string{"--list-profiles"}, &out, &errb); err != nil {
 		t.Fatalf("runArgs --list-profiles: %v", err)
 	}
-	for _, name := range []string{"markdown", "hugo", "mintlify"} {
+	for _, name := range []string{"markdown", "hugo", "mintlify", "docusaurus"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("--list-profiles output missing %q:\n%s", name, out.String())
 		}

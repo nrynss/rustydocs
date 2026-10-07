@@ -4,6 +4,7 @@
     "gitbook",
     "hugo",
     "mintlify",
-    "starlight"
+    "starlight",
+    "docusaurus"
   ]
 }

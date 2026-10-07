@@ -545,6 +545,58 @@ func TestBuildImportMap_FencedCodeIsNotAnImport(t *testing.T) {
 	}
 }
 
+func TestBuildImportMap_MDXCommentsAreNotImports(t *testing.T) {
+	ir := newImportRepo(t)
+	page := ir.repo.Write("docs/page.mdx", `{/*
+import Commented from "./snippets/shared.mdx";
+import AlsoCommented from "./snippets/other.mdx";
+*/}
+
+import Real from "./snippets/shared.mdx";
+
+# Guide
+
+<Commented /><AlsoCommented /><Real />
+`)
+
+	m := ir.rp.buildImportMap(page)
+	if _, ok := m["Commented"]; ok {
+		t.Fatalf("multiline comment import was bound: %+v", m["Commented"])
+	}
+	if _, ok := m["AlsoCommented"]; ok {
+		t.Fatalf("single-line comment import was bound: %+v", m["AlsoCommented"])
+	}
+	want := filepath.Join(ir.root, "snippets", "shared.mdx")
+	if got, ok := m["Real"]; !ok || got.path != want || got.skipped {
+		t.Fatalf("real import = %+v, present=%v; want %q", got, ok, want)
+	}
+}
+
+func TestBuildImportMap_FrontmatterDoesNotStartMDXComment(t *testing.T) {
+	ir := newImportRepo(t)
+	for _, tc := range []struct {
+		name        string
+		frontmatter string
+	}{
+		{name: "YAML", frontmatter: "---\ntitle: \"{/*\"\n---\n"},
+		{name: "TOML", frontmatter: "+++\ntitle = \"{/*\"\n+++\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			page := ir.repo.Write("docs/frontmatter-"+tc.name+".mdx", tc.frontmatter+`import Real from "./snippets/shared.mdx";
+
+# Guide
+
+<Real />
+`)
+			m := ir.rp.buildImportMap(page)
+			want := filepath.Join(ir.root, "snippets", "shared.mdx")
+			if got, ok := m["Real"]; !ok || got.path != want || got.skipped {
+				t.Fatalf("real import = %+v, present=%v; want %q", got, ok, want)
+			}
+		})
+	}
+}
+
 // TestCalculateSectionStaleness_FencedImportDoesNotRefresh is the fence rule
 // stated as the harm it prevents: a page whose only content is a code sample
 // showing an import must not inherit the imported file's freshness.

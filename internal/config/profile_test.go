@@ -150,7 +150,7 @@ func TestProfileClone_CapabilitySliceDefaults(t *testing.T) {
 
 func TestProfiles_Sorted(t *testing.T) {
 	names := Profiles()
-	want := []string{"gitbook", "hugo", "markdown", "mintlify", "starlight"}
+	want := []string{"docusaurus", "gitbook", "hugo", "markdown", "mintlify", "starlight"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("Profiles() = %v, want %v", names, want)
 	}
@@ -847,7 +847,7 @@ func TestApplyProfile(t *testing.T) {
 		{
 			name:    "unknown profile errors and names the valid ones",
 			cfg:     Config{Profile: "bogus", ContentDir: plainContent},
-			wantErr: "valid profiles: gitbook, hugo, markdown, mintlify",
+			wantErr: "valid profiles: docusaurus, gitbook, hugo, markdown, mintlify, starlight",
 		},
 		{
 			name:     "explicit mintlify fills the snippet pattern and detects the root",

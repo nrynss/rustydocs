@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docusaurus profile (#13): `.md`/`.mdx` ATX content, detected from
+  `docusaurus.config.js` or `.ts` or selected with `--profile docusaurus`.
+  Static relative Markdown partial imports rendered as components contribute
+  freshness and provenance to their consuming sections, including rendered
+  preamble content. Fenced examples and code/package imports are skipped;
+  missing/historyless partials remain unknown. Uses the embedded profile
+  registry and shared import map without new dependencies. Aliases including
+  `@site`/`@theme` and JavaScript config execution are outside the supported
+  subset; see [Docusaurus profile](docs/docusaurus.md).
 - JSON schema `2.0` exports all analyzed sections, portable repository/file/section
   identities, normalized content fingerprints, own/effective Git evidence,
   section dependency relationships and tied freshness sources. Repository context,
