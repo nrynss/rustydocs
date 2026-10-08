@@ -38,6 +38,21 @@ jobs:
                 echo "CI run $run_id concluded $conclusion; refusing to publish."
                 exit 1
               fi
+              # A docs-only run succeeds even though its validation jobs skip.
+              # Require actual validation at this SHA before publishing binaries.
+              jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[] | {name, conclusion}')
+              if ! jq -s -e '
+                def required: ["Build and Test (ubuntu-latest)",
+                               "Build and Test (windows-latest)",
+                               "Build and Test (macos-latest)",
+                               "Lint", "Validate release snapshot"];
+                map(select(.name as $name | required | index($name))) as $checks |
+                (($checks | map(.name) | sort) == (required | sort)) and
+                all($checks[]; .conclusion == "success")
+              ' <<< "$jobs" > /dev/null; then
+                echo "CI validation jobs did not all pass for $GITHUB_SHA. Tag a fully validated commit; docs-only skipped runs cannot authorize a release."
+                exit 1
+              fi
               echo "CI run $run_id passed for $GITHUB_SHA; proceeding with publication."
               exit 0
             fi
