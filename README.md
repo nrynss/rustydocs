@@ -35,6 +35,39 @@ embedded by the toolchain. Builds made from a local clone without ldflags
 info. The build date is only reported when set via ldflags (`make build`);
 release binaries keep all the values set via ldflags.
 
+### Release archives
+
+Tagged releases produced by GoReleaser provide Linux, macOS (`darwin`), and
+Windows archives for both `amd64` and `arm64` on the
+[releases page](https://github.com/nrynss/rustydocs/releases).
+Archives are named `rustydocs_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows)
+and contain the `rustydocs` binary (`rustydocs.exe` on Windows), license,
+README, and changelog. Extract the archive and put the binary on your `PATH`.
+Git must also be installed and available on `PATH`.
+
+Download `checksums.txt` alongside your archive to verify its SHA256 checksum:
+
+```bash
+# Linux (checks downloaded archives only)
+sha256sum --check --ignore-missing checksums.txt
+# macOS
+shasum -a 256 --check --ignore-missing checksums.txt
+```
+
+To validate release packaging locally, install
+[GoReleaser v2.18.2](https://goreleaser.com/install/), then run:
+
+```bash
+goreleaser check
+make release  # goreleaser release --snapshot --clean; writes dist/, never publishes
+```
+
+CI also builds a snapshot for every pull request and push to `main`. Pushing a
+`v*` tag runs `goreleaser release --clean` and publishes the archives and
+`checksums.txt` with GitHub-generated release notes. Release binaries retain
+the tag version, full commit SHA, and UTC build date; snapshot versions are
+marked as snapshots. Prerelease tags are published as GitHub prereleases.
+
 ## Quick Start
 
 ```bash

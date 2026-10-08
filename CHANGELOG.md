@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Adopt GoReleaser for tagged releases (#31): build Linux, macOS, and Windows
+  for amd64 and arm64 with version/commit/date metadata, ship `.tar.gz` archives
+  (`.zip` on Windows) and SHA256 `checksums.txt`, and preserve GitHub-generated
+  release notes. CI validates snapshot packaging; `make release` now builds the
+  same snapshot archives without publishing, replacing the platform recipes.
+
 - HTML is now read-only: review buttons, status tabs, persisted browser state and
   page-age/date displays are removed. HTML and Markdown show snippet provenance
   beside consuming sections, sections made fresh by snippets, unknown/partial
