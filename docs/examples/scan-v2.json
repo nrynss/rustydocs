@@ -40,7 +40,7 @@
     "exclude_dirs": [],
     "no_default_excludes": false,
     "file_level_only": false,
-    "git_last_modified": false,
+    "git_last_modified": true,
     "paragraph_level": false,
     "reusables": {
       "dir": null,

@@ -300,8 +300,8 @@ func TestRunArgs_BadConfig(t *testing.T) {
 	}
 }
 
-// TestRunArgs_GitLastModifiedOptIn verifies CLI/config precedence, including false.
-func TestRunArgs_GitLastModifiedOptIn(t *testing.T) {
+// TestRunArgs_GitLastModifiedDefault verifies CLI/config precedence, including false.
+func TestRunArgs_GitLastModifiedDefault(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	repo.Commit(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "page", map[string]string{
 		"docs/page.md": "# Page\n\nBody.\n",
@@ -312,7 +312,9 @@ func TestRunArgs_GitLastModifiedOptIn(t *testing.T) {
 		flags  []string
 		want   bool
 	}{
-		{name: "default", config: `{}`},
+		{name: "default", config: `{}`, want: true},
+		{name: "disabled config", config: `{"git_last_modified":false}`},
+		{name: "disable default", config: `{}`, flags: []string{"--git-last-modified=false"}},
 		{name: "flag", config: `{}`, flags: []string{"--git-last-modified"}, want: true},
 		{name: "config", config: `{"git_last_modified":true}`, want: true},
 		{name: "disable config", config: `{"git_last_modified":true}`, flags: []string{"--git-last-modified=false"}},

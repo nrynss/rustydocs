@@ -1,6 +1,6 @@
 {
   "threshold_days": 90,
-  "git_last_modified": false,
+  "git_last_modified": true,
   "profile": "",
   "content_dir": "src/hugo/docsy/content/en",
   "project_root": "src/hugo/docsy",

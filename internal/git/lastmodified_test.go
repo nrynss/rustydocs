@@ -107,6 +107,17 @@ func observeLastModified(c *FileInfoCache) (map[string]int, *sync.Mutex) {
 	return counts, mu
 }
 
+// batchForPath uses the actual Git root key, not a fixture's native path
+// spelling. Git reports forward slashes on Windows; filepath uses backslashes.
+func batchForPath(t testing.TB, c *FileInfoCache, path string) *lastModifiedEntry {
+	t.Helper()
+	root, err := c.rootFor(path)
+	if err != nil {
+		t.Fatalf("resolve batch repository: %v", err)
+	}
+	return c.repositories[root]
+}
+
 func TestFileInfoCache_DefaultDoesNotProbeLastModified(t *testing.T) {
 	repo := newSnippetRepo(t)
 	for _, c := range []*FileInfoCache{NewFileInfoCache(), {}} {
@@ -179,7 +190,7 @@ func TestFileInfoCache_LastModifiedLinearHistory(t *testing.T) {
 	if counts["last-modified"] != 1 || counts["log"] != 1 {
 		t.Fatalf("batch commands = %v, want one last-modified and one metadata log", counts)
 	}
-	if len(c.repositories[repo.Dir].files) == 0 {
+	if entry := batchForPath(t, c, repo.Path("docs/revised.md")); entry == nil || len(entry.files) == 0 {
 		t.Fatal("real Git batch was not enabled")
 	}
 	info, err := c.FileLastModified(repo.Path("docs/revised.md"))
@@ -396,7 +407,7 @@ func TestFileInfoCache_LastModifiedUnsafeHistories(t *testing.T) {
 			c := NewFileInfoCacheWithLastModified()
 			counts, _ := observeLastModified(c)
 			assertLastModifiedBaseline(t, c, repo.Path("snippets/shared.mdx"), repo.Path("other.md"))
-			entry := c.repositories[repo.Dir]
+			entry := batchForPath(t, c, repo.Path("snippets/shared.mdx"))
 			if counts["last-modified"] != 0 || len(c.repositories) != 1 || entry == nil || entry.files != nil {
 				t.Fatalf("unsafe history used batch: %v", counts)
 			}
@@ -425,7 +436,8 @@ func TestFileInfoCache_LastModifiedSHA256(t *testing.T) {
 	c := NewFileInfoCacheWithLastModified()
 	assertLastModifiedBaseline(t, c, repo.Path("doc.md"))
 	info, err := c.FileLastModified(repo.Path("doc.md"))
-	if err != nil || len(info.LastCommit) != 64 || len(c.repositories[repo.Dir].files) != 1 {
+	entry := batchForPath(t, c, repo.Path("doc.md"))
+	if err != nil || info == nil || len(info.LastCommit) != 64 || entry == nil || len(entry.files) != 1 {
 		t.Fatalf("SHA256 batch failed: %+v, %v", info, err)
 	}
 }
@@ -457,7 +469,7 @@ func TestFileInfoCache_LastModifiedAuthorFormatting(t *testing.T) {
 		lastModifiedTestGit(t, repo.Dir, nil, "update-ref", "HEAD", strings.TrimSpace(string(oid)))
 		c := NewFileInfoCacheWithLastModified()
 		assertLastModifiedBaseline(t, c, repo.Path("snippets/shared.mdx"))
-		if len(c.repositories[repo.Dir].files) == 0 {
+		if entry := batchForPath(t, c, repo.Path("snippets/shared.mdx")); entry == nil || len(entry.files) == 0 {
 			t.Fatalf("author %q unexpectedly disabled batch", name)
 		}
 	}

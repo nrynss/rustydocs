@@ -26,16 +26,16 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestGitLastModifiedOptIn ensures absent configuration never enables acceleration.
-func TestGitLastModifiedOptIn(t *testing.T) {
-	if DefaultConfig().GitLastModified {
-		t.Fatal("accelerator enabled by default")
+// TestGitLastModifiedDefault ensures absent configuration enables acceleration.
+func TestGitLastModifiedDefault(t *testing.T) {
+	if !DefaultConfig().GitLastModified {
+		t.Fatal("accelerator disabled by default")
 	}
 	for _, tc := range []struct {
 		body string
 		want bool
 	}{
-		{`{}`, false},
+		{`{}`, true},
 		{`{"git_last_modified":false}`, false},
 		{`{"git_last_modified":true}`, true},
 	} {

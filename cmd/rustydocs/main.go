@@ -138,7 +138,7 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 		outputDir       = fs.String("output-dir", "", "Output directory for reports")
 		thresholdDays   = fs.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
 		fileLevelOnly   = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
-		gitLastModified = fs.Bool("git-last-modified", false, "Opt into experimental batch file dates via git last-modified (falls back to git log); config: git_last_modified")
+		gitLastModified = fs.Bool("git-last-modified", true, "Use experimental batch file dates via git last-modified (default: enabled; falls back to git log); disable with --git-last-modified=false; config: git_last_modified")
 		paragraphLevel  = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
 		excludeDirs     = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images); "+
 			"additive on top of the default exclusions")

@@ -796,6 +796,7 @@ func TestAnalyze_GitLastModifiedParity(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.ContentDir = repo.Path("docs")
 		cfg.FileLevelOnly = fileOnly
+		cfg.GitLastModified = false
 		baseline, err := Analyze(cfg)
 		if err != nil {
 			t.Fatal(err)

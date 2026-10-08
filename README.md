@@ -222,6 +222,7 @@ Create a `config.json` file:
 | Option                 | Description                                        | Default                      |
 | ---------------------- | -------------------------------------------------- | ---------------------------- |
 | `threshold_days`       | Days before content is considered stale            | 90                           |
+| `git_last_modified`    | Batch file-level Git dates when supported, otherwise use cached `git log`. CLI: `--git-last-modified=false` to disable | true |
 | `profile`              | Documentation profile (`markdown`, `gitbook`, `mintlify`, `hugo`, `starlight`, `docusaurus`); empty = auto-detect | (auto-detect)   |
 | `content_dir`          | Directory containing documentation files           | (required)                   |
 | `content_extensions`   | File extensions to analyze                         | from profile                 |
@@ -441,22 +442,31 @@ Options:
                           spelling: "project_root" (deprecated: "hugo_root")
   --list-profiles         List built-in profiles and exit
   --file-level-only       Skip section-level analysis (faster)
-  --git-last-modified     Opt into experimental batch file dates (default: off;
+  --git-last-modified     Use experimental batch file dates (default: on;
                           falls back to git log). Config: "git_last_modified"
+                          Disable with --git-last-modified=false
   --paragraph-level       Analyze at paragraph level (more granular)
   --workers INT           Number of parallel workers (default: number of CPUs)
   --version               Show version and exit
 ```
 
-### Optional Git accelerator
+### Git accelerator (enabled by default)
 
-`--git-last-modified` enables an optional Git accelerator for file-level and
-reusable-file dates. It does not replace per-line blame or change section-level
-analysis. Without this flag (or `"git_last_modified": true` in config), rustydocs
-uses the existing cached per-file `git log` lookups and does not probe the
-experimental command. Pass `--git-last-modified=false` to override an enabled
-config setting. Older Git versions and unsupported or unusable accelerator
-results fall back to the existing lookup path.
+rustydocs enables the experimental `git last-modified` accelerator by default
+for file-level and reusable-file dates. It does not replace per-line blame or
+change section-level analysis, authors, commit IDs or date semantics. Older Git
+versions and unsupported or unusable accelerator results fall back to cached
+per-file `git log` lookups.
+
+To disable batching and its capability probes, use:
+
+```bash
+rustydocs --content-dir ./docs --git-last-modified=false
+```
+
+Alternatively, set `"git_last_modified": false` in your JSON config. Explicit
+CLI values override config: `--git-last-modified` (or `=true`) re-enables it,
+and `--git-last-modified=false` disables it even when config says true.
 
 The fast path requires Git's recursive NUL-delimited `last-modified` output
 (available in Git 2.54). Capability and output checks decide eligibility rather
@@ -469,7 +479,8 @@ also use the existing per-file lookup. A failed batch is not retried for every
 file during the same scan. Keep the checkout stable during analysis as usual.
 
 Batching is intended for many distinct file/reusable lookups, not repeated hits
-on one already-cached snippet. To compare both workloads on your machine:
+on one already-cached snippet, where initialization can be slower; use the
+disable flag for those workloads. To compare both workloads on your machine:
 
 ```bash
 go test ./internal/git -run '^$' -bench BenchmarkFileInfoCache -benchmem -benchtime=3x

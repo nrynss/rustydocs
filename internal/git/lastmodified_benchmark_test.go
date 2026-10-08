@@ -73,7 +73,7 @@ func BenchmarkFileInfoCache(b *testing.B) {
 							if _, err := probe.FileLastModified(paths[0]); err != nil {
 								b.Fatal(err)
 							}
-							if len(probe.repositories[root].files) == 0 {
+							if entry := batchForPath(b, probe, paths[0]); entry == nil || len(entry.files) == 0 {
 								b.Skip("supported, safe last-modified unavailable")
 							}
 						}
