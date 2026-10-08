@@ -12,6 +12,10 @@ def needs_ci(path):
         return False
     if path in ("LICENSE", "NOTICE"):
         return False
+    # CHANGELOG.md is the release commit. The release workflow refuses a tag
+    # whose validation jobs were skipped, so versioning it must run the matrix.
+    if path == "CHANGELOG.md":
+        return True
     if path.endswith((".md", ".mdx", ".rst", ".adoc")):
         return False
     # New build inputs and unfamiliar files should run CI by default.

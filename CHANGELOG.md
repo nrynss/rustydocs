@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-08
+
 ### Fixed
 
 - In section mode, a file with no headings is one `(no header)` chunk covering
@@ -14,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stub, and `--paragraph-level` is unchanged. The surviving id is the old
   first paragraph's id; later paragraph ids are dropped; the fingerprint and
   span of the surviving id change (#88).
+
+### Changed
+
+- Versioning `CHANGELOG.md` runs the full CI matrix, so a release tag can point
+  at that commit. Other documentation-only commits still skip validation.
 
 ## [0.7.0] - 2026-10-08
 
@@ -665,7 +672,8 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/nrynss/rustydocs/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/nrynss/rustydocs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/nrynss/rustydocs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...v0.5.0

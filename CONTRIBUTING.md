@@ -29,10 +29,12 @@ go test ./...     # tests
 
 CI skips the build/test matrix, lint, and release/container snapshots when a
 push or pull request changes only documentation, documentation assets, issue
-forms, or recorded benchmark results. A lightweight change-detection job still
-runs so required checks can report skipped successfully. Embedded assets and
-test fixtures under `internal/`, plus changes under `cmd/` or `scripts/`, always
-run CI even when the files are Markdown. Unknown file types also run CI.
+forms, or recorded benchmark results. `CHANGELOG.md` is the exception:
+versioning it runs the full matrix so that commit can be tagged. A lightweight
+change-detection job still runs so required checks can report skipped
+successfully. Embedded assets and test fixtures under `internal/`, plus changes
+under `cmd/` or `scripts/`, always run CI even when the files are Markdown.
+Unknown file types also run CI.
 
 ## Conventions worth knowing
 
