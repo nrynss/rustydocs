@@ -124,7 +124,8 @@ The release workflow requires successful push-to-main CI on the exact tagged
 commit (waiting if that run is still in progress), then packages and publishes
 without repeating tests, lint, or container scans. Tag a commit whose build/test
 matrix, lint, and release snapshot jobs all passed. A docs-only commit with
-skipped validation jobs cannot authorize a release.
+skipped validation jobs cannot authorize a release. Versioning `CHANGELOG.md`
+runs that matrix, so the version bump itself can be the tagged commit.
 
 On first GHCR publication, verify that the package visibility is **public** so
 unauthenticated CI users can pull it.
