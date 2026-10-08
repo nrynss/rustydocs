@@ -7,7 +7,7 @@ By participating you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Getting started
 
-rustydocs is a standard Go (1.21+) CLI with **no external dependencies** — the
+rustydocs is a standard Go (1.27.1+) CLI with **no external dependencies** — the
 standard library only. You need a Go toolchain and `git`.
 
 ```bash

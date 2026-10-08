@@ -51,7 +51,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.21'
+          go-version-file: go.mod
 
       - name: Build
         run: go build -v ./...
@@ -73,8 +73,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # golangci-lint v2 needs a recent toolchain; the build/test matrix stays on 1.21.
-          go-version: '1.26'
+          go-version-file: go.mod
 
       - name: Run go vet
         run: go vet ./...
@@ -82,7 +81,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
 
       - name: Check formatting
         run: |
