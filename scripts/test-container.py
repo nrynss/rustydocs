@@ -73,7 +73,11 @@ def main():
             reports = list(output.glob("*.json"))
             assert len(reports) == 1, list(output.iterdir())
             assert list(output.glob("*.html")) and list(output.glob("*.md"))
-            return json.loads(reports[0].read_text())
+            # Reports are deliberately mode 0600. Native Linux bind mounts keep
+            # the container UID, so read as the same user that wrote the report.
+            data = run(args + ["--entrypoint", "cat", image,
+                               "/reports/" + reports[0].name])
+            return json.loads(data)
 
         for name, user in [("default-user", None),
                            ("host-user", f"{os.getuid()}:{os.getgid()}")]:
