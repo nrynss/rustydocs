@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Multi-architecture Alpine container image with Git and certificates (#38).
+  GoReleaser publishes Linux amd64/arm64 images to GHCR with exact release tags
+  and `latest` for stable releases. Images run as a non-root user; CI validates
+  mounted-repository scans, report permissions and full/shallow history behavior
+  on both architectures. Snapshot builds create local images without publishing.
+
 - Default-enabled `--git-last-modified` batch accelerator for file-level and reusable
   Git dates (#46), with graceful fallback to cached `git log` lookups.
   Disable with `--git-last-modified=false`; section-level blame is unchanged.
@@ -31,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breaking schema migration and complete example artifact (#80).
 
 ### Changed
+
+- Release publication requires successful CI on the exact tagged commit from
+  `main`, waits for in-progress CI, and reuses that result without repeating
+  tests, lint or container scans.
+
+- Skip expensive CI jobs for documentation-only changes while retaining the
+  required check statuses needed to merge pull requests. Embedded assets and
+  test fixtures still trigger the build/test matrix, lint and release snapshots.
 
 - Adopt GoReleaser for tagged releases (#31): build Linux, macOS, and Windows
   for amd64 and arm64 with version/commit/date metadata, ship `.tar.gz` archives

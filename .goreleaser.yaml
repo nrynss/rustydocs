@@ -42,3 +42,25 @@ changelog:
 
 release:
   prerelease: auto
+
+dockers_v2:
+  - id: rustydocs
+    ids: [rustydocs]
+    dockerfile: Dockerfile
+    extra_files: [LICENSE]
+    images:
+      - ghcr.io/nrynss/rustydocs
+    tags:
+      - "{{ if .IsSnapshot }}{{ .Version }}{{ else }}{{ .Tag }}{{ end }}"
+      - "{{ if and (not .IsSnapshot) (not .Prerelease) }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: rustydocs
+      org.opencontainers.image.description: Section-level documentation staleness analysis using Git history
+      org.opencontainers.image.source: https://github.com/nrynss/rustydocs
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"

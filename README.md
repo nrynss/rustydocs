@@ -55,18 +55,79 @@ shasum -a 256 --check --ignore-missing checksums.txt
 ```
 
 To validate release packaging locally, install
-[GoReleaser v2.18.2](https://goreleaser.com/install/), then run:
+[GoReleaser v2.18.2](https://goreleaser.com/install/) and Docker with Buildx
+and amd64/arm64 support, then run:
 
 ```bash
 goreleaser check
-make release  # goreleaser release --snapshot --clean; writes dist/, never publishes
+make release  # builds archives in dist/ and local container images; never publishes
 ```
 
-CI also builds a snapshot for every pull request and push to `main`. Pushing a
+CI builds snapshots when pull requests or pushes to `main` change code, build
+inputs, embedded assets, or test fixtures. Documentation-only changes skip the
+expensive CI jobs. Pushing a
 `v*` tag runs `goreleaser release --clean` and publishes the archives and
 `checksums.txt` with GitHub-generated release notes. Release binaries retain
 the tag version, full commit SHA, and UTC build date; snapshot versions are
 marked as snapshots. Prerelease tags are published as GitHub prereleases.
+
+### Container image
+
+The release workflow publishes `ghcr.io/nrynss/rustydocs` for Linux `amd64` and
+`arm64`. The image contains a prebuilt rustydocs binary, Git, and certificates
+on Alpine; no Go installation is required. Stable releases get their exact
+`vX.Y.Z` tag and `latest`; prereleases get only their exact tag. Prefer an exact
+version or digest in CI for reproducibility.
+
+Run from the **repository root**, mounting the entire checkout including `.git`:
+
+```bash
+mkdir -p reports
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD:/src:ro" \
+  -v "$PWD/reports:/reports" \
+  ghcr.io/nrynss/rustydocs:latest \
+  --content-dir /src/docs --output-dir /reports
+```
+
+Use your host UID/GID so reports remain writable and owned by you. The default
+image user is `65532:65532`; when using that default, grant it read access to the
+checkout and write access to the output directory. The image trusts `/src` as a
+Git repository even when its owner differs from the container user. For a
+checkout mounted elsewhere, match its owner or supply a specific Git
+`safe.directory` through Git's environment configuration. Mount linked-worktree
+Git directories and any submodule Git storage at their referenced paths too.
+
+The checkout needs **full history**: use `fetch-depth: 0` with
+`actions/checkout`, or run `git fetch --unshallow` for a shallow clone before
+scanning. Shallow history is reported in diagnostics and can give misleading
+ages. The container analyzes the existing checkout; it does not clone or fetch.
+
+Docker Desktop/Colima must have file-sharing access to the mounted directories.
+
+Local snapshot builds also create images tagged
+`ghcr.io/nrynss/rustydocs:<snapshot-version>-amd64` and `-arm64`. CI tests both
+against mounted repositories, including file ownership, missing history,
+shallow-history diagnostics, and writable reports. Run the same smoke test with:
+
+```bash
+python3 scripts/test-container.py <snapshot-image-tag> linux/amd64
+```
+
+Smoke fixtures are created under the current directory; set
+`RUSTYDOCS_TEST_TMPDIR` to another Docker-shared directory if needed.
+
+The Dockerfile consumes GoReleaser's temporary binary context; use `make release`
+to build images instead of running `docker build .` against the source tree.
+The release workflow requires successful push-to-main CI on the exact tagged
+commit (waiting if that run is still in progress), then packages and publishes
+without repeating tests, lint, or container scans. Tag a commit whose build/test
+matrix, lint, and release snapshot jobs all passed. A docs-only commit with
+skipped validation jobs cannot authorize a release.
+
+On first GHCR publication, verify that the package visibility is **public** so
+unauthenticated CI users can pull it.
 
 ## Quick Start
 
