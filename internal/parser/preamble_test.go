@@ -296,10 +296,9 @@ func TestParseChunks_PreambleParagraphLevel(t *testing.T) {
 	}
 }
 
-// TestParseChunks_HeaderlessUnchanged pins the behaviour #70 deliberately did
-// not touch: a file with no header at all still goes through parseParagraphs
-// over the whole file, frontmatter included, so a frontmatter-only stub keeps
-// producing a chunk instead of vanishing from the report.
+// TestParseChunks_HeaderlessUnchanged pins headerless chunking (#88).
+// Section mode emits one "(no header)" chunk for the body after frontmatter.
+// Paragraph mode still splits the whole file, frontmatter included.
 func TestParseChunks_HeaderlessUnchanged(t *testing.T) {
 	t.Run("prose", func(t *testing.T) {
 		content := "Just prose.\n\nMore prose.\n"
@@ -313,18 +312,119 @@ func TestParseChunks_HeaderlessUnchanged(t *testing.T) {
 		}
 	})
 
+	t.Run("prose is one section", func(t *testing.T) {
+		content := "Just prose.\n\nMore prose.\n"
+		lines := blameEveryLine(content, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil)
+		chunks := ParseSections(content, lines, DefaultReusablePatterns())
+		want := []chunkShape{{noHeaderTitle, 0, 1, 4, false}}
+		if got := shapes(chunks); !reflect.DeepEqual(got, want) {
+			t.Fatalf("chunks = %+v, want %+v", got, want)
+		}
+		if chunks[0].LogicalKey != "[]:preamble:1" {
+			t.Errorf("LogicalKey = %q, want %q", chunks[0].LogicalKey, "[]:preamble:1")
+		}
+		var gotLines []int
+		for _, li := range chunks[0].Lines {
+			gotLines = append(gotLines, li.LineNumber)
+		}
+		if !reflect.DeepEqual(gotLines, []int{1, 2, 3, 4}) {
+			t.Errorf("lines = %v, want the whole body including blank lines", gotLines)
+		}
+	})
+
 	t.Run("frontmatter only", func(t *testing.T) {
 		content := "---\ntitle: Stub\n---\n"
 		lines := blameEveryLine(content, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil)
 		chunks := ParseSections(content, lines, DefaultReusablePatterns())
-		if len(chunks) != 1 {
-			t.Fatalf("chunks = %v, want exactly one", chunkTitles(chunks))
+		want := []chunkShape{{noHeaderTitle, 0, 1, 3, false}}
+		if got := shapes(chunks); !reflect.DeepEqual(got, want) {
+			t.Fatalf("chunks = %+v, want %+v", got, want)
 		}
-		if chunks[0].Title != noHeaderTitle+" (L1)" {
-			t.Errorf("title = %q, want %q", chunks[0].Title, noHeaderTitle+" (L1)")
+		var gotLines []int
+		for _, li := range chunks[0].Lines {
+			gotLines = append(gotLines, li.LineNumber)
 		}
-		if len(chunks[0].Lines) == 0 {
-			t.Error("the frontmatter-only stub lost its blame lines")
+		if !reflect.DeepEqual(gotLines, []int{1, 2, 3}) {
+			t.Errorf("lines = %v, want the frontmatter block", gotLines)
+		}
+	})
+
+	body := "---\n" + // 1
+		"title: Page\n" + // 2
+		"---\n" + // 3
+		"\n" + // 4
+		"Intro sentence. {{< note >}}\n" + // 5
+		"\n" + // 6
+		"1. First item\n" + // 7
+		"\n" + // 8
+		"2. Second item\n" + // 9
+		"\n" + // 10
+		"```\n" + // 11
+		"fenced\n" + // 12
+		"```\n" + // 13
+		"\n" + // 14
+		"3. Third item\n" // 15, trailing newline adds line 16
+
+	t.Run("frontmatter and body", func(t *testing.T) {
+		old := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newest := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+		lines := blameEveryLine(body, old, map[int]time.Time{
+			1: newest, 2: newest, 3: newest,
+		})
+		chunks := ParseSections(body, lines, DefaultReusablePatterns())
+		want := []chunkShape{{noHeaderTitle, 0, 4, 16, false}}
+		if got := shapes(chunks); !reflect.DeepEqual(got, want) {
+			t.Fatalf("chunks = %+v, want %+v", got, want)
+		}
+		for _, li := range chunks[0].Lines {
+			if li.LineNumber < 4 {
+				t.Errorf("body chunk holds frontmatter line %d", li.LineNumber)
+			}
+		}
+		if got := chunks[0].LastUpdated(); got == nil || !got.Equal(old) {
+			t.Errorf("LastUpdated = %v, want %s (frontmatter must not refresh the body)", got, old)
+		}
+		if !reflect.DeepEqual(chunks[0].Reusables, []string{"note"}) {
+			t.Errorf("reusables = %v, want [note]", chunks[0].Reusables)
+		}
+	})
+
+	t.Run("paragraph mode keeps the frontmatter split", func(t *testing.T) {
+		lines := blameEveryLine(body, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil)
+		want := []chunkShape{
+			{noHeaderTitle + " (L1)", 0, 1, 3, false},
+			{noHeaderTitle + " (L5)", 0, 5, 5, false},
+			{noHeaderTitle + " (L7)", 0, 7, 7, false},
+			{noHeaderTitle + " (L9)", 0, 9, 9, false},
+			{noHeaderTitle + " (L11)", 0, 11, 13, false},
+			{noHeaderTitle + " (L15)", 0, 15, 15, false},
+		}
+		if got := shapes(ParseChunks(body, lines, true, DefaultReusablePatterns())); !reflect.DeepEqual(got, want) {
+			t.Errorf("chunks =\n  %+v\nwant\n  %+v", got, want)
+		}
+	})
+
+	t.Run("unterminated frontmatter is body", func(t *testing.T) {
+		content := "---\nnot really frontmatter\n\nstill the body\n"
+		lines := blameEveryLine(content, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil)
+		want := []chunkShape{{noHeaderTitle, 0, 1, 5, false}}
+		if got := shapes(ParseSections(content, lines, DefaultReusablePatterns())); !reflect.DeepEqual(got, want) {
+			t.Errorf("chunks = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("blank lines only", func(t *testing.T) {
+		content := "\n\n"
+		chunks := ParseSections(content, nil, DefaultReusablePatterns())
+		want := []chunkShape{{noHeaderTitle, 0, 1, 3, false}}
+		if got := shapes(chunks); !reflect.DeepEqual(got, want) {
+			t.Errorf("chunks = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("empty line slice", func(t *testing.T) {
+		if got := parseHeaderless(nil, nil, nil); got != nil {
+			t.Errorf("parseHeaderless(nil) = %+v, want nil", got)
 		}
 	})
 }

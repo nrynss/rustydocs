@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In section mode, a file with no headings is one `(no header)` chunk covering
+  the body after frontmatter. Frontmatter stays only for a frontmatter-only
+  stub, and `--paragraph-level` is unchanged. The surviving id is the old
+  first paragraph's id; later paragraph ids are dropped; the fingerprint and
+  span of the surviving id change (#88).
+
 ## [0.7.0] - 2026-10-08
 
 ### Added
