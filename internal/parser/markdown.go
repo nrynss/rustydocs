@@ -182,8 +182,12 @@ func ParseChunks(content string, linesInfo []git.LineInfo, paragraphLevel bool, 
 	}
 
 	if len(headers) == 0 {
-		// No headers found, parse by paragraphs
-		return parseParagraphs(contentLines, linesInfo, noHeaderTitle, 0, rp)
+		if paragraphLevel {
+			// --paragraph-level is unchanged: one "(no header) (L<n>)" chunk
+			// per blank-line paragraph, over the whole file, frontmatter included.
+			return parseParagraphs(contentLines, linesInfo, noHeaderTitle, 0, rp)
+		}
+		return parseHeaderless(contentLines, linesInfo, rp)
 	}
 
 	// Create chunks from headers
@@ -265,10 +269,11 @@ const (
 // to the page's prose. Skipping it costs nothing here, because a page with
 // headers is already represented in the report by those sections.
 //
-// The headerless path in ParseChunks deliberately keeps its existing behaviour
-// of chunking frontmatter along with everything else: there the chunks are the
-// page's only representation, so dropping the frontmatter of a frontmatter-only
-// stub would erase the file from the report entirely.
+// A file with no headings does not come through here. parseHeaderless emits
+// one section-mode "(no header)" chunk for the body after frontmatter, and
+// includes the frontmatter only when that stub is the whole file — otherwise
+// the file would vanish from the report. Paragraph mode still splits a
+// headerless file with parseParagraphs, frontmatter included.
 func parsePreamble(contentLines []string, linesInfo []git.LineInfo, firstHeaderLine int, paragraphLevel bool, rp *ReusablePatterns) []Chunk {
 	start := frontmatterLines(contentLines) // 0-indexed start of the preamble
 	end := firstHeaderLine - 1              // exclusive, 0-indexed: the header line itself
@@ -306,6 +311,48 @@ func parsePreamble(contentLines []string, linesInfo []git.LineInfo, firstHeaderL
 		EndLine:   end,
 		Lines:     chunkLines,
 		Reusables: FindReusables(strings.Join(preambleLines, "\n"), rp),
+		IsHeader:  false,
+	}}
+}
+
+// parseHeaderless returns the section-mode chunk for a file with no ATX
+// headings: one "(no header)" chunk, level 0, not a header.
+//
+// The chunk covers the body after frontmatter, including leading and trailing
+// blank lines in that span — the same frontmatterLines rules and line filter
+// as parsePreamble. Frontmatter is part of the chunk only when the file has
+// nothing else, so a frontmatter-only stub stays in the report and a
+// frontmatter edit does not date a page that also has body content. A file of
+// only blank lines keeps the whole-file chunk parseParagraphs used to emit
+// for that span. An empty line slice returns nil.
+func parseHeaderless(contentLines []string, linesInfo []git.LineInfo, rp *ReusablePatterns) []Chunk {
+	if len(contentLines) == 0 {
+		return nil
+	}
+	start := frontmatterLines(contentLines) // 0-indexed start of the body
+	sliceStart := start
+	endLine := len(contentLines) // 1-indexed inclusive; the body runs to EOF
+	if !hasContent(contentLines[start:]) && start > 0 {
+		// Frontmatter-only stub. Cover the frontmatter block itself, not the
+		// trailing blanks after the closer.
+		sliceStart = 0
+		endLine = start
+	}
+
+	startLine := sliceStart + 1
+	var chunkLines []git.LineInfo
+	for _, li := range linesInfo {
+		if li.LineNumber >= startLine && li.LineNumber <= endLine {
+			chunkLines = append(chunkLines, li)
+		}
+	}
+	return []Chunk{{
+		Title:     noHeaderTitle,
+		Level:     0,
+		StartLine: startLine,
+		EndLine:   endLine,
+		Lines:     chunkLines,
+		Reusables: FindReusables(strings.Join(contentLines[sliceStart:endLine], "\n"), rp),
 		IsHeader:  false,
 	}}
 }

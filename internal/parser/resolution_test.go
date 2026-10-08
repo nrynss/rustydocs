@@ -191,12 +191,12 @@ func TestParseChunks_ParagraphLevel_NoHeaders(t *testing.T) {
 	}
 }
 
-// TestParseChunks_NoHistoryKeepsParagraphStructure pins the no-history rule: a
-// headerless file with no git history keeps one chunk per paragraph — the same
-// structure it would show with history — instead of collapsing into a single
-// whole-file row. Every chunk is unknown either way; the structure is what the
-// section-level report exists to show. Found on a real Starlight site: a
-// 31-line headerless page reported 15 sections with history and 1 without.
+// TestParseChunks_NoHistoryKeepsParagraphStructure pins two headerless rules.
+// Section mode is one "(no header)" chunk whether or not the file has blame
+// (#88). Paragraph mode still keeps one chunk per paragraph when history is
+// missing — the same structure it shows with history — instead of collapsing
+// into a single whole-file row. Found on a real Starlight site: a 31-line
+// headerless page reported 15 sections with history and 1 without.
 func TestParseChunks_NoHistoryKeepsParagraphStructure(t *testing.T) {
 	content := "first paragraph\n\nsecond paragraph\n\nthird paragraph\n"
 
@@ -209,25 +209,36 @@ func TestParseChunks_NoHistoryKeepsParagraphStructure(t *testing.T) {
 	withHistory := ParseChunks(content, lines, false, DefaultReusablePatterns())
 	withoutHistory := ParseChunks(content, nil, false, DefaultReusablePatterns())
 
-	if len(withoutHistory) != 3 {
-		t.Fatalf("headerless file without history = %d chunks, want 3: %+v",
-			len(withoutHistory), titles(withoutHistory))
+	if len(withHistory) != 1 || len(withoutHistory) != 1 {
+		t.Fatalf("section-mode headerless chunks = %d with history, %d without, want 1 and 1: %v / %v",
+			len(withHistory), len(withoutHistory), titles(withHistory), titles(withoutHistory))
 	}
-	if len(withHistory) != len(withoutHistory) {
-		t.Errorf("chunk count depends on history: %d with, %d without",
-			len(withHistory), len(withoutHistory))
+	if withHistory[0].Title != noHeaderTitle || withoutHistory[0].Title != noHeaderTitle {
+		t.Errorf("titles = %q / %q, want %q", withHistory[0].Title, withoutHistory[0].Title, noHeaderTitle)
 	}
-	for i, chunk := range withoutHistory {
+	if len(withHistory[0].Lines) == 0 || withHistory[0].LastUpdated() == nil {
+		t.Errorf("section with history lost its blame: %+v", withHistory[0])
+	}
+	if len(withoutHistory[0].Lines) != 0 {
+		t.Errorf("section without history carries blame: %+v", withoutHistory[0].Lines)
+	}
+	if withoutHistory[0].LastUpdated() != nil {
+		t.Error("section without history is dated")
+	}
+
+	plainWith := ParseChunks(content, lines, true, DefaultReusablePatterns())
+	plainWithout := ParseChunks(content, nil, true, DefaultReusablePatterns())
+	if len(plainWith) != 3 || len(plainWithout) != 3 {
+		t.Fatalf("paragraph-mode headerless chunks = %d with history, %d without, want 3 and 3: %v / %v",
+			len(plainWith), len(plainWithout), titles(plainWith), titles(plainWithout))
+	}
+	for i, chunk := range plainWithout {
 		if len(chunk.Lines) != 0 {
 			t.Errorf("chunk %d carries blame although there is no history: %+v", i, chunk.Lines)
 		}
 		if chunk.LastUpdated() != nil {
 			t.Errorf("chunk %d is dated although there is no history", i)
 		}
-	}
-	// The paragraph-level split agrees.
-	if plain := ParseChunks(content, nil, true, DefaultReusablePatterns()); len(plain) != 3 {
-		t.Errorf("paragraph-level split without history = %d chunks, want 3", len(plain))
 	}
 }
 
