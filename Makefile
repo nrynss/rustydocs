@@ -31,18 +31,9 @@ clean:
 test:
 	go test -v ./...
 
-# Release builds for multiple platforms
-.PHONY: release release-linux release-darwin release-windows
+# Build the same archives as CI without publishing (requires GoReleaser v2.18.2).
+GORELEASER ?= goreleaser
+.PHONY: release
 
-release: release-linux release-darwin release-windows
-
-release-linux:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY)-linux-amd64 ./cmd/rustydocs
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY)-linux-arm64 ./cmd/rustydocs
-
-release-darwin:
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY)-darwin-amd64 ./cmd/rustydocs
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY)-darwin-arm64 ./cmd/rustydocs
-
-release-windows:
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY)-windows-amd64.exe ./cmd/rustydocs
+release:
+	$(GORELEASER) release --snapshot --clean
