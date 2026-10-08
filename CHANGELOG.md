@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Require Go 1.27.1 for source builds; CI and release builds use the version in
+  `go.mod`. Analyzer worker pools use `sync.WaitGroup.Go` for goroutine tracking.
+
 - Adopt GoReleaser for tagged releases (#31): build Linux, macOS, and Windows
   for amd64 and arm64 with version/commit/date metadata, ship `.tar.gz` archives
   (`.zip` on Windows) and SHA256 `checksums.txt`, and preserve GitHub-generated

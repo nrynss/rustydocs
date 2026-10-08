@@ -484,9 +484,7 @@ func resolveDirRoots(files []string) map[string]*dirRoot {
 
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for d := range ch {
 				info := dirs[d]
 				if root, err := git.GetGitRootForPath(samples[d]); err == nil {
@@ -496,7 +494,7 @@ func resolveDirRoots(files []string) map[string]*dirRoot {
 					info.phys = phys
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return dirs
@@ -1073,9 +1071,7 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 		firstErrM sync.Mutex
 	)
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for idx := range fileChan {
 				fa, ferr := analyzeFileAt(mdFiles[idx], cfg, baseDir, fileInfoCache, analysisTime)
 				if ferr != nil {
@@ -1088,7 +1084,7 @@ func AnalyzeWithProgress(cfg *config.Config, progress ProgressWriter) (*Results,
 				analyses[idx] = fa
 				atomic.AddInt64(&completed, 1)
 			}
-		}()
+		})
 	}
 
 	// Send files to workers
