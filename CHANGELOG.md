@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-08
+
 ### Added
+
+- Multi-architecture Alpine container image with Git and certificates (#38).
+  GoReleaser publishes Linux amd64/arm64 images to GHCR with exact release tags
+  and `latest` for stable releases. Images run as a non-root user; CI validates
+  mounted-repository scans, report permissions and full/shallow history behavior
+  on both architectures. Snapshot builds create local images without publishing.
 
 - Default-enabled `--git-last-modified` batch accelerator for file-level and reusable
   Git dates (#46), with graceful fallback to cached `git log` lookups.
@@ -34,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Require Go 1.27.1 for source builds; CI and release builds use the version in
   `go.mod`. Analyzer worker pools use `sync.WaitGroup.Go` for goroutine tracking.
+
+- Release publication requires successful CI on the exact tagged commit from
+  `main`, waits for in-progress CI, and reuses that result without repeating
+  tests, lint or container scans.
+
+- Skip expensive CI jobs for documentation-only changes while retaining the
+  required check statuses needed to merge pull requests. Embedded assets and
+  test fixtures still trigger the build/test matrix, lint and release snapshots.
 
 - Adopt GoReleaser for tagged releases (#31): build Linux, macOS, and Windows
   for amd64 and arm64 with version/commit/date metadata, ship `.tar.gz` archives
@@ -641,7 +657,8 @@ Earlier releases predate this changelog; see the
 [git history](https://github.com/nrynss/rustydocs/commits/main) and
 [releases](https://github.com/nrynss/rustydocs/releases).
 
-[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/nrynss/rustydocs/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/nrynss/rustydocs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/nrynss/rustydocs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nrynss/rustydocs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nrynss/rustydocs/compare/v0.3.0...v0.4.0

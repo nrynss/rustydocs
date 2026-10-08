@@ -31,7 +31,8 @@ clean:
 test:
 	go test -v ./...
 
-# Build the same archives as CI without publishing (requires GoReleaser v2.18.2).
+# Build archives and local container images without publishing.
+# Requires GoReleaser v2.18.2 and Docker Buildx with amd64/arm64 support.
 GORELEASER ?= goreleaser
 .PHONY: release
 
