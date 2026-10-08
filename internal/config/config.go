@@ -113,8 +113,11 @@ type Config struct {
 	NoDefaultExcludes bool            `json:"no_default_excludes"`
 	StalenessLevels   StalenessLevels `json:"staleness_levels"`
 	FileLevelOnly     bool            `json:"file_level_only"`
-	ParagraphLevel    bool            `json:"paragraph_level"`
-	Workers           int             `json:"workers"`
+	// GitLastModified enables the experimental batch Git accelerator (default true).
+	// Unsupported commands or unusable results fall back to per-file git log.
+	GitLastModified bool `json:"git_last_modified"`
+	ParagraphLevel  bool `json:"paragraph_level"`
+	Workers         int  `json:"workers"`
 }
 
 // DefaultConfig returns a new Config with default values. Profile-dependent
@@ -122,8 +125,9 @@ type Config struct {
 // ProjectRoot) are left empty here and filled by ApplyProfile.
 func DefaultConfig() *Config {
 	return &Config{
-		ThresholdDays: 90,
-		OutputDir:     "./reports",
+		ThresholdDays:   90,
+		OutputDir:       "./reports",
+		GitLastModified: true,
 		StalenessLevels: StalenessLevels{
 			Warning:  90,
 			Caution:  180,

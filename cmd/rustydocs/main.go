@@ -132,14 +132,15 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 
 	var (
-		configPath     = fs.String("config", "", "Path to JSON config file")
-		contentDir     = fs.String("content-dir", "", "Directory containing markdown files")
-		reusablesDir   = fs.String("reusables-dir", "", "Directory containing reusable components")
-		outputDir      = fs.String("output-dir", "", "Output directory for reports")
-		thresholdDays  = fs.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
-		fileLevelOnly  = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
-		paragraphLevel = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
-		excludeDirs    = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images); "+
+		configPath      = fs.String("config", "", "Path to JSON config file")
+		contentDir      = fs.String("content-dir", "", "Directory containing markdown files")
+		reusablesDir    = fs.String("reusables-dir", "", "Directory containing reusable components")
+		outputDir       = fs.String("output-dir", "", "Output directory for reports")
+		thresholdDays   = fs.Int("threshold-days", 0, "Days before content is considered stale (default: 90)")
+		fileLevelOnly   = fs.Bool("file-level-only", false, "Skip section-level analysis (faster)")
+		gitLastModified = fs.Bool("git-last-modified", true, "Use experimental batch file dates via git last-modified (default: enabled; falls back to git log); disable with --git-last-modified=false; config: git_last_modified")
+		paragraphLevel  = fs.Bool("paragraph-level", false, "Analyze at paragraph level (more granular)")
+		excludeDirs     = fs.String("exclude-dirs", "", "Comma-separated directories to exclude (e.g., releasenotes,images); "+
 			"additive on top of the default exclusions")
 		noDefaultExcludes = fs.Bool("no-default-excludes", false, "Scan everything: turn off the default exclusions "+
 			"(dot-directories, "+strings.Join(config.DefaultExcludeDirNames(), "/")+", directories holding their own .git, "+
@@ -211,6 +212,11 @@ func runArgs(argv []string, stdout, stderr io.Writer) error {
 	if *fileLevelOnly {
 		cfg.FileLevelOnly = true
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "git-last-modified" {
+			cfg.GitLastModified = *gitLastModified
+		}
+	})
 	if *paragraphLevel {
 		cfg.ParagraphLevel = true
 	}

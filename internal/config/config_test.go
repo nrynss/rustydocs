@@ -26,6 +26,33 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestGitLastModifiedDefault ensures absent configuration enables acceleration.
+func TestGitLastModifiedDefault(t *testing.T) {
+	if !DefaultConfig().GitLastModified {
+		t.Fatal("accelerator disabled by default")
+	}
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{}`, true},
+		{`{"git_last_modified":false}`, false},
+		{`{"git_last_modified":true}`, true},
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.GitLastModified != tc.want {
+			t.Errorf("%s: enabled=%v, want %v", tc.body, cfg.GitLastModified, tc.want)
+		}
+	}
+}
+
 func TestLoadConfig_DefaultsAndMigration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

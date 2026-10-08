@@ -779,6 +779,39 @@ func TestAnalyze_Modes(t *testing.T) {
 	}
 }
 
+// TestAnalyze_GitLastModifiedParity retains dated reusable evidence in both modes.
+func TestAnalyze_GitLastModifiedParity(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pinNow(t, now)
+	repo := testutil.NewRepo(t)
+	repo.Commit(now.AddDate(0, 0, -200), "old", map[string]string{
+		"docs/docs.json":  "{}",
+		"docs/page.mdx":   "import Shared from './shared.mdx';\n# Page\n\n<Shared />\n",
+		"docs/shared.mdx": "Shared old prose.\n",
+	})
+	repo.Commit(now.AddDate(0, 0, -3), "refresh shared", map[string]string{
+		"docs/shared.mdx": "Shared new prose.\n",
+	})
+	for _, fileOnly := range []bool{false, true} {
+		cfg := config.DefaultConfig()
+		cfg.ContentDir = repo.Path("docs")
+		cfg.FileLevelOnly = fileOnly
+		cfg.GitLastModified = false
+		baseline, err := Analyze(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.GitLastModified = true
+		accelerated, err := Analyze(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(baseline.Files, accelerated.Files) {
+			t.Fatalf("file-level-only=%v: accelerator changed file/section evidence", fileOnly)
+		}
+	}
+}
+
 func TestAnalyze_Errors(t *testing.T) {
 	if _, err := AnalyzeWithProgress(&config.Config{ContentDir: ""}, nil); err == nil {
 		t.Error("empty ContentDir should error")
